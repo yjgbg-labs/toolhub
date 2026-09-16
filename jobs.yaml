@@ -1,0 +1,19 @@
+version: 1
+jobs:
+  - name: install
+    run: ./sbtw update
+  - name: test
+    run: ./sbtw test
+  - name: build
+    needs: [test]
+    run: ./sbtw example/compile
+  - name: run
+    run: ./sbtw example/run
+  - name: package
+    needs: [build]
+    run: |
+      ./sbtw package packageSrc makePom
+      ./scripts/package.sh
+  - name: upload
+    needs: [package]
+    run: ./scripts/upload.sh
