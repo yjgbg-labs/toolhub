@@ -57,7 +57,7 @@ private[sprout] object OpenApi:
 
     def input(input: InputSpec[?]): ApiSchema =
       val base = render(input.schema.node()).copy(default = input.default.map(j => ExampleSingleValue(j.noSpaces)))
-      input.constraints.foldLeft(base) { (schema, rule) =>
+      input.constraints.flatMap(_.schema).foldLeft(base) { (schema, rule) =>
         rule.keyword match
           case "minimum" =>
             val value = rule.value.asNumber.flatMap(_.toBigDecimal).get

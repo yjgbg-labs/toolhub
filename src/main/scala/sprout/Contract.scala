@@ -10,11 +10,12 @@ private[sprout] enum RawInput:
   case Values(values: Vector[String])
   case Body(value: Option[Json])
 
+private[sprout] final case class SchemaConstraint(keyword: String, value: Json)
+
 private[sprout] final case class Constraint[A](
     accepts: A => Boolean,
     message: String,
-    keyword: String,
-    value: Json
+    schema: Option[SchemaConstraint] = None
 )
 
 final class Input[A] private[sprout] (

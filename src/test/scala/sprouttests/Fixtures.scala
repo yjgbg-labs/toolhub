@@ -17,3 +17,4 @@ enum Event derives JsonModel:
   case Renamed(name: String)
 
 case class Defaults(count: Int = 3, label: String = "default") derives JsonModel
+case class Interval(start: Int, end: Int) derives JsonModel

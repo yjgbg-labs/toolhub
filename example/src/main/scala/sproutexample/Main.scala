@@ -59,7 +59,9 @@ object Main extends IOApp.Simple:
 
           post("") {
             operationId("createUser")
-            val input = body.json[CreateUser]
+            val input = body.json[CreateUser] {
+              constraint[CreateUser]("Name must not be blank")(_.name.trim.nonEmpty)
+            }
             val created = response.json[User](201) { description("User created") }
             handle {
               users.modify { all =>

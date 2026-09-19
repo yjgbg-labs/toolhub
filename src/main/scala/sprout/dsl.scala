@@ -98,28 +98,37 @@ object dsl:
     scope.gate.check()
     scope.defaultValue = Some(value)
 
+  def constraint[A](message: String)(accepts: A => Boolean)(using scope: InputScope[A]): Unit =
+    scope.gate.check()
+    scope.constraints += Constraint(accepts, message)
+
   def minimum[A](value: A)(using scope: InputScope[A], number: Numeric[A]): Unit =
     scope.gate.check()
-    scope.constraints += Constraint(v => number.gteq(v, value), s"Must be at least $value", "minimum", Json.fromBigDecimal(BigDecimal(value.toString)))
+    scope.constraints += Constraint(v => number.gteq(v, value), s"Must be at least $value",
+      Some(SchemaConstraint("minimum", Json.fromBigDecimal(BigDecimal(value.toString)))))
 
   def maximum[A](value: A)(using scope: InputScope[A], number: Numeric[A]): Unit =
     scope.gate.check()
-    scope.constraints += Constraint(v => number.lteq(v, value), s"Must be at most $value", "maximum", Json.fromBigDecimal(BigDecimal(value.toString)))
+    scope.constraints += Constraint(v => number.lteq(v, value), s"Must be at most $value",
+      Some(SchemaConstraint("maximum", Json.fromBigDecimal(BigDecimal(value.toString)))))
 
   def minLength(value: Int)(using scope: InputScope[String]): Unit =
     scope.gate.check()
     require(value >= 0, "Negative minimum length")
-    scope.constraints += Constraint(v => v.codePointCount(0, v.length) >= value, s"Must contain at least $value characters", "minLength", Json.fromInt(value))
+    scope.constraints += Constraint(v => v.codePointCount(0, v.length) >= value, s"Must contain at least $value characters",
+      Some(SchemaConstraint("minLength", Json.fromInt(value))))
 
   def maxLength(value: Int)(using scope: InputScope[String]): Unit =
     scope.gate.check()
     require(value >= 0, "Negative maximum length")
-    scope.constraints += Constraint(v => v.codePointCount(0, v.length) <= value, s"Must contain at most $value characters", "maxLength", Json.fromInt(value))
+    scope.constraints += Constraint(v => v.codePointCount(0, v.length) <= value, s"Must contain at most $value characters",
+      Some(SchemaConstraint("maxLength", Json.fromInt(value))))
 
   def pattern(value: String)(using scope: InputScope[String]): Unit =
     scope.gate.check()
     val regex = new Regex(value)
-    scope.constraints += Constraint(v => regex.findFirstIn(v).nonEmpty, s"Must match $value", "pattern", Json.fromString(value))
+    scope.constraints += Constraint(v => regex.findFirstIn(v).nonEmpty, s"Must match $value",
+      Some(SchemaConstraint("pattern", Json.fromString(value))))
 
   object body:
     def json[A: JsonModel](using scope: EndpointScope): Input[A] = scope.jsonBody[A]

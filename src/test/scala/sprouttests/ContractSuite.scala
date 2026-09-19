@@ -118,6 +118,17 @@ class ContractSuite extends FunSuite:
         handle { ok("wrong") }
       } } }
     """)
+    val constraintErrors = typeCheckErrors("""
+      import sprout.dsl.*
+      httpApp { routes { get() {
+        val n = query[Int]("n") {
+          constraint[String]("Must not be empty")(_.nonEmpty)
+        }
+        val ok = response.json[Int](200) {}
+        handle { ok(n.value) }
+      } } }
+    """)
     assert(defaultErrors.nonEmpty)
     assert(responseErrors.nonEmpty)
+    assert(constraintErrors.exists(_.message.contains("InputScope")), constraintErrors.toString)
   }
