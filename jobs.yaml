@@ -16,7 +16,7 @@ jobs:
     needs: [install]
     run: |
       bun run check
-      bun test scripts/deploy.test.ts
+      bun test scripts/deploy.test.ts scripts/migrate-schedule.test.ts
   - name: server-build
     needs: [server-test]
     run: sh scripts/scala.sh compile server/project.scala server/src/main/scala server/example
@@ -47,3 +47,9 @@ jobs:
     run: sh scripts/deploy.sh cli
   - name: plugin-deploy
     run: sh scripts/deploy.sh plugin
+  - name: schedule-migrate
+    run: |
+      set -a
+      . ./config.env
+      set +a
+      bun scripts/migrate-schedule.ts

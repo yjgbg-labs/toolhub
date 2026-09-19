@@ -41,7 +41,17 @@ export async function operationInput(operation: Operation, args: string[]): Prom
   }
   let input: OperationInput = Object.create(null);
   let hasInput = false;
+  const positional = operation.parameters.filter(param => param.in === "path");
+  let position = 0;
   for (let i = 0; i < args.length;) {
+    if (!args[i]!.startsWith("--")) {
+      const param = positional[position++];
+      if (!param) throw new Error(`Unexpected argument: ${args[i]}`);
+      const group = input.path ??= Object.create(null);
+      if (Object.hasOwn(group, param.name)) throw new Error(`Duplicate path parameter ${param.name}`);
+      group[param.name] = scalar(args[i++]!, param.schema);
+      continue;
+    }
     const [name, raw, consumed] = takeOption(args, i);
     i += consumed;
     if (name === "input") {

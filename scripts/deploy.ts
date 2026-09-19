@@ -23,6 +23,7 @@ export interface DeploymentConfig {
   jdk: string;
   bun: string;
   groot: string;
+  home: string;
 }
 
 export function configFromEnv(env = process.env): DeploymentConfig {
@@ -60,7 +61,7 @@ export function configFromEnv(env = process.env): DeploymentConfig {
   return {
     root: directory("DEPLOY_ROOT"), binDir: directory("CLI_BIN_DIR"), unitDir: directory("SYSTEMD_UNIT_DIR"),
     pluginDir: directory("OPENCODE_PLUGIN_DIR"), artifact, sha256, service, port, startupTimeout, jdk,
-    downloadBase, baseUrl, namespace, bun: process.execPath, groot,
+    downloadBase, baseUrl, namespace, bun: process.execPath, groot, home: directory("SPROUT_HOME"),
   };
 }
 
@@ -169,6 +170,7 @@ Type=simple
 WorkingDirectory=${home.replaceAll("%", "%%")}
 Environment=${unitQuote(`PATH=${path}`)}
 Environment=${unitQuote(`SPROUT_PORT=${config.port}`)}
+Environment=${unitQuote(`SPROUT_HOME=${config.home}`)}
 ExecStart=${command.map(value => unitQuote(value, true)).join(" ")}
 Restart=on-failure
 RestartSec=3
@@ -228,7 +230,7 @@ exec ${shellQuote(config.bun)} ${shellQuote(join(current, "dist/sprout.js"))} "$
 `, 0o755);
   } else {
     const directory = join(release, "plugin");
-    await run([config.bun, "install", "--production", "--ignore-scripts"], directory);
+    await run([config.bun, "install", "--ignore-scripts"], directory);
     const entry = pathToFileURL(join(directory, "dist/index.js")).href;
     const defaults = JSON.stringify({ baseUrl: config.baseUrl, namespace: config.namespace });
     await installFile(target, `// ${marker}

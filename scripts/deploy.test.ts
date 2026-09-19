@@ -43,7 +43,7 @@ async function fixture(name: string) {
     root: join(directory, "data '$ 100%"), binDir: join(directory, "bin"), unitDir: join(directory, "units"), pluginDir: join(directory, "plugins"),
     downloadBase: `${baseUrl}/public/sprout-http`, artifact: first.artifact, sha256: first.sha256,
     service: "groot-sprout-http.service", port: server.port!, startupTimeout: 3000,
-    baseUrl, namespace: "sprout_test", jdk: "25", bun: process.execPath, groot: Bun.which("groot")!,
+    baseUrl, namespace: "sprout_test", jdk: "25", bun: process.execPath, groot: Bun.which("groot")!, home: join(directory, "config"),
   };
   return {
     config, stop: () => server.stop(true), downloads: () => downloads,
@@ -97,6 +97,7 @@ test("server deploy renders a valid user unit, uses Groot JDK selection, restart
     expect((await stat(unit)).mode & 0o777).toBe(0o644);
     expect(content).toContain('"use-jdk" "25" "--" "java"');
     expect(content).toContain(`SPROUT_PORT=${api.config.port}`);
+    expect(content).toContain(`SPROUT_HOME=${api.config.home}`);
     expect(content).toContain("WantedBy=default.target");
     expect(content).toContain("data '$$ 100%%/server/current/sprout-example.jar");
     expect(commands).toContainEqual([api.config.groot, "use-jdk", "25", "--", "java", "--version"]);
@@ -109,7 +110,7 @@ test("plugin deploy installs runtime dependencies and a discoverable V2 loader w
   const installs: string[] = [];
   const run: Run = async (args, cwd) => {
     if (args[0] === api.config.bun) {
-      expect(args.slice(1)).toEqual(["install", "--production", "--ignore-scripts"]);
+      expect(args.slice(1)).toEqual(["install", "--ignore-scripts"]);
       installs.push(cwd!);
     } else await runCommand(args, cwd);
   };

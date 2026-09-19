@@ -1,14 +1,18 @@
 package sproutexample
 
-import cats.effect.{IO, IOApp, Ref}
+import cats.effect.{IO, IOApp, Ref, Resource}
 import sprout.dsl.*
+import sprout.schedule.{Scheduler, ScheduleRoutes}
 
 case class User(id: Long, name: String) derives JsonModel
 case class CreateUser(name: String) derives JsonModel
 case class ApiError(code: String, message: String) derives JsonModel
 
 object Main extends IOApp.Simple:
-  def run: IO[Unit] = Ref.of[IO, Map[Long, User]](Map(1L -> User(1L, "Groot"))).flatMap { users =>
+  def run: IO[Unit] = (for
+    scheduler <- Scheduler.resource()
+    users <- Resource.eval(Ref.of[IO, Map[Long, User]](Map(1L -> User(1L, "Groot"))))
+  yield (scheduler, users)).use { (scheduler, users) =>
     val app = httpApp {
       server {
         host("127.0.0.1")
@@ -18,12 +22,13 @@ object Main extends IOApp.Simple:
       openapi {
         endpoint("/openapi.json")
         info {
-          title("Sprout users")
+          title("Sprout")
           version("1.0.0")
         }
       }
 
       routes {
+        ScheduleRoutes.register(scheduler)
         operation("health") {
           val ok = response.text(200) {}
           handle { ok("ok") }
