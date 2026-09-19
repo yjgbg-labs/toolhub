@@ -31,9 +31,9 @@ class OpenApiSuite extends FunSuite:
       openapi { info { title("Users API"); version("2.0.0"); description("API description") } }
       routes {
         group("/api") {
-          group("/users") {
+          group("/users/{id}") {
             tag("Users")
-            get("/{id}") {
+            get() {
               operationId("getUser")
               summary("Find a user")
               description("Operation description")
@@ -42,7 +42,7 @@ class OpenApiSuite extends FunSuite:
               val ok = response.json[User](200) { description("Found") }
               handle { ok(User(id.value, limit.value.toString)) }
             }
-            post("/{id}") {
+            post("") {
               val id = path[Long]("id")
               val input = body.json[CreateUser] { description("User payload") }
               val created = response.json[User](201) {}

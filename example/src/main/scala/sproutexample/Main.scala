@@ -46,7 +46,7 @@ object Main extends IOApp.Simple:
             }
           }
 
-          get("") {
+          get() {
             operationId("listUsers")
             val limit = query[Int]("limit") {
               default(20)

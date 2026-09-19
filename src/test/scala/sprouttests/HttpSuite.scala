@@ -71,7 +71,7 @@ class HttpSuite extends CatsEffectSuite:
   test("optional and repeated query parameters, headers and cookies are typed") {
     val app = httpApp {
       routes {
-        get("/") {
+        get() {
           val optional = query[Option[Int]]("offset")
           val repeated = query[List[String]]("tag")
           val count = header[Int]("X-Count")
@@ -242,9 +242,11 @@ class HttpSuite extends CatsEffectSuite:
     val app = httpApp {
       server { host("127.0.0.1"); port(0) }
       routes {
-        get("/health") {
-          val ok = response.text(200) {}
-          handle { ok("healthy") }
+        group("/health") {
+          get() {
+            val ok = response.text(200) {}
+            handle { ok("healthy") }
+          }
         }
       }
     }

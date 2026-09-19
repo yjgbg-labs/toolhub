@@ -73,7 +73,7 @@ object dsl:
     init(using endpoint)
     scope.app.endpoints += endpoint
 
-  def get(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register("GET", path)(init)
+  def get(path: String = "")(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register("GET", path)(init)
   def post(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register("POST", path)(init)
   def put(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register("PUT", path)(init)
   def patch(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register("PATCH", path)(init)
