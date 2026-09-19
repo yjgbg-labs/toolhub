@@ -1,4 +1,4 @@
-import { Plugin } from "@opencode/plugin";
+import * as Plugin from "@opencode/plugin/promise/plugin";
 import { ApiClient } from "@sprout/cli/api";
 import { operationTools } from "./tools";
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdtemp, rm } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import { ApiClient, ApiError, type ApiResult, type Schema } from "../cli/src/api";
 
 const config = await Bun.file("config.env").text();
@@ -66,7 +67,9 @@ try {
   assert.equal(missing.code, 1);
   assert.match(missing.stderr, /HTTP 404/);
 
-  const { default: plugin } = await import(new URL("../plugin/dist/index.js", import.meta.url).href);
+  // Load outside the workspace so missing runtime dependencies cannot be hidden by node_modules.
+  await cp("plugin/dist", `${home}/plugin`, { recursive: true });
+  const { default: plugin } = await import(pathToFileURL(`${home}/plugin/index.js`).href);
   interface Tool {
     name: string;
     options: { namespace: string; codemode: boolean };

@@ -230,7 +230,6 @@ exec ${shellQuote(config.bun)} ${shellQuote(join(current, "dist/sprout.js"))} "$
 `, 0o755);
   } else {
     const directory = join(release, "plugin");
-    await run([config.bun, "install", "--ignore-scripts"], directory);
     const entry = pathToFileURL(join(directory, "dist/index.js")).href;
     const defaults = JSON.stringify({ baseUrl: config.baseUrl, namespace: config.namespace });
     await installFile(target, `// ${marker}

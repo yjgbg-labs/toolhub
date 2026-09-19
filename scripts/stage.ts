@@ -12,7 +12,6 @@ for (const name of ["cli", "plugin"]) {
   await cp(`${name}/dist`, join(stage, name, "dist"), { recursive: true });
   const manifest = await Bun.file(`${name}/package.json`).json();
   const exports = name === "cli" ? { "./api": "./dist/api.js" } : { ".": "./dist/index.js" };
-  const dependencies = name === "plugin" ? { "@opencode/plugin": manifest.dependencies["@opencode/plugin"] } : {};
-  await Bun.write(join(stage, name, "package.json"), JSON.stringify({ ...manifest, exports, dependencies }, null, 2) + "\n");
+  await Bun.write(join(stage, name, "package.json"), JSON.stringify({ ...manifest, exports, dependencies: {} }, null, 2) + "\n");
 }
 await chmod(join(stage, "cli/dist/sprout.js"), 0o755);

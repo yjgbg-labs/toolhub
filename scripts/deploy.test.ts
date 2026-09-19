@@ -105,18 +105,14 @@ test("server deploy renders a valid user unit, uses Groot JDK selection, restart
   } finally { api.stop(); }
 });
 
-test("plugin deploy installs runtime dependencies and a discoverable V2 loader with configurable defaults", async () => {
+test("plugin deploy loads the self-contained bundle without installing dependencies", async () => {
   const api = await fixture("plugin");
-  const installs: string[] = [];
   const run: Run = async (args, cwd) => {
-    if (args[0] === api.config.bun) {
-      expect(args.slice(1)).toEqual(["install", "--ignore-scripts"]);
-      installs.push(cwd!);
-    } else await runCommand(args, cwd);
+    expect(args[0]).not.toBe(api.config.bun);
+    await runCommand(args, cwd);
   };
   try {
     await deploy("plugin", api.config, run);
-    expect(installs).toEqual([join(api.config.root, "releases", first.sha256, "plugin")]);
     const { default: plugin } = await import(pathToFileURL(join(api.config.pluginDir, "sprout.ts")).href);
     expect(plugin.id).toBe("sprout");
     expect(plugin.setup({ options: {} })).toEqual({ baseUrl: api.config.baseUrl, namespace: "sprout_test" });
