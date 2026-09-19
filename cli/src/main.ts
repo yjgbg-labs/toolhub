@@ -2,7 +2,6 @@
 import { ApiClient, type ClientOptions } from "./api";
 import { commandTree, help } from "./commands/tree";
 import { operationInput, takeOption } from "./commands/input";
-import { editSchedule, scheduleArgs } from "./commands/schedule";
 
 export async function run(args: string[], env: Record<string, string | undefined> = process.env): Promise<string> {
   const options: ClientOptions = {
@@ -14,7 +13,6 @@ export async function run(args: string[], env: Record<string, string | undefined
   let showHelp = false;
   for (let i = 0; i < args.length;) {
     const arg = args[i]!;
-    if (arg === "--") { rest.push(...args.slice(i)); break; }
     if (arg === "--help" || arg === "-h") { showHelp = true; i++; continue; }
     if (arg.startsWith("--")) {
       const [name, value, consumed] = takeOption(args, i);
@@ -37,15 +35,11 @@ export async function run(args: string[], env: Record<string, string | undefined
     node = next;
     path.push(segment);
   }
-  if (node.action === "schedule-config-edit" && !showHelp) {
-    if (rest.length !== offset) throw new Error("schedule config edit does not accept parameters");
-    return editSchedule(client, env);
-  }
   if (showHelp || !node.operation) {
     if (rest.length > offset && !showHelp) throw new Error("Choose an operation before passing parameters");
     return help(node, path);
   }
-  const result = await client.call(node.operation.id, await operationInput(node.operation, scheduleArgs(node.operation.id, rest.slice(offset))));
+  const result = await client.call(node.operation.id, await operationInput(node.operation, rest.slice(offset)));
   return typeof result.body === "string" ? result.body : result.body === null ? "" : JSON.stringify(result.body, null, 2);
 }
 

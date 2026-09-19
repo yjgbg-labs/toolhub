@@ -40,9 +40,9 @@ try {
   assert.equal((await client.call("health")).body, "ok");
   assert.equal((await client.call("users.list")).body[0].name, "Groot");
 
-  async function cliWithInput(args: string[], stdin?: string, env: Record<string, string> = {}) {
+  async function cliWithInput(args: string[], stdin?: string) {
     const child = Bun.spawn([Bun.which("bun")!, "cli/dist/sprout.js", "--url", baseUrl, ...args], {
-      env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe", stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
+      stdout: "pipe", stderr: "pipe", stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
     });
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     return { stdout, stderr, code };
@@ -91,12 +91,17 @@ try {
   assert.equal(tools.length, 11);
   assert.equal(tools.filter(tool => tool.options.namespace.startsWith("sprout_schedule")).length, 7);
   const configuration = { resources: { cpu: 1 }, tickMs: 20, jobs: {} };
-  const write = await cliWithInput(["schedule", "config", "write"], JSON.stringify(configuration));
+  const write = await cliWithInput(["schedule", "config", "write", "--body", "-"], JSON.stringify(configuration));
   assert.equal(write.code, 0, write.stderr);
   assert.deepEqual(JSON.parse(write.stdout), configuration);
   const configHelp = await cli("schedule", "config", "--help");
-  assert.match(configHelp.stdout, /edit/);
-  const schedule = await cli("schedule", "new", "integration/a +空", "--every", "1h", "--resource", "cpu=1", "--", "/bin/echo", "literal --help --url value $HOME && *");
+  assert.equal(configHelp.code, 0, configHelp.stderr);
+  assert.match(configHelp.stdout, /read/);
+  assert.match(configHelp.stdout, /write/);
+  assert.doesNotMatch(configHelp.stdout, /edit/);
+  const schedule = await cli("schedule", "new", "integration/a +空", "--body", JSON.stringify({
+    every: "1h", resource: { cpu: 1 }, command: ["/bin/echo", "literal --help --url value $HOME && *"],
+  }));
   assert.equal(schedule.code, 0, schedule.stderr);
   const listTool = tools.find(tool => tool.options.namespace === "sprout_schedule" && tool.name === "list")!;
   const deadline = Date.now() + 5000;
@@ -116,7 +121,7 @@ try {
   await client.call("schedule.config.write", { body: staticConfig });
   const resetTool = tools.find(tool => tool.options.namespace === "sprout_schedule" && tool.name === "reset")!;
   assert.deepEqual((await resetTool.execute({ path: { name: "integration/a +空" } }, {})).output.body, { lastRunAt: null, lastExitCode: null });
-  const invalid = await cli("schedule", "new", "integration/a +空", "--every", "1.5h", "--", "/bin/true");
+  const invalid = await cli("schedule", "new", "integration/a +空", "--body", JSON.stringify({ every: "1.5h", command: ["/bin/true"] }));
   assert.equal(invalid.code, 1);
   assert.match(invalid.stderr, /Invalid duration/);
   const configFile = JSON.parse(await Bun.file(`${home}/schedule.json`).text());
@@ -124,14 +129,16 @@ try {
   assert.equal(Object.hasOwn(configFile.jobs["integration/a +空"], "lastRunAt"), false);
   assert.equal((await cli("schedule", "delete", "integration/a +空")).code, 0);
   assert.deepEqual((await listTool.execute({}, {})).output.body, []);
-  const editor = `${home}/editor.ts`;
-  await Bun.write(editor, 'const path = process.argv[2]!; const config = await Bun.file(path).json(); config.tickMs = 50; await Bun.write(path, JSON.stringify(config));');
-  const edit = await cliWithInput(["schedule", "config", "edit"], undefined, { VISUAL: "", EDITOR: `${process.execPath} ${editor}` });
-  assert.equal(edit.code, 0, edit.stderr);
-  assert.equal((await client.call("schedule.config.read")).body.tickMs, 50);
-  const failedEdit = await cliWithInput(["schedule", "config", "edit"], undefined, { VISUAL: "", EDITOR: "/bin/false" });
-  assert.equal(failedEdit.code, 1);
-  assert.equal((await client.call("schedule.config.read")).body.tickMs, 50);
+  const edit = await cli("schedule", "config", "edit");
+  assert.equal(edit.code, 1);
+  assert.match(edit.stderr, /Unknown command/);
+  const missingBody = await cliWithInput(["schedule", "config", "write"], JSON.stringify(configuration));
+  assert.equal(missingBody.code, 1);
+  assert.match(missingBody.stderr, /Invalid input/);
+  const updated = { ...configuration, tickMs: 50 };
+  const writeInput = await cliWithInput(["schedule", "config", "write", "--input", "-"], JSON.stringify({ body: updated }));
+  assert.equal(writeInput.code, 0, writeInput.stderr);
+  assert.deepEqual((await client.call("schedule.config.read")).body, updated);
   await cleanup();
   assert.equal(disposed, true);
   await assert.rejects(client.call("users.create", { body: { name: " " } }), (error: unknown) => error instanceof ApiError && error.response.status === 400);

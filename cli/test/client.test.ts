@@ -73,6 +73,20 @@ test("CLI process reports HTTP errors on stderr with a failing exit code", async
   expect(stderr).toContain("rejected");
 });
 
+test("CLI discovers changed operation IDs from OpenAPI on each invocation", async () => {
+  const dynamic = fixture();
+  const env = { SPROUT_URL: dynamic.baseUrl };
+  try {
+    dynamic.doc.paths["/health"].get.operationId = "reports.daily.summary";
+    expect(await run(["reports", "daily", "--help"], env)).toContain("summary");
+    expect(await run(["reports", "daily", "summary"], env)).toBe("ok");
+    await expect(run(["health"], env)).rejects.toThrow("Unknown command");
+    dynamic.doc.paths["/health"].get.operationId = "reports.latest";
+    expect(await run(["reports", "latest"], env)).toBe("ok");
+    await expect(run(["reports", "daily", "summary"], env)).rejects.toThrow("Unknown command");
+  } finally { dynamic.server.stop(true); }
+});
+
 test("ambiguous operation IDs and unsupported contracts fail catalog construction", () => {
   const doc = document();
   doc.paths["/health"].get.operationId = "users.create";

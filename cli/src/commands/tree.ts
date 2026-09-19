@@ -3,7 +3,6 @@ import type { Catalog, Operation } from "../api";
 export class CommandNode {
   readonly children = new Map<string, CommandNode>();
   operation?: Operation;
-  action?: "schedule-config-edit";
 }
 
 export function commandTree(catalog: Catalog): CommandNode {
@@ -16,19 +15,12 @@ export function commandTree(catalog: Catalog): CommandNode {
     }
     node.operation = operation;
   }
-  const config = root.children.get("schedule")?.children.get("config");
-  if (config?.children.has("read") && config.children.has("write") && !config.children.has("edit")) {
-    const editor = new CommandNode();
-    editor.action = "schedule-config-edit";
-    config.children.set("edit", editor);
-  }
   return root;
 }
 
 export function help(node: CommandNode, path: string[]): string {
   const positional = node.operation?.parameters.filter(param => param.in === "path").map(param => `<${param.name}>`) ?? [];
   const lines = [`Usage: sprout ${[...path, ...(node.children.size ? ["<command>"] : positional)].join(" ")} [options]`];
-  if (node.action === "schedule-config-edit") lines.push("", "Edit scheduler configuration with $VISUAL, $EDITOR or vi, then validate and write it through the API.");
   if (node.operation) {
     const op = node.operation;
     lines.push("", op.description, `${op.method} ${op.path}`, "", "Parameters (location-qualified flags are always available):");
@@ -41,12 +33,10 @@ export function help(node: CommandNode, path: string[]): string {
     }
     if (op.body) lines.push(`  --body <json|@file|->  JSON body; ${op.body.required ? "required" : "optional"}`);
     lines.push("  --input <json|@file|->  Complete {path, query, header, cookie, body} input");
-    if (op.id === "schedule.new") lines.push("", "Shorthand: sprout schedule new <name> --every <duration> [--resource cpu=10,memory=20] -- <command> [args…]");
-    if (op.id === "schedule.config.write") lines.push("Reads JSON from stdin when no --body/--input is supplied.");
   }
   if (node.children.size) {
     lines.push("", "Commands:");
-    for (const [name, child] of node.children) lines.push(`  ${name}${child.children.size ? " …" : ""}  ${child.operation?.description.split("\n")[0] ?? (child.action ? "Edit scheduler configuration" : "")}`.trimEnd());
+    for (const [name, child] of node.children) lines.push(`  ${name}${child.children.size ? " …" : ""}  ${child.operation?.description.split("\n")[0] ?? ""}`.trimEnd());
   }
   lines.push("", "Connection: --url <base-url>, --schema <openapi-url>, --timeout <milliseconds>",
     "Environment: SPROUT_URL, SPROUT_OPENAPI_URL, SPROUT_TOKEN", "  --help, -h  Show help");
