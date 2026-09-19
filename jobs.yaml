@@ -1,19 +1,41 @@
 version: 1
 jobs:
   - name: install
-    run: ./sbtw update
-  - name: test
-    run: ./sbtw test
-  - name: build
-    needs: [test]
-    run: ./sbtw example/compile
-  - name: run
-    run: ./sbtw example/run
-  - name: package
-    needs: [build]
+    run: bun install --frozen-lockfile
+  - name: server-test
+    run: sh scripts/scala.sh test server/project.scala server/src
+  - name: client-test
+    needs: [install]
     run: |
-      ./sbtw package packageSrc makePom
-      ./scripts/package.sh
+      bun run check
+      bun run test
+  - name: test
+    needs: [server-test, client-test]
+    run: ':'
+  - name: server-build
+    needs: [server-test]
+    run: sh scripts/scala.sh compile server/project.scala server/src/main/scala server/example
+  - name: client-build
+    needs: [client-test]
+    run: bun run build
+  - name: build
+    needs: [server-build, client-build]
+    run: ':'
+  - name: run
+    run: sh scripts/scala.sh run server/project.scala server/src/main/scala server/example --main-class sproutexample.Main
+  - name: server-package
+    needs: [server-build]
+    run: |
+      . ./config.env
+      mkdir -p server/dist
+      sh scripts/scala.sh --power publish server/project.scala server/src/main/scala --organization lab.yjgbg --name sprout-http --project-version "$PROJECT_VERSION" --publish-repository "$PWD/server/dist/maven" --doc=false --sources --signer none
+      sh scripts/scala.sh --power package server/project.scala server/src/main/scala server/example --assembly --preamble=false --main-class sproutexample.Main -o server/dist/sprout-example.jar --force
+  - name: integration-test
+    needs: [build, server-package]
+    run: bun scripts/integration.ts
+  - name: package
+    needs: [integration-test]
+    run: ./scripts/package.sh
   - name: upload
     needs: [package]
     run: ./scripts/upload.sh

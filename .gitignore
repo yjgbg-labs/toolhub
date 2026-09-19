@@ -9,3 +9,6 @@ example/target/
 .cache/
 artifacts/
 .groot/
+node_modules/
+dist/
+.scala-build/

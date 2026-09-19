@@ -4,9 +4,7 @@ set -eu
 mkdir -p artifacts
 stage=$(mktemp -d artifacts/package.XXXXXX)
 trap 'rm -rf "$stage"' EXIT HUP INT TERM
-scala_version=$(sed -n 's/ThisBuild \/ scalaVersion := "\([^"]*\)"/\1/p' build.sbt)
-cp "target/scala-$scala_version/"sprout-http_3-*.jar "$stage/"
-cp "target/scala-$scala_version/"sprout-http_3-*.pom "$stage/"
+bun scripts/stage.ts "$stage"
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -czf artifacts/package.tar.gz -C "$stage" .
 hash=$(sha256sum artifacts/package.tar.gz | cut -d ' ' -f 1)
 name="$PROJECT_NAME-$hash.tar.gz"

@@ -1,0 +1,53 @@
+#!/usr/bin/env bun
+import { ApiClient, type ClientOptions } from "./api";
+import { commandTree, help } from "./commands/tree";
+import { operationInput, takeOption } from "./commands/input";
+
+export async function run(args: string[], env: Record<string, string | undefined> = process.env): Promise<string> {
+  const options: ClientOptions = {
+    baseUrl: env.SPROUT_URL ?? "http://127.0.0.1:8080",
+    schemaUrl: env.SPROUT_OPENAPI_URL,
+    headers: env.SPROUT_TOKEN ? { Authorization: `Bearer ${env.SPROUT_TOKEN}` } : {},
+  };
+  const rest: string[] = [];
+  let showHelp = false;
+  for (let i = 0; i < args.length;) {
+    const arg = args[i]!;
+    if (arg === "--help" || arg === "-h") { showHelp = true; i++; continue; }
+    if (arg.startsWith("--")) {
+      const [name, value, consumed] = takeOption(args, i);
+      if (name === "url") options.baseUrl = value;
+      else if (name === "schema") options.schemaUrl = value;
+      else if (name === "timeout") options.timeoutMs = Number(value);
+      else rest.push(...args.slice(i, i + consumed));
+      i += consumed;
+    } else { rest.push(arg); i++; }
+  }
+  const client = await ApiClient.connect(options);
+  let node = commandTree(client.catalog);
+  const path: string[] = [];
+  let offset = 0;
+  while (offset < rest.length && !rest[offset]!.startsWith("--")) {
+    const segment = rest[offset++]!;
+    const next = node.children.get(segment);
+    if (!next) throw new Error(`Unknown command: ${[...path, segment].join(" ")}\n${help(node, path)}`);
+    node = next;
+    path.push(segment);
+  }
+  if (showHelp || !node.operation) {
+    if (rest.length > offset && !showHelp) throw new Error("Choose an operation before passing parameters");
+    return help(node, path);
+  }
+  const result = await client.call(node.operation.id, await operationInput(node.operation, rest.slice(offset)));
+  return typeof result.body === "string" ? result.body : result.body === null ? "" : JSON.stringify(result.body, null, 2);
+}
+
+if (import.meta.main) {
+  try {
+    const output = await run(process.argv.slice(2));
+    if (output) console.log(output);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+}

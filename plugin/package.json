@@ -1,0 +1,10 @@
+{
+  "name": "opencode-sprout-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@opencode/plugin": "2.0.9",
+    "@sprout/cli": "workspace:*"
+  }
+}

@@ -73,6 +73,15 @@ object dsl:
     init(using endpoint)
     scope.app.endpoints += endpoint
 
+  def operation(id: String)(init: EndpointScope ?=> Unit)(using scope: RoutesScope): Unit =
+    scope.gate.check()
+    require(id.split("\\.", -1).forall(_.matches("[A-Za-z][A-Za-z0-9_-]*")), s"Invalid operationId: $id")
+    val path = PathPattern.parse(PathPattern.join(scope.prefix, "/" + id.replace('.', '/')))
+    val endpoint = new EndpointScope(scope, "POST", path, Some(id))
+    endpoint.operationIdValue = Some(id)
+    init(using endpoint)
+    scope.app.endpoints += endpoint
+
   def get(path: String = "")(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register("GET", path)(init)
   def post(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register("POST", path)(init)
   def put(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register("PUT", path)(init)

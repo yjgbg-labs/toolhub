@@ -49,7 +49,8 @@ final class ResponseScope private[sprout] (private[sprout] val gate: Configurati
 final class EndpointScope private[sprout] (
     private[sprout] val group: RoutesScope,
     method: String,
-    path: PathPattern
+    path: PathPattern,
+    operation: Option[String] = None
 ) extends DescriptionScope with TagScope:
   private[sprout] def gate = group.gate
   private val owner = new Object
@@ -122,19 +123,25 @@ final class EndpointScope private[sprout] (
   private[sprout] def freeze(): BoundEndpoint =
     val inputs = inputFactories.map(_()).toVector
     val outputs = outputFactories.map(_()).toVector
-    val identity = s"$method ${path.value}"
+    val route = operation.fold(path) { _ =>
+      val suffix = inputs.filter(i => i.location == InputLocation.Path && !path.parameters.contains(i.name))
+        .map(i => s"/{${i.name}}").mkString
+      PathPattern.parse(PathPattern.join(path.value, suffix))
+    }
+    val identity = s"$method ${route.value}"
     require(handler.nonEmpty, s"Missing handler: $identity")
     require(outputs.nonEmpty, s"No responses declared: $identity")
     require(outputs.map(_.status).distinct.size == outputs.size, s"Duplicate response status: $identity")
     val keys = inputs.map(i => i.location -> (if i.location == InputLocation.Header then i.name.toLowerCase(java.util.Locale.ROOT) else i.name))
     require(keys.distinct.size == keys.size, s"Duplicate input: $identity")
     require(inputs.count(_.location == InputLocation.Body) <= 1, s"Only one request body is allowed: $identity")
-    require(inputs.filter(_.location == InputLocation.Path).map(_.name).toSet == path.parameters.toSet,
+    require(inputs.filter(_.location == InputLocation.Path).map(_.name).toSet == route.parameters.toSet,
       s"Path parameters do not match template: $identity")
     val automaticId = method.toLowerCase + "_" + path.value.replaceAll("[^A-Za-z0-9]", "_").stripPrefix("_")
     val id = operationIdValue.getOrElse(automaticId)
     require(id.nonEmpty, s"Empty operationId: $identity")
-    BoundEndpoint(EndpointSpec(owner, method, path, id, summaryValue, descriptionValue,
+    require(operation.forall(_ == id), "An operation's generated operationId cannot be overridden")
+    BoundEndpoint(EndpointSpec(owner, method, route, id, summaryValue, descriptionValue,
       (group.inheritedTags ++ tags).distinct, inputs, outputs), handler.get)
 
 final class AppScope private[sprout] () extends ConfigScope:

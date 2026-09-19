@@ -12,7 +12,7 @@ object Main extends IOApp.Simple:
     val app = httpApp {
       server {
         host("127.0.0.1")
-        port(8080)
+        port(sys.env.get("SPROUT_PORT").fold(8080)(_.toInt))
       }
 
       openapi {
@@ -24,16 +24,15 @@ object Main extends IOApp.Simple:
       }
 
       routes {
-        get("/health") {
+        operation("health") {
           val ok = response.text(200) {}
           handle { ok("ok") }
         }
 
-        group("/users") {
+        group("") {
           tag("Users")
 
-          get("/{id}") {
-            operationId("getUser")
+          operation("users.get") {
             summary("Find a user")
             val id = path[Long]("id") { minimum(1L) }
             val ok = response.json[User](200) { description("User found") }
@@ -46,8 +45,7 @@ object Main extends IOApp.Simple:
             }
           }
 
-          get() {
-            operationId("listUsers")
+          operation("users.list") {
             val limit = query[Int]("limit") {
               default(20)
               minimum(1)
@@ -57,8 +55,7 @@ object Main extends IOApp.Simple:
             handle { users.get.map(all => ok(all.values.toList.sortBy(_.id).take(limit.value))) }
           }
 
-          post("") {
-            operationId("createUser")
+          operation("users.create") {
             val input = body.json[CreateUser] {
               constraint[CreateUser]("Name must not be blank")(_.name.trim.nonEmpty)
             }
