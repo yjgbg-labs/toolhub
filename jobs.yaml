@@ -41,15 +41,9 @@ jobs:
   - name: package
     needs: [integration-test]
     run: ./scripts/package.sh
-  - name: upload
-    needs: [package]
-    run: ./scripts/upload.sh
   - name: server-deploy
-    needs: [upload]
     run: sh scripts/deploy.sh server
   - name: cli-deploy
-    needs: [upload]
     run: sh scripts/deploy.sh cli
   - name: plugin-deploy
-    needs: [upload]
     run: sh scripts/deploy.sh plugin
