@@ -10,8 +10,13 @@ jobs:
       bun run check
       bun run test
   - name: test
-    needs: [server-test, client-test]
+    needs: [server-test, client-test, deployment-test]
     run: ':'
+  - name: deployment-test
+    needs: [install]
+    run: |
+      bun run check
+      bun test scripts/deploy.test.ts
   - name: server-build
     needs: [server-test]
     run: sh scripts/scala.sh compile server/project.scala server/src/main/scala server/example
@@ -19,7 +24,7 @@ jobs:
     needs: [client-test]
     run: bun run build
   - name: build
-    needs: [server-build, client-build]
+    needs: [server-build, client-build, deployment-test]
     run: ':'
   - name: run
     run: sh scripts/scala.sh run server/project.scala server/src/main/scala server/example --main-class sproutexample.Main
@@ -39,3 +44,12 @@ jobs:
   - name: upload
     needs: [package]
     run: ./scripts/upload.sh
+  - name: server-deploy
+    needs: [upload]
+    run: sh scripts/deploy.sh server
+  - name: cli-deploy
+    needs: [upload]
+    run: sh scripts/deploy.sh cli
+  - name: plugin-deploy
+    needs: [upload]
+    run: sh scripts/deploy.sh plugin
