@@ -1,8 +1,8 @@
-package sproutexample
+package groot
 
 import cats.effect.{IO, IOApp, Ref, Resource}
 import sprout.dsl.*
-import sprout.schedule.{Scheduler, ScheduleRoutes}
+import groot.schedule.{Scheduler, ScheduleRoutes}
 
 case class User(id: Long, name: String) derives JsonModel
 case class CreateUser(name: String) derives JsonModel

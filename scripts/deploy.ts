@@ -121,7 +121,7 @@ async function prepareRelease(config: DeploymentConfig, run: Run): Promise<strin
     await Bun.write(file, bytes);
     await mkdir(payload);
     await run(["tar", "-xzf", file, "--no-same-owner", "-C", payload]);
-    for (const entry of ["server/sprout-example.jar", "cli/dist/sprout.js", "plugin/dist/index.js", "plugin/package.json"]) {
+    for (const entry of ["server/groot.jar", "cli/dist/sprout.js", "plugin/dist/index.js", "plugin/package.json"]) {
       if (!(await stat(join(payload, entry)))?.isFile()) throw new Error(`Missing artifact file: ${entry}`);
     }
     await writeFile(join(payload, receipt), JSON.stringify({ artifact: config.artifact, sha256: config.sha256 }));
@@ -158,7 +158,7 @@ function unitQuote(value: string, exec = false): string {
 export function serviceUnit(config: DeploymentConfig): string {
   const home = join(config.root, "server");
   const path = [...new Set([dirname(config.bun), dirname(config.groot), "/usr/local/bin", "/usr/bin", "/bin"])].join(":");
-  const command = [config.groot, "use-jdk", config.jdk, "--", "java", "-XX:ActiveProcessorCount=4", "-jar", join(home, "current/sprout-example.jar")];
+  const command = [config.groot, "use-jdk", config.jdk, "--", "java", "-XX:ActiveProcessorCount=4", "-jar", join(home, "current/groot.jar")];
   return `# ${marker}
 [Unit]
 Description=Sprout HTTP server
@@ -247,6 +247,8 @@ export default {
 
 if (import.meta.main) {
   const component = process.argv[2];
-  if (!["server", "cli", "plugin"].includes(component ?? "")) throw new Error("Usage: deploy.ts server|cli|plugin");
-  await deploy(component as Component, configFromEnv());
+  const components: Component[] = ["server", "cli", "plugin"];
+  if (component !== "all" && !components.includes(component as Component)) throw new Error("Usage: deploy.ts server|cli|plugin|all");
+  const config = configFromEnv();
+  for (const target of component === "all" ? components : [component as Component]) await deploy(target, config);
 }

@@ -1,4 +1,4 @@
-package sprout.schedule
+package groot.schedule
 
 import sprout.{ErrorBody, RoutesScope}
 import sprout.dsl.*

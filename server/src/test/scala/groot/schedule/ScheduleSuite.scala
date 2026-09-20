@@ -1,4 +1,4 @@
-package sprout.schedule
+package groot.schedule
 
 import cats.effect.{Deferred, IO, Ref, Resource}
 import cats.syntax.all.*

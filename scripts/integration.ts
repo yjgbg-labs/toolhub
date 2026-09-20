@@ -8,7 +8,7 @@ const config = await Bun.file("config.env").text();
 const major = config.match(/^JDK_MAJOR=(\d+)$/m)?.[1];
 if (!major) throw new Error("Missing JDK_MAJOR");
 const home = await mkdtemp("/tmp/opencode/sprout-integration-");
-const server = Bun.spawn(["groot", "use-jdk", major, "--", "java", "-XX:ActiveProcessorCount=4", "-jar", "server/dist/sprout-example.jar"], {
+const server = Bun.spawn(["groot", "use-jdk", major, "--", "java", "-XX:ActiveProcessorCount=4", "-jar", "server/dist/groot.jar"], {
   env: { ...process.env, SPROUT_PORT: "0", SPROUT_HOME: home }, stdout: "pipe", stderr: "pipe", detached: true,
 });
 let logs = "";

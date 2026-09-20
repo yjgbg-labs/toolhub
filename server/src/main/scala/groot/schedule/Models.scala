@@ -1,4 +1,4 @@
-package sprout.schedule
+package groot.schedule
 
 import io.circe.{Decoder, DecodingFailure}
 import sprout.JsonModel

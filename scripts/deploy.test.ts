@@ -11,7 +11,7 @@ async function bundle(version: string) {
   const directory = join(temporary, `bundle-${version}`);
   const payload = join(directory, "payload");
   for (const path of ["server", "cli/dist", "plugin/dist"]) await mkdir(join(payload, path), { recursive: true });
-  await writeFile(join(payload, "server/sprout-example.jar"), "test JAR");
+  await writeFile(join(payload, "server/groot.jar"), "test JAR");
   await writeFile(join(payload, "cli/dist/sprout.js"), `console.log(JSON.stringify({ version: ${JSON.stringify(version)}, url: process.env.SPROUT_URL, args: process.argv.slice(2) }));`);
   await writeFile(join(payload, "plugin/dist/index.js"), `export default { id: "sprout", setup(ctx) { return ctx.options; } };`);
   await writeFile(join(payload, "plugin/package.json"), JSON.stringify({ name: "opencode-sprout-plugin", type: "module", dependencies: {} }));
@@ -99,7 +99,7 @@ test("server deploy renders a valid user unit, uses Groot JDK selection, restart
     expect(content).toContain(`SPROUT_PORT=${api.config.port}`);
     expect(content).toContain(`SPROUT_HOME=${api.config.home}`);
     expect(content).toContain("WantedBy=default.target");
-    expect(content).toContain("data '$$ 100%%/server/current/sprout-example.jar");
+    expect(content).toContain("data '$$ 100%%/server/current/groot.jar");
     expect(commands).toContainEqual([api.config.groot, "use-jdk", "25", "--", "java", "--version"]);
     expect(commands.filter(args => args[0] === "systemctl").map(args => args[2])).toEqual(["daemon-reload", "enable", "restart", "is-active", "is-enabled"]);
   } finally { api.stop(); }

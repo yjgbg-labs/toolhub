@@ -1,4 +1,4 @@
-package sprout.schedule
+package groot.schedule
 
 import cats.effect.{IO, Resource}
 import cats.effect.std.{Mutex, Supervisor}

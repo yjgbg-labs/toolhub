@@ -19,7 +19,7 @@ jobs:
       bun test scripts/deploy.test.ts scripts/migrate-schedule.test.ts
   - name: server-build
     needs: [server-test]
-    run: sh scripts/scala.sh compile server/project.scala server/src/main/scala server/example
+    run: sh scripts/scala.sh compile server/project.scala server/src/main/scala
   - name: client-build
     needs: [client-test]
     run: bun run build
@@ -27,20 +27,23 @@ jobs:
     needs: [server-build, client-build, deployment-test]
     run: ':'
   - name: run
-    run: sh scripts/scala.sh run server/project.scala server/src/main/scala server/example --main-class sproutexample.Main
+    run: sh scripts/scala.sh run server/project.scala server/src/main/scala --main-class groot.Main
   - name: server-package
     needs: [server-build]
     run: |
       . ./config.env
       mkdir -p server/dist
-      sh scripts/scala.sh --power publish server/project.scala server/src/main/scala --organization lab.yjgbg --name sprout-http --project-version "$PROJECT_VERSION" --publish-repository "$PWD/server/dist/maven" --doc=false --sources --signer none
-      sh scripts/scala.sh --power package server/project.scala server/src/main/scala server/example --assembly --preamble=false --main-class sproutexample.Main -o server/dist/sprout-example.jar --force
+      sh scripts/scala.sh --power publish server/project.scala server/src/main/scala/sprout --organization lab.yjgbg --name sprout-http --project-version "$PROJECT_VERSION" --publish-repository "$PWD/server/dist/maven" --doc=false --sources --signer none
+      sh scripts/scala.sh --power package server/project.scala server/src/main/scala --assembly --preamble=false --main-class groot.Main -o server/dist/groot.jar --force
   - name: integration-test
     needs: [build, server-package]
     run: bun scripts/integration.ts
   - name: package
     needs: [integration-test]
     run: ./scripts/package.sh
+  - name: deploy
+    needs: [package]
+    run: sh scripts/deploy.sh all
   - name: server-deploy
     run: sh scripts/deploy.sh server
   - name: cli-deploy

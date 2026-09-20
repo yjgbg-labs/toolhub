@@ -6,7 +6,7 @@ const stage = process.argv[2];
 if (!stage) throw new Error("Expected a staging directory");
 await mkdir(join(stage, "server"), { recursive: true });
 await cp("server/dist/maven", join(stage, "server/maven"), { recursive: true });
-await cp("server/dist/sprout-example.jar", join(stage, "server/sprout-example.jar"));
+await cp("server/dist/groot.jar", join(stage, "server/groot.jar"));
 for (const name of ["cli", "plugin"]) {
   await mkdir(join(stage, name), { recursive: true });
   await cp(`${name}/dist`, join(stage, name, "dist"), { recursive: true });
