@@ -1,18 +1,11 @@
 package groot
 
-import cats.effect.{IO, IOApp, Ref, Resource}
+import cats.effect.{IO, IOApp}
 import sprout.dsl.*
 import groot.schedule.{Scheduler, ScheduleRoutes}
 
-case class User(id: Long, name: String) derives JsonModel
-case class CreateUser(name: String) derives JsonModel
-case class ApiError(code: String, message: String) derives JsonModel
-
 object Main extends IOApp.Simple:
-  def run: IO[Unit] = (for
-    scheduler <- Scheduler.resource()
-    users <- Resource.eval(Ref.of[IO, Map[Long, User]](Map(1L -> User(1L, "Groot"))))
-  yield (scheduler, users)).use { (scheduler, users) =>
+  def run: IO[Unit] = Scheduler.resource().use { scheduler =>
     val app = httpApp {
       server {
         host("127.0.0.1")
@@ -31,44 +24,6 @@ object Main extends IOApp.Simple:
         ScheduleRoutes.register(scheduler)
         operation[String]("health") {
           handle { "ok" }
-        }
-
-        group("users") {
-          description("Manage users")
-
-          operation[User]("get") {
-            summary("Find a user")
-            val id = path[Long]("id") { minimum(1L) }
-            val missing = response.json[ApiError](404) { description("User not found") }
-            handle {
-              users.get.map(_.get(id.value) match
-                case Some(user) => user
-                case None => missing(ApiError("not_found", "User not found"))
-              )
-            }
-          }
-
-          operation[List[User]]("list") {
-            val limit = query[Int]("limit") {
-              default(20)
-              minimum(1)
-              maximum(100)
-            }
-            handle { users.get.map(all => all.values.toList.sortBy(_.id).take(limit.value)) }
-          }
-
-          operation[User]("create") {
-            val input = body.json[CreateUser] {
-              constraint[CreateUser]("Name must not be blank")(_.name.trim.nonEmpty)
-            }
-            handle {
-              users.modify { all =>
-                val id = all.keys.maxOption.getOrElse(0L) + 1
-                val user = User(id, input.value.name)
-                all.updated(id, user) -> user
-              }
-            }
-          }
         }
       }
     }
