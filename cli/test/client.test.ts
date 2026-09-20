@@ -48,11 +48,11 @@ test("text, empty and HTTP error responses have consistent outcomes", async () =
 
 test("hierarchical CLI help lists groups and location-qualified ambiguous parameters", async () => {
   const root = await run(["--url", api.baseUrl, "--help"], {});
-  expect(root).toContain("admin …  Administration");
+  expect(root).toContain("admin  Administration");
   expect(root).not.toContain("Administrative operations");
   expect(root).not.toContain("unused");
   expect(await run(["--url", api.baseUrl, "admin", "--help"], {})).toContain("Administration\nAdministrative operations");
-  expect(await run(["--url", api.baseUrl, "admin", "--help"], {})).toContain("users …  Administer users");
+  expect(await run(["--url", api.baseUrl, "admin", "--help"], {})).toContain("users  Administer users");
   expect(await run(["--url", api.baseUrl, "admin", "users", "--help"], {})).toContain("get  Get a user");
   const leaf = await run(["--url", api.baseUrl, "admin", "users", "get", "--help"], {});
   expect(leaf).toContain("--path.id <string>");
@@ -83,8 +83,8 @@ test("CLI discovers changed operation IDs from OpenAPI on each invocation", asyn
   try {
     dynamic.doc.paths["/health"].get.operationId = "reports.daily.summary";
     dynamic.doc.tags.push({ name: "reports", description: "Report operations" }, { name: "reports.daily", description: "Daily reports" });
-    expect(await run(["--help"], env)).toContain("reports …  Report operations");
-    expect(await run(["reports", "--help"], env)).toContain("daily …  Daily reports");
+    expect(await run(["--help"], env)).toContain("reports  Report operations");
+    expect(await run(["reports", "--help"], env)).toContain("daily  Daily reports");
     expect(await run(["reports", "daily", "--help"], env)).toContain("summary");
     expect(await run(["reports", "daily", "summary"], env)).toBe("ok");
     await expect(run(["health"], env)).rejects.toThrow("Unknown command");

@@ -60,12 +60,12 @@ try {
   const cli = (...args: string[]) => cliWithInput(args);
   const rootHelp = await cli("--help");
   assert.equal(rootHelp.code, 0, rootHelp.stderr);
-  assert.match(rootHelp.stdout, /schedule …  Manage scheduled jobs/);
-  assert.match(rootHelp.stdout, /users …  Manage users/);
+  assert.match(rootHelp.stdout, /schedule  Manage scheduled jobs/);
+  assert.match(rootHelp.stdout, /users  Manage users/);
   const scheduleHelp = await cli("schedule", "--help");
   assert.equal(scheduleHelp.code, 0, scheduleHelp.stderr);
   assert.match(scheduleHelp.stdout, /Manage scheduled jobs/);
-  assert.match(scheduleHelp.stdout, /config …  Manage scheduler configuration/);
+  assert.match(scheduleHelp.stdout, /config  Manage scheduler configuration/);
   const help = await cli("users", "--help");
   assert.equal(help.code, 0, help.stderr);
   assert.match(help.stdout, /create/);

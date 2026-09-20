@@ -41,7 +41,7 @@ export function help(node: CommandNode, path: string[]): string {
   }
   if (node.children.size) {
     lines.push("", "Commands:");
-    for (const [name, child] of node.children) lines.push(`  ${name}${child.children.size ? " …" : ""}  ${(child.description ?? child.operation?.description)?.split("\n")[0] ?? ""}`.trimEnd());
+    for (const [name, child] of node.children) lines.push(`  ${name}  ${(child.description ?? child.operation?.description)?.split("\n")[0] ?? ""}`.trimEnd());
   }
   lines.push("", "Connection: --url <base-url>, --schema <openapi-url>, --timeout <milliseconds>",
     "Environment: SPROUT_URL, SPROUT_OPENAPI_URL, SPROUT_TOKEN", "  --help, -h  Show help");
