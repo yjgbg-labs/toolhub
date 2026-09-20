@@ -1,14 +1,6 @@
-target/
-project/target/
-project/project/
-example/target/
 .bsp/
-.bloop/
 .metals/
-.idea/
-.cache/
 artifacts/
-.groot/
 node_modules/
 dist/
 .scala-build/
