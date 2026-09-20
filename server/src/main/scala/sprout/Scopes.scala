@@ -47,7 +47,7 @@ final class InputScope[A] private[sprout] (private[sprout] val gate: Configurati
 
 final class ResponseScope private[sprout] (private[sprout] val gate: ConfigurationGate) extends DescriptionScope
 
-final class EndpointScope private[sprout] (
+final class EndpointScope[A] private[sprout] (
     private[sprout] val group: RoutesScope,
     method: String,
     path: PathPattern,
@@ -60,6 +60,11 @@ final class EndpointScope private[sprout] (
   private var handler: Option[RequestContext => IO[EndpointResult]] = None
   private[sprout] var operationIdValue: Option[String] = None
   private[sprout] var summaryValue: Option[String] = None
+  private[sprout] var successValue: Option[Output[A]] = None
+
+  private[sprout] def result(value: A | EndpointResult): EndpointResult = value match
+    case response: EndpointResult => response
+    case success => successValue.get.apply(success.asInstanceOf[A])
 
   private[sprout] def parameter[A](name: String, location: InputLocation)(using codec: ParamCodec[A]): Input[A] =
     gate.check()
@@ -149,7 +154,7 @@ final class AppScope private[sprout] () extends ConfigScope:
   private[sprout] val gate = new ConfigurationGate
   private[sprout] val serverScope = new ServerScope(gate)
   private[sprout] val openApiScope = new OpenApiScope(gate)
-  private[sprout] val endpoints = ArrayBuffer.empty[EndpointScope]
+  private[sprout] val endpoints = ArrayBuffer.empty[EndpointScope[?]]
   private[sprout] val groups = ArrayBuffer.empty[RoutesScope]
 
   private[sprout] def freeze(): Application =

@@ -29,47 +29,43 @@ object Main extends IOApp.Simple:
 
       routes {
         ScheduleRoutes.register(scheduler)
-        operation("health") {
-          val ok = response.text(200) {}
-          handle { ok("ok") }
+        operation[String]("health") {
+          handle { "ok" }
         }
 
         group("users") {
           description("Manage users")
 
-          operation("get") {
+          operation[User]("get") {
             summary("Find a user")
             val id = path[Long]("id") { minimum(1L) }
-            val ok = response.json[User](200) { description("User found") }
             val missing = response.json[ApiError](404) { description("User not found") }
             handle {
               users.get.map(_.get(id.value) match
-                case Some(user) => ok(user)
+                case Some(user) => user
                 case None => missing(ApiError("not_found", "User not found"))
               )
             }
           }
 
-          operation("list") {
+          operation[List[User]]("list") {
             val limit = query[Int]("limit") {
               default(20)
               minimum(1)
               maximum(100)
             }
-            val ok = response.json[List[User]](200) {}
-            handle { users.get.map(all => ok(all.values.toList.sortBy(_.id).take(limit.value))) }
+            handle { users.get.map(all => all.values.toList.sortBy(_.id).take(limit.value)) }
           }
 
-          operation("create") {
+          operation[User]("create") {
             val input = body.json[CreateUser] {
               constraint[CreateUser]("Name must not be blank")(_.name.trim.nonEmpty)
             }
-            val created = response.json[User](201) { description("User created") }
             handle {
               users.modify { all =>
                 val id = all.keys.maxOption.getOrElse(0L) + 1
                 val user = User(id, input.value.name)
-                all.updated(id, user) -> created(user)
+                all.updated(id, user) -> user
               }
             }
           }

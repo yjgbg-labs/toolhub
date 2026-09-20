@@ -50,7 +50,7 @@ class ScheduleSuite extends CatsEffectSuite:
       val http = app(scheduler)
       for
         created <- http.httpApp(request("/schedule/new/sample", Some("""{"every":"1h","command":["/bin/true"]}""")))
-        _ = assertEquals(created.status, Status.Created)
+        _ = assertEquals(created.status, Status.Ok)
         _ <- new Store(home).writeState("sample", JobState(Some("2026-09-19T00:00:00Z"), Some(7)))
         invalid <- http.httpApp(request("/schedule/new/sample", Some("""{"every":"1h","command":["/bin/true"],"resource":{"cpu":1}}""")))
         _ = assertEquals(invalid.status, Status.BadRequest)
@@ -68,9 +68,11 @@ class ScheduleSuite extends CatsEffectSuite:
         resetJson <- reset.as[Json]
         _ = assertEquals(resetJson, Json.obj("lastRunAt" -> Json.Null, "lastExitCode" -> Json.Null))
         deleted <- http.httpApp(request("/schedule/delete/sample"))
-        _ = assertEquals(deleted.status, Status.NoContent)
+        _ = assertEquals(deleted.status, Status.Ok)
+        deletedBody <- deleted.as[String]
+        _ = assertEquals(deletedBody, "")
         duplicate <- http.httpApp(request("/schedule/delete/sample"))
-        _ = assertEquals(duplicate.status, Status.NoContent)
+        _ = assertEquals(duplicate.status, Status.Ok)
         openapi <- http.httpApp(Request[IO](uri = Uri.unsafeFromString("/openapi.json"))).flatMap(_.as[Json])
       yield assertEquals(openapi.hcursor.downField("paths").focus.get.asObject.get.size, 7)
     } }

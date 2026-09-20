@@ -103,7 +103,7 @@ class HttpSuite extends CatsEffectSuite:
     val app = httpApp {
       routes {
         post("/users") {
-          val input = body.json[CreateUser](using counted, summon[sprout.EndpointScope])
+          val input = body.json[CreateUser](using counted, summon[sprout.EndpointScope[EndpointResult]])
           val created = response.json[User](201) {}
           handle { created(User(1L, input.value.name, input.value.nickname)) }
         }

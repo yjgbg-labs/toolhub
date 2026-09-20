@@ -10,12 +10,11 @@ import sprout.dsl.*
 class OperationSuite extends CatsEffectSuite:
   test("operation IDs produce POST routes, ordered path parameters and OpenAPI contracts") {
     val app = httpApp { routes {
-      operation("admin.users.get") {
+      operation[List[String]]("admin.users.get") {
         val tenant = path[String]("tenant")
         val id = path[Long]("id") { minimum(1L) }
         val detail = query[Boolean]("detail") { default(false) }
-        val ok = response.json[List[String]](200) {}
-        handle { ok(List(tenant.value, id.value.toString, detail.value.toString)) }
+        handle { List(tenant.value, id.value.toString, detail.value.toString) }
       }
     } }
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
@@ -34,11 +33,10 @@ class OperationSuite extends CatsEffectSuite:
 
   test("operation routes retain group prefixes and inherit path parameters exactly once") {
     val app = httpApp { routes { group("/api/{tenant}") {
-      operation("users.get") {
+      operation[String]("users.get") {
         val tenant = path[String]("tenant")
         val id = path[Long]("id")
-        val ok = response.text(200) {}
-        handle { ok(s"${tenant.value}:${id.value}") }
+        handle { s"${tenant.value}:${id.value}" }
       }
     } } }
     app.httpApp(Request[IO](Method.POST, Uri.unsafeFromString("/api/acme/users/get/7"))).flatMap(_.as[String])
@@ -47,19 +45,18 @@ class OperationSuite extends CatsEffectSuite:
 
   test("operation identity is valid, immutable and globally unique across route groups") {
     List("", ".users", "users.", "users..list", "users/list").foreach { id =>
-      intercept[IllegalArgumentException] { httpApp { routes { operation(id) {} } } }
+      intercept[IllegalArgumentException] { httpApp { routes { operation[String](id) {} } } }
     }
     intercept[IllegalArgumentException] {
-      httpApp { routes { operation("users.list") {
+      httpApp { routes { operation[String]("users.list") {
         operationId("renamed")
-        val ok = response.text(200) {}
-        handle { ok("ok") }
+        handle { "ok" }
       } } }
     }
     intercept[IllegalArgumentException] {
       httpApp { routes {
         List("/a", "/b").foreach { prefix => group(prefix) {
-          operation("users.list") { val ok = response.text(200) {}; handle { ok("ok") } }
+          operation[String]("users.list") { handle { "ok" } }
         } }
       } }
     }
@@ -70,13 +67,12 @@ class OperationSuite extends CatsEffectSuite:
       group("reports") {
         group("daily") {
           description("Daily reports")
-          operation("get") {
+          operation[String]("get") {
             summary("Get a report")
             description("Report details")
             val tenant = path[String]("tenant")
             val id = path[Int]("id")
-            val ok = response.text(200) { description("Found") }
-            handle { ok(s"${tenant.value}:${id.value}") }
+            handle { s"${tenant.value}:${id.value}" }
           }
         }
         description("Manage reports")
@@ -99,10 +95,10 @@ class OperationSuite extends CatsEffectSuite:
     val app = httpApp { routes {
       group("reports") {
         description("Manage reports")
-        operation("list") { val ok = response.text(200) {}; handle { ok("list") } }
+        operation[String]("list") { handle { "list" } }
       }
       group("reports") {
-        operation("get") { val ok = response.text(200) {}; handle { ok("get") } }
+        operation[String]("get") { handle { "get" } }
       }
     } }
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
@@ -124,9 +120,9 @@ class OperationSuite extends CatsEffectSuite:
     }
     interceptMessage[IllegalArgumentException]("requirement failed: Duplicate operationId") {
       httpApp { routes {
-        operation("reports.list") { val ok = response.text(200) {}; handle { ok("first") } }
+        operation[String]("reports.list") { handle { "first" } }
         group("/api") { group("reports") {
-          operation("list") { val ok = response.text(200) {}; handle { ok("second") } }
+          operation[String]("list") { handle { "second" } }
         } }
       } }
     }

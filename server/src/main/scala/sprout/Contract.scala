@@ -53,16 +53,6 @@ final class OutputDeclaration[A] private[sprout] (
     init(using config)
     this
 
-trait HandlerResult[A]:
-  def suspend(value: => A): IO[EndpointResult]
-
-object HandlerResult:
-  given HandlerResult[EndpointResult] with
-    def suspend(value: => EndpointResult) = IO(value)
-
-  given HandlerResult[IO[EndpointResult]] with
-    def suspend(value: => IO[EndpointResult]) = IO.defer(value)
-
 private[sprout] final case class InputSpec[A](
     handle: Input[A],
     name: String,

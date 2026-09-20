@@ -1,5 +1,6 @@
 package sprout
 
+import cats.effect.IO
 import io.circe.Json
 import scala.util.matching.Regex
 
@@ -75,42 +76,43 @@ object dsl:
     scope.gate.check()
     scope.tags += value
 
-  private def register(method: String, path: String)(init: EndpointScope ?=> Unit)(using scope: RoutesScope): Unit =
+  private def register(method: String, path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using scope: RoutesScope): Unit =
     scope.gate.check()
-    val endpoint = new EndpointScope(scope, method, PathPattern.parse(PathPattern.join(scope.prefix, path)))
+    val endpoint = new EndpointScope[EndpointResult](scope, method, PathPattern.parse(PathPattern.join(scope.prefix, path)))
     init(using endpoint)
     scope.app.endpoints += endpoint
 
-  def operation(id: String)(init: EndpointScope ?=> Unit)(using scope: RoutesScope): Unit =
+  def operation[A](id: String)(init: EndpointScope[A] ?=> Unit)(using scope: RoutesScope, success: SuccessResponse[A]): Unit =
     scope.gate.check()
     require(id.split("\\.", -1).forall(_.matches("[A-Za-z][A-Za-z0-9_-]*")), s"Invalid operationId: $id")
     val qualifiedId = (scope.namespace :+ id).mkString(".")
     val path = PathPattern.parse(PathPattern.join(scope.prefix, "/" + id.replace('.', '/')))
-    val endpoint = new EndpointScope(scope, "POST", path, Some(qualifiedId))
+    val endpoint = new EndpointScope[A](scope, "POST", path, Some(qualifiedId))
     endpoint.operationIdValue = Some(qualifiedId)
+    endpoint.successValue = Some(success.declare(endpoint))
     init(using endpoint)
     scope.app.endpoints += endpoint
 
-  def get(path: String = "")(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register("GET", path)(init)
-  def post(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register("POST", path)(init)
-  def put(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register("PUT", path)(init)
-  def patch(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register("PATCH", path)(init)
-  def delete(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register("DELETE", path)(init)
-  def head(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register("HEAD", path)(init)
-  def options(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register("OPTIONS", path)(init)
+  def get(path: String = "")(init: EndpointScope[EndpointResult] ?=> Unit)(using RoutesScope): Unit = register("GET", path)(init)
+  def post(path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using RoutesScope): Unit = register("POST", path)(init)
+  def put(path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using RoutesScope): Unit = register("PUT", path)(init)
+  def patch(path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using RoutesScope): Unit = register("PATCH", path)(init)
+  def delete(path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using RoutesScope): Unit = register("DELETE", path)(init)
+  def head(path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using RoutesScope): Unit = register("HEAD", path)(init)
+  def options(path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using RoutesScope): Unit = register("OPTIONS", path)(init)
 
-  def operationId(value: String)(using scope: EndpointScope): Unit =
+  def operationId(value: String)(using scope: EndpointScope[?]): Unit =
     scope.gate.check()
     scope.operationIdValue = Some(value)
 
-  def summary(value: String)(using scope: EndpointScope): Unit =
+  def summary(value: String)(using scope: EndpointScope[?]): Unit =
     scope.gate.check()
     scope.summaryValue = Some(value)
 
-  def path[A](using codec: ParamCodec[A], scope: EndpointScope)(name: String): Input[A] = scope.parameter[A](name, InputLocation.Path)
-  def query[A](using codec: ParamCodec[A], scope: EndpointScope)(name: String): Input[A] = scope.parameter[A](name, InputLocation.Query)
-  def header[A](using codec: ParamCodec[A], scope: EndpointScope)(name: String): Input[A] = scope.parameter[A](name, InputLocation.Header)
-  def cookie[A](using codec: ParamCodec[A], scope: EndpointScope)(name: String): Input[A] = scope.parameter[A](name, InputLocation.Cookie)
+  def path[A](using codec: ParamCodec[A], scope: EndpointScope[?])(name: String): Input[A] = scope.parameter[A](name, InputLocation.Path)
+  def query[A](using codec: ParamCodec[A], scope: EndpointScope[?])(name: String): Input[A] = scope.parameter[A](name, InputLocation.Query)
+  def header[A](using codec: ParamCodec[A], scope: EndpointScope[?])(name: String): Input[A] = scope.parameter[A](name, InputLocation.Header)
+  def cookie[A](using codec: ParamCodec[A], scope: EndpointScope[?])(name: String): Input[A] = scope.parameter[A](name, InputLocation.Cookie)
 
   def default[A](value: A)(using scope: InputScope[A]): Unit =
     scope.gate.check()
@@ -149,21 +151,25 @@ object dsl:
       Some(SchemaConstraint("pattern", Json.fromString(value))))
 
   object body:
-    def json[A: JsonModel](using scope: EndpointScope): Input[A] = scope.jsonBody[A]
-    def json[A: JsonModel](init: InputScope[A] ?=> Unit)(using scope: EndpointScope): Input[A] = scope.jsonBody[A].apply(init)
+    def json[A: JsonModel](using scope: EndpointScope[?]): Input[A] = scope.jsonBody[A]
+    def json[A: JsonModel](init: InputScope[A] ?=> Unit)(using scope: EndpointScope[?]): Input[A] = scope.jsonBody[A].apply(init)
 
   object response:
-    def json[A](status: Int)(init: ResponseScope ?=> Unit)(using model: JsonModel[A], scope: EndpointScope): Output[A] =
+    def json[A](status: Int)(init: ResponseScope ?=> Unit)(using model: JsonModel[A], scope: EndpointScope[?]): Output[A] =
       scope.output[A](status, Some("application/json"), Some(model.schema), value => Some(model.encoder(value).noSpaces)).configure(init)
 
-    def text(status: Int)(init: ResponseScope ?=> Unit)(using scope: EndpointScope): Output[String] =
+    def text(status: Int)(init: ResponseScope ?=> Unit)(using scope: EndpointScope[?]): Output[String] =
       scope.output[String](status, Some("text/plain"), Some(JsonModel[String].schema), value => Some(value)).configure(init)
 
-    def empty(status: Int)(init: ResponseScope ?=> Unit)(using scope: EndpointScope): Output[Unit] =
+    def empty(status: Int)(init: ResponseScope ?=> Unit)(using scope: EndpointScope[?]): Output[Unit] =
       scope.output[Unit](status, None, None, _ => None).configure(init)
 
   extension [A](input: Input[A])
     def value(using context: RequestContext): A = context.read(input)
 
-  def handle[A](logic: RequestContext ?=> A)(using scope: EndpointScope, result: HandlerResult[A]): Unit =
-    scope.setHandler(context => result.suspend(logic(using context)))
+  def handle[A](using scope: EndpointScope[A])(logic: RequestContext ?=> A | EndpointResult | IO[A | EndpointResult]): Unit =
+    scope.setHandler { context => IO.defer {
+      logic(using context) match
+        case effect: IO[?] => effect.asInstanceOf[IO[A | EndpointResult]].map(scope.result)
+        case value => IO.pure(scope.result(value.asInstanceOf[A | EndpointResult]))
+    } }

@@ -35,6 +35,10 @@ void server.exited.then(code => { if (!ready) rejectUrl(new Error(`Server exited
 try {
   const baseUrl = await urlPromise;
   const client = await ApiClient.connect({ baseUrl });
+  const openapi = await fetch(`${baseUrl}/openapi.json`).then(response => response.json());
+  for (const item of Object.values(openapi.paths) as any[]) {
+    assert.deepEqual(Object.keys(item.post.responses).filter(status => /^2\d\d$/.test(status)), ["200"]);
+  }
   const scheduleOperations = ["schedule.config.read", "schedule.config.write", "schedule.delete", "schedule.list", "schedule.log", "schedule.new", "schedule.reset"];
   assert.deepEqual(client.catalog.operations.map(op => op.id), ["health", ...scheduleOperations, "users.create", "users.get", "users.list"]);
   assert.equal((await client.call("health")).body, "ok");
@@ -102,6 +106,10 @@ try {
   assert.equal(namespaces.get("sprout_schedule"), "Manage scheduled jobs");
   assert.equal(namespaces.get("sprout_schedule_config"), "Manage scheduler configuration");
   assert.equal(namespaces.get("sprout_users"), "Manage users");
+  const createTool = tools.find(tool => tool.options.namespace === "sprout_users" && tool.name === "create")!;
+  const pluginCreate = (await createTool.execute({ body: { name: "Grace" } }, {})).output;
+  assert.equal(pluginCreate.status, 200);
+  assert.equal(pluginCreate.body.name, "Grace");
   const configuration = { resources: { cpu: 1 }, tickMs: 20, jobs: {} };
   const write = await cliWithInput(["schedule", "config", "write", "--body", "-"], JSON.stringify(configuration));
   assert.equal(write.code, 0, write.stderr);
@@ -141,6 +149,9 @@ try {
   assert.equal(configFile.jobs["integration/a +空"].enabled, false);
   assert.equal(Object.hasOwn(configFile.jobs["integration/a +空"], "lastRunAt"), false);
   assert.equal((await cli("schedule", "delete", "integration/a +空")).code, 0);
+  const deleted = await client.call("schedule.delete", { path: { name: "integration/a +空" } });
+  assert.equal(deleted.status, 200);
+  assert.equal(deleted.body, null);
   assert.deepEqual((await listTool.execute({}, {})).output.body, []);
   const edit = await cli("schedule", "config", "edit");
   assert.equal(edit.code, 1);
