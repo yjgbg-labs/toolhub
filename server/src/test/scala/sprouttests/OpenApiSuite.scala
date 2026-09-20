@@ -153,6 +153,13 @@ class OpenApiSuite extends FunSuite:
     import scala.jdk.CollectionConverters.*
     val app = httpApp {
       routes {
+        group("reports") {
+          description("Manage reports")
+          group("daily") {
+            description("Daily reports")
+            operation("read") { val ok = response.text(200) {}; handle { ok("report") } }
+          }
+        }
         get("/trees/{id}") {
           val id = path[Long]("id") { minimum(1L) }
           val color = query[Option[String]]("color")

@@ -59,9 +59,17 @@ object dsl:
     app.gate.check()
     init(using new RoutesScope(app, "", None))
 
-  def group(prefix: String)(init: RoutesScope ?=> Unit)(using scope: RoutesScope): Unit =
+  def group(name: String)(init: RoutesScope ?=> Unit)(using scope: RoutesScope): Unit =
     scope.gate.check()
-    init(using new RoutesScope(scope.app, PathPattern.join(scope.prefix, prefix), Some(scope)))
+    val named = name.nonEmpty && !name.startsWith("/")
+    require(!named || name.matches("[A-Za-z][A-Za-z0-9_-]*"), s"Invalid operation group: $name")
+    val namespace = if named then scope.namespace :+ name else scope.namespace
+    val prefix = PathPattern.join(scope.prefix, if named then s"/$name" else name)
+    val child = new RoutesScope(scope.app, prefix, Some(scope), namespace)
+    if named then
+      child.tags += namespace.mkString(".")
+      scope.app.groups += child
+    init(using child)
 
   def tag(value: String)(using scope: TagScope): Unit =
     scope.gate.check()
@@ -76,9 +84,10 @@ object dsl:
   def operation(id: String)(init: EndpointScope ?=> Unit)(using scope: RoutesScope): Unit =
     scope.gate.check()
     require(id.split("\\.", -1).forall(_.matches("[A-Za-z][A-Za-z0-9_-]*")), s"Invalid operationId: $id")
+    val qualifiedId = (scope.namespace :+ id).mkString(".")
     val path = PathPattern.parse(PathPattern.join(scope.prefix, "/" + id.replace('.', '/')))
-    val endpoint = new EndpointScope(scope, "POST", path, Some(id))
-    endpoint.operationIdValue = Some(id)
+    val endpoint = new EndpointScope(scope, "POST", path, Some(qualifiedId))
+    endpoint.operationIdValue = Some(qualifiedId)
     init(using endpoint)
     scope.app.endpoints += endpoint
 

@@ -5,7 +5,7 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.security.MessageDigest
 import scala.collection.immutable.ListMap
 import scala.collection.mutable
-import sttp.apispec.{ExampleSingleValue, Pattern, Schema as ApiSchema, SchemaType}
+import sttp.apispec.{ExampleSingleValue, Pattern, Schema as ApiSchema, SchemaType, Tag}
 import sttp.apispec.openapi.{Response as ApiResponse, *}
 
 private[sprout] object OpenApi:
@@ -78,7 +78,7 @@ private[sprout] object OpenApi:
           case other => throw new IllegalArgumentException(s"Unknown constraint: $other")
       }
 
-  def generate(endpoints: Vector[EndpointSpec], config: OpenApiSettings): OpenAPI =
+  def generate(endpoints: Vector[EndpointSpec], config: OpenApiSettings, groups: Vector[OperationGroup]): OpenAPI =
     val schemas = new Schemas
     val errorSchema = schemas.render(JsonModel[ErrorBody].schema.node())
 
@@ -139,4 +139,5 @@ private[sprout] object OpenApi:
       paths.addPathItem(endpoint.path.value, item)
     }
     OpenAPI(openapi = "3.1.2", info = Info(config.title, config.version, description = config.description),
+      tags = groups.map(group => Tag(group.name, description = group.description)).toList,
       paths = paths, components = Some(Components(schemas = ListMap.from(schemas.components.toVector.sortBy(_._1)))))

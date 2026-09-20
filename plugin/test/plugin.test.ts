@@ -11,21 +11,23 @@ afterAll(() => api.server.stop(true));
 
 test("V2 plugin setup registers all operations for Code Mode with typed inputs, outputs and cleanup", async () => {
   const tools: Info[] = [];
-  const namespaces: string[] = [];
+  const namespaces = new Map<string, string | undefined>();
   let disposed = false;
   const cleanup = await plugin.setup({
     options: { baseUrl: api.baseUrl, namespace: "test" },
     tool: { transform: async (callback: (editor: ToolEditor) => void) => {
       callback({
         add: (tool: Info) => { tools.push(tool); },
-        namespace: ({ name }: { name: string }) => { namespaces.push(name); },
+        namespace: ({ name, description }: { name: string; description?: string }) => { namespaces.set(name, description); },
         list: () => [], get: () => undefined, update: () => {}, remove: () => {},
       });
       return { dispose: async () => { disposed = true; } };
     } },
   } as unknown as Plugin.Context);
   expect(tools).toHaveLength(5);
-  expect(namespaces).toContain("test_admin_users");
+  expect(namespaces.get("test_admin_users")).toBe("Administer users");
+  expect(namespaces.get("test_users")).toBe("Manage users");
+  expect(namespaces.get("test")).toBe("Client contract tests — test");
   const create = tools.find(tool => tool.options?.namespace === "test_users" && tool.name === "create")!;
   expect(create.options?.codemode).toBe(true);
   expect(create.input).toHaveProperty("properties.body.$ref", "#/$defs/Tree");

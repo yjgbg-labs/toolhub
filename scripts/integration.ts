@@ -48,6 +48,14 @@ try {
     return { stdout, stderr, code };
   }
   const cli = (...args: string[]) => cliWithInput(args);
+  const rootHelp = await cli("--help");
+  assert.equal(rootHelp.code, 0, rootHelp.stderr);
+  assert.match(rootHelp.stdout, /schedule …  Manage scheduled jobs/);
+  assert.match(rootHelp.stdout, /users …  Manage users/);
+  const scheduleHelp = await cli("schedule", "--help");
+  assert.equal(scheduleHelp.code, 0, scheduleHelp.stderr);
+  assert.match(scheduleHelp.stdout, /Manage scheduled jobs/);
+  assert.match(scheduleHelp.stdout, /config …  Manage scheduler configuration/);
   const help = await cli("users", "--help");
   assert.equal(help.code, 0, help.stderr);
   assert.match(help.stdout, /create/);
@@ -77,11 +85,12 @@ try {
     execute(input: unknown, context: unknown): Promise<{ output: ApiResult }>;
   }
   const tools: Tool[] = [];
+  const namespaces = new Map<string, string>();
   let disposed = false;
   const cleanup = await plugin.setup({
     options: { baseUrl },
     tool: { transform: async (callback: (editor: unknown) => void) => {
-      callback({ namespace() {}, add(tool: Tool) { tools.push(tool); } });
+      callback({ namespace({ name, description }: { name: string; description: string }) { namespaces.set(name, description); }, add(tool: Tool) { tools.push(tool); } });
       return { dispose: async () => { disposed = true; } };
     } },
   });
@@ -90,12 +99,16 @@ try {
   assert.deepEqual((await tool.execute({ path: { id: user.id } }, {})).output.body, user);
   assert.equal(tools.length, 11);
   assert.equal(tools.filter(tool => tool.options.namespace.startsWith("sprout_schedule")).length, 7);
+  assert.equal(namespaces.get("sprout_schedule"), "Manage scheduled jobs");
+  assert.equal(namespaces.get("sprout_schedule_config"), "Manage scheduler configuration");
+  assert.equal(namespaces.get("sprout_users"), "Manage users");
   const configuration = { resources: { cpu: 1 }, tickMs: 20, jobs: {} };
   const write = await cliWithInput(["schedule", "config", "write", "--body", "-"], JSON.stringify(configuration));
   assert.equal(write.code, 0, write.stderr);
   assert.deepEqual(JSON.parse(write.stdout), configuration);
   const configHelp = await cli("schedule", "config", "--help");
   assert.equal(configHelp.code, 0, configHelp.stderr);
+  assert.match(configHelp.stdout, /Manage scheduler configuration/);
   assert.match(configHelp.stdout, /read/);
   assert.match(configHelp.stdout, /write/);
   assert.doesNotMatch(configHelp.stdout, /edit/);

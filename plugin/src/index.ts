@@ -26,8 +26,12 @@ export default Plugin.define({
     });
     const tools = operationTools(client, stringOption("namespace", "sprout"));
     const registration = await ctx.tool.transform(editor => {
-      const namespaces = new Set(tools.map(tool => tool.options!.namespace!));
-      for (const name of namespaces) editor.namespace({ name, description: `${client.catalog.title} — ${name}` });
+      const namespaces = new Map(tools.map((tool, index) => {
+        const name = tool.options!.namespace!;
+        const group = client.catalog.operations[index]!.segments.slice(0, -1).join(".");
+        return [name, client.catalog.groupDescriptions.get(group) ?? `${client.catalog.title} — ${name}`];
+      }));
+      for (const [name, description] of namespaces) editor.namespace({ name, description });
       for (const tool of tools) editor.add(tool);
     });
     return () => registration.dispose();

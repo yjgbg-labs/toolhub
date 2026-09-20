@@ -34,8 +34,9 @@ final class OpenApiScope private[sprout] (private[sprout] val gate: Configuratio
 final class RoutesScope private[sprout] (
     private[sprout] val app: AppScope,
     private[sprout] val prefix: String,
-    private[sprout] val parent: Option[RoutesScope]
-) extends TagScope:
+    private[sprout] val parent: Option[RoutesScope],
+    private[sprout] val namespace: Vector[String] = Vector.empty
+) extends TagScope with DescriptionScope:
   private[sprout] def gate = app.gate
   private[sprout] def inheritedTags: Vector[String] =
     (parent.toVector.flatMap(_.inheritedTags) ++ tags).distinct
@@ -149,6 +150,7 @@ final class AppScope private[sprout] () extends ConfigScope:
   private[sprout] val serverScope = new ServerScope(gate)
   private[sprout] val openApiScope = new OpenApiScope(gate)
   private[sprout] val endpoints = ArrayBuffer.empty[EndpointScope]
+  private[sprout] val groups = ArrayBuffer.empty[RoutesScope]
 
   private[sprout] def freeze(): Application =
     gate.close()
@@ -160,6 +162,11 @@ final class AppScope private[sprout] () extends ConfigScope:
     }
     val ids = bound.map(_.spec.operationId)
     require(ids.distinct.size == ids.size, "Duplicate operationId")
+    val groupSpecs = groups.toVector.groupBy(_.namespace.mkString(".")).toVector.sortBy(_._1).map { (name, declarations) =>
+      val descriptions = declarations.flatMap(_.descriptionValue).distinct
+      require(descriptions.size <= 1, s"Conflicting descriptions for operation group: $name")
+      OperationGroup(name, descriptions.headOption)
+    }
     val docsPath = PathPattern.parse(openApiScope.endpointValue)
     require(docsPath.parameters.isEmpty, "OpenAPI endpoint must be a static path")
     require(!bound.exists(e => e.spec.path.value == docsPath.value), "OpenAPI endpoint conflicts with a registered route")
@@ -167,4 +174,4 @@ final class AppScope private[sprout] () extends ConfigScope:
     val info = openApiScope.infoScope
     require(info.titleValue.nonEmpty && info.versionValue.nonEmpty, "OpenAPI title and version must not be empty")
     Application.build(bound, ServerSettings(serverScope.hostValue, serverScope.portValue, serverScope.maxBodyBytesValue),
-      OpenApiSettings(docsPath.value, info.titleValue, info.versionValue, info.descriptionValue))
+      OpenApiSettings(docsPath.value, info.titleValue, info.versionValue, info.descriptionValue), groupSpecs)

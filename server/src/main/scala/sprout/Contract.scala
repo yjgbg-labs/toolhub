@@ -103,6 +103,8 @@ private[sprout] final case class EndpointSpec(
 
 private[sprout] final case class BoundEndpoint(spec: EndpointSpec, run: RequestContext => IO[EndpointResult])
 
+private[sprout] final case class OperationGroup(name: String, description: Option[String])
+
 final case class FieldError(location: String, name: String, message: String) derives JsonModel
 final case class ErrorBody(code: String, message: String, errors: List[FieldError] = Nil) derives JsonModel
 

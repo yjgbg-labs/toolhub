@@ -48,7 +48,11 @@ test("text, empty and HTTP error responses have consistent outcomes", async () =
 
 test("hierarchical CLI help lists groups and location-qualified ambiguous parameters", async () => {
   const root = await run(["--url", api.baseUrl, "--help"], {});
-  expect(root).toContain("admin …");
+  expect(root).toContain("admin …  Administration");
+  expect(root).not.toContain("Administrative operations");
+  expect(root).not.toContain("unused");
+  expect(await run(["--url", api.baseUrl, "admin", "--help"], {})).toContain("Administration\nAdministrative operations");
+  expect(await run(["--url", api.baseUrl, "admin", "--help"], {})).toContain("users …  Administer users");
   expect(await run(["--url", api.baseUrl, "admin", "users", "--help"], {})).toContain("get  Get a user");
   const leaf = await run(["--url", api.baseUrl, "admin", "users", "get", "--help"], {});
   expect(leaf).toContain("--path.id <string>");
@@ -78,11 +82,15 @@ test("CLI discovers changed operation IDs from OpenAPI on each invocation", asyn
   const env = { SPROUT_URL: dynamic.baseUrl };
   try {
     dynamic.doc.paths["/health"].get.operationId = "reports.daily.summary";
+    dynamic.doc.tags.push({ name: "reports", description: "Report operations" }, { name: "reports.daily", description: "Daily reports" });
+    expect(await run(["--help"], env)).toContain("reports …  Report operations");
+    expect(await run(["reports", "--help"], env)).toContain("daily …  Daily reports");
     expect(await run(["reports", "daily", "--help"], env)).toContain("summary");
     expect(await run(["reports", "daily", "summary"], env)).toBe("ok");
     await expect(run(["health"], env)).rejects.toThrow("Unknown command");
     dynamic.doc.paths["/health"].get.operationId = "reports.latest";
     expect(await run(["reports", "latest"], env)).toBe("ok");
+    expect(await run(["reports", "--help"], env)).not.toContain("Daily reports");
     await expect(run(["reports", "daily", "summary"], env)).rejects.toThrow("Unknown command");
   } finally { dynamic.server.stop(true); }
 });
@@ -93,6 +101,14 @@ test("ambiguous operation IDs and unsupported contracts fail catalog constructio
   expect(() => new Catalog(doc)).toThrow("Duplicate operationId");
   doc.paths["/health"].get.operationId = "users..health";
   expect(() => new Catalog(doc)).toThrow("operationId");
+});
+
+test("group descriptions are optional and malformed tag metadata is rejected", () => {
+  const { tags, ...withoutTags } = document();
+  expect(new Catalog(withoutTags).groupDescriptions.size).toBe(0);
+  expect(() => new Catalog({ ...withoutTags, tags: {} })).toThrow("tags array");
+  expect(() => new Catalog({ ...withoutTags, tags: [{ name: "admin", description: 1 }] })).toThrow("Invalid OpenAPI tag");
+  expect(() => new Catalog({ ...withoutTags, tags: [...tags, tags[0]] })).toThrow("Duplicate OpenAPI tag");
 });
 
 test("abort propagates to HTTP calls without executing the operation", async () => {

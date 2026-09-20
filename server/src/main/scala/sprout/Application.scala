@@ -126,5 +126,5 @@ final class Application private[sprout] (
       .putHeaders(Header.Raw(CIString("Content-Type"), mediaType))
 
 private[sprout] object Application:
-  def build(endpoints: Vector[BoundEndpoint], server: ServerSettings, docs: OpenApiSettings): Application =
-    new Application(endpoints, server, docs, OpenApi.generate(endpoints.map(_.spec), docs))
+  def build(endpoints: Vector[BoundEndpoint], server: ServerSettings, docs: OpenApiSettings, groups: Vector[OperationGroup]): Application =
+    new Application(endpoints, server, docs, OpenApi.generate(endpoints.map(_.spec), docs, groups))

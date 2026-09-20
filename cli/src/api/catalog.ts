@@ -81,12 +81,25 @@ function objectSchema(properties: Schema, required: string[]): Schema {
 export class Catalog {
   readonly operations: Operation[] = [];
   readonly byId = new Map<string, Operation>();
+  readonly groupDescriptions = new Map<string, string>();
   readonly title: string;
 
   constructor(value: unknown) {
     const doc = object(value, "OpenAPI document");
     if (!/^3\.1\./.test(doc.openapi)) throw new Error("Expected an OpenAPI 3.1 document");
     this.title = doc.info?.title ?? "Sprout";
+    const tags = doc.tags ?? [];
+    if (!Array.isArray(tags)) throw new Error("Expected OpenAPI tags array");
+    const names = new Set<string>();
+    for (const raw of tags) {
+      const tag = object(raw, "tag");
+      if (typeof tag.name !== "string" || !tag.name || (tag.description !== undefined && typeof tag.description !== "string")) {
+        throw new Error("Invalid OpenAPI tag");
+      }
+      if (names.has(tag.name)) throw new Error(`Duplicate OpenAPI tag: ${tag.name}`);
+      names.add(tag.name);
+      if (tag.description) this.groupDescriptions.set(tag.name, tag.description);
+    }
     for (const [path, rawItem] of Object.entries(object(doc.paths, "paths"))) {
       const item = resolve(doc, rawItem);
       if (!path.startsWith("/") || path.includes("?") || path.includes("#")) throw new Error(`Invalid API path: ${path}`);

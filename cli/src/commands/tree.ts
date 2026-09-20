@@ -3,15 +3,19 @@ import type { Catalog, Operation } from "../api";
 export class CommandNode {
   readonly children = new Map<string, CommandNode>();
   operation?: Operation;
+  description?: string;
 }
 
 export function commandTree(catalog: Catalog): CommandNode {
   const root = new CommandNode();
   for (const operation of catalog.operations) {
     let node = root;
+    const path: string[] = [];
     for (const part of operation.segments) {
+      path.push(part);
       if (!node.children.has(part)) node.children.set(part, new CommandNode());
       node = node.children.get(part)!;
+      node.description = catalog.groupDescriptions.get(path.join("."));
     }
     node.operation = operation;
   }
@@ -21,6 +25,7 @@ export function commandTree(catalog: Catalog): CommandNode {
 export function help(node: CommandNode, path: string[]): string {
   const positional = node.operation?.parameters.filter(param => param.in === "path").map(param => `<${param.name}>`) ?? [];
   const lines = [`Usage: sprout ${[...path, ...(node.children.size ? ["<command>"] : positional)].join(" ")} [options]`];
+  if (node.description) lines.push("", node.description);
   if (node.operation) {
     const op = node.operation;
     lines.push("", op.description, `${op.method} ${op.path}`, "", "Parameters (location-qualified flags are always available):");
@@ -36,7 +41,7 @@ export function help(node: CommandNode, path: string[]): string {
   }
   if (node.children.size) {
     lines.push("", "Commands:");
-    for (const [name, child] of node.children) lines.push(`  ${name}${child.children.size ? " …" : ""}  ${child.operation?.description.split("\n")[0] ?? ""}`.trimEnd());
+    for (const [name, child] of node.children) lines.push(`  ${name}${child.children.size ? " …" : ""}  ${(child.description ?? child.operation?.description)?.split("\n")[0] ?? ""}`.trimEnd());
   }
   lines.push("", "Connection: --url <base-url>, --schema <openapi-url>, --timeout <milliseconds>",
     "Environment: SPROUT_URL, SPROUT_OPENAPI_URL, SPROUT_TOKEN", "  --help, -h  Show help");

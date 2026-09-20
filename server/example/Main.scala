@@ -34,10 +34,10 @@ object Main extends IOApp.Simple:
           handle { ok("ok") }
         }
 
-        group("") {
-          tag("Users")
+        group("users") {
+          description("Manage users")
 
-          operation("users.get") {
+          operation("get") {
             summary("Find a user")
             val id = path[Long]("id") { minimum(1L) }
             val ok = response.json[User](200) { description("User found") }
@@ -50,7 +50,7 @@ object Main extends IOApp.Simple:
             }
           }
 
-          operation("users.list") {
+          operation("list") {
             val limit = query[Int]("limit") {
               default(20)
               minimum(1)
@@ -60,7 +60,7 @@ object Main extends IOApp.Simple:
             handle { users.get.map(all => ok(all.values.toList.sortBy(_.id).take(limit.value))) }
           }
 
-          operation("users.create") {
+          operation("create") {
             val input = body.json[CreateUser] {
               constraint[CreateUser]("Name must not be blank")(_.name.trim.nonEmpty)
             }
