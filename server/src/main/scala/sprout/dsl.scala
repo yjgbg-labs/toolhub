@@ -5,13 +5,13 @@ import io.circe.Json
 import scala.util.matching.Regex
 
 object dsl:
-  export sprout.{JsonModel, ParamCodec, RequestContext, EndpointResult, Input, Output}
+  export sprout.{JsonModel, ParamCodec, RequestContext, EndpointResult, Handler, Input, Output}
 
   def httpApp(init: AppScope ?=> Unit): Application =
     val app = new AppScope
     try
       init(using app)
-      app.freeze()
+      Application.build(Compiler.resolve(app.freeze()))
     finally app.gate.close()
 
   def server(init: ServerScope ?=> Unit)(using app: AppScope): Unit =
@@ -58,19 +58,15 @@ object dsl:
 
   def routes(init: RoutesScope ?=> Unit)(using app: AppScope): Unit =
     app.gate.check()
-    init(using new RoutesScope(app, "", None))
+    val scope = new RoutesScope(app.gate, "")
+    init(using scope)
+    app.routes += scope
 
   def group(name: String)(init: RoutesScope ?=> Unit)(using scope: RoutesScope): Unit =
     scope.gate.check()
-    val named = name.nonEmpty && !name.startsWith("/")
-    require(!named || name.matches("[A-Za-z][A-Za-z0-9_-]*"), s"Invalid operation group: $name")
-    val namespace = if named then scope.namespace :+ name else scope.namespace
-    val prefix = PathPattern.join(scope.prefix, if named then s"/$name" else name)
-    val child = new RoutesScope(scope.app, prefix, Some(scope), namespace)
-    if named then
-      child.tags += namespace.mkString(".")
-      scope.app.groups += child
+    val child = new RoutesScope(scope.gate, name)
     init(using child)
+    scope.children += (() => child.freeze())
 
   def tag(value: String)(using scope: TagScope): Unit =
     scope.gate.check()
@@ -78,20 +74,16 @@ object dsl:
 
   private def register(method: String, path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using scope: RoutesScope): Unit =
     scope.gate.check()
-    val endpoint = new EndpointScope[EndpointResult](scope, method, PathPattern.parse(PathPattern.join(scope.prefix, path)))
+    val endpoint = new EndpointScope[EndpointResult](scope.gate, method, path)
     init(using endpoint)
-    scope.app.endpoints += endpoint
+    scope.children += (() => endpoint.freeze())
 
   def operation[A](id: String)(init: EndpointScope[A] ?=> Unit)(using scope: RoutesScope, success: SuccessResponse[A]): Unit =
     scope.gate.check()
-    require(id.split("\\.", -1).forall(_.matches("[A-Za-z][A-Za-z0-9_-]*")), s"Invalid operationId: $id")
-    val qualifiedId = (scope.namespace :+ id).mkString(".")
-    val path = PathPattern.parse(PathPattern.join(scope.prefix, "/" + id.replace('.', '/')))
-    val endpoint = new EndpointScope[A](scope, "POST", path, Some(qualifiedId))
-    endpoint.operationIdValue = Some(qualifiedId)
+    val endpoint = new EndpointScope[A](scope.gate, "POST", "", Some(id))
     endpoint.successValue = Some(success.declare(endpoint))
     init(using endpoint)
-    scope.app.endpoints += endpoint
+    scope.children += (() => endpoint.freeze())
 
   def get(path: String = "")(init: EndpointScope[EndpointResult] ?=> Unit)(using RoutesScope): Unit = register("GET", path)(init)
   def post(path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using RoutesScope): Unit = register("POST", path)(init)
@@ -109,10 +101,10 @@ object dsl:
     scope.gate.check()
     scope.summaryValue = Some(value)
 
-  def path[A](using codec: ParamCodec[A], scope: EndpointScope[?])(name: String): Input[A] = scope.parameter[A](name, InputLocation.Path)
-  def query[A](using codec: ParamCodec[A], scope: EndpointScope[?])(name: String): Input[A] = scope.parameter[A](name, InputLocation.Query)
-  def header[A](using codec: ParamCodec[A], scope: EndpointScope[?])(name: String): Input[A] = scope.parameter[A](name, InputLocation.Header)
-  def cookie[A](using codec: ParamCodec[A], scope: EndpointScope[?])(name: String): Input[A] = scope.parameter[A](name, InputLocation.Cookie)
+  def path[A](using codec: ParamCodec[A], scope: DeclarationScope)(name: String): Input[A] = scope.parameter[A](name, InputLocation.Path)
+  def query[A](using codec: ParamCodec[A], scope: DeclarationScope)(name: String): Input[A] = scope.parameter[A](name, InputLocation.Query)
+  def header[A](using codec: ParamCodec[A], scope: DeclarationScope)(name: String): Input[A] = scope.parameter[A](name, InputLocation.Header)
+  def cookie[A](using codec: ParamCodec[A], scope: DeclarationScope)(name: String): Input[A] = scope.parameter[A](name, InputLocation.Cookie)
 
   def default[A](value: A)(using scope: InputScope[A]): Unit =
     scope.gate.check()
@@ -151,25 +143,25 @@ object dsl:
       Some(SchemaConstraint("pattern", Json.fromString(value))))
 
   object body:
-    def json[A: JsonModel](using scope: EndpointScope[?]): Input[A] = scope.jsonBody[A]
-    def json[A: JsonModel](init: InputScope[A] ?=> Unit)(using scope: EndpointScope[?]): Input[A] = scope.jsonBody[A].apply(init)
+    def json[A: JsonModel](using scope: DeclarationScope): Input[A] = scope.jsonBody[A]
+    def json[A: JsonModel](init: InputScope[A] ?=> Unit)(using scope: DeclarationScope): Input[A] = scope.jsonBody[A].apply(init)
 
   object response:
-    def json[A](status: Int)(init: ResponseScope ?=> Unit)(using model: JsonModel[A], scope: EndpointScope[?]): Output[A] =
+    def json[A](status: Int)(init: ResponseScope ?=> Unit)(using model: JsonModel[A], scope: DeclarationScope): Output[A] =
       scope.output[A](status, Some("application/json"), Some(model.schema), value => Some(model.encoder(value).noSpaces)).configure(init)
 
-    def text(status: Int)(init: ResponseScope ?=> Unit)(using scope: EndpointScope[?]): Output[String] =
+    def text(status: Int)(init: ResponseScope ?=> Unit)(using scope: DeclarationScope): Output[String] =
       scope.output[String](status, Some("text/plain"), Some(JsonModel[String].schema), value => Some(value)).configure(init)
 
-    def empty(status: Int)(init: ResponseScope ?=> Unit)(using scope: EndpointScope[?]): Output[Unit] =
+    def empty(status: Int)(init: ResponseScope ?=> Unit)(using scope: DeclarationScope): Output[Unit] =
       scope.output[Unit](status, None, None, _ => None).configure(init)
 
   extension [A](input: Input[A])
     def value(using context: RequestContext): A = context.read(input)
 
+  def middleware(wrap: Handler => Handler)(using scope: DeclarationScope): Unit =
+    scope.gate.check()
+    scope.middlewareValue += wrap
+
   def handle[A](using scope: EndpointScope[A])(logic: RequestContext ?=> A | EndpointResult | IO[A | EndpointResult]): Unit =
-    scope.setHandler { context => IO.defer {
-      logic(using context) match
-        case effect: IO[?] => effect.asInstanceOf[IO[A | EndpointResult]].map(scope.result)
-        case value => IO.pure(scope.result(value.asInstanceOf[A | EndpointResult]))
-    } }
+    scope.setHandler(context => logic(using context))

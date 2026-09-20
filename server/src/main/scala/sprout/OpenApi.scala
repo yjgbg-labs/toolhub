@@ -80,32 +80,15 @@ private[sprout] object OpenApi:
 
   def generate(endpoints: Vector[EndpointSpec], config: OpenApiSettings, groups: Vector[OperationGroup]): OpenAPI =
     val schemas = new Schemas
-    val errorSchema = schemas.render(JsonModel[ErrorBody].schema.node())
 
     def operation(endpoint: EndpointSpec): Operation =
-      val declared = endpoint.outputs.foldLeft(Responses.Empty) { (responses, output) =>
-        val content = output.mediaType.zip(output.schema).map { (mediaType, schema) =>
-          mediaType -> MediaType(schema = Some(schemas.render(schema.node())))
+      val responses = endpoint.responses.foldLeft(Responses.Empty) { (responses, output) =>
+        val content = output.content.map { entry =>
+          val variants = entry.schemas.map(schema => schemas.render(schema.node()))
+          val schema = if variants.size == 1 then variants.head else ApiSchema(anyOf = variants.toList)
+          entry.mediaType -> MediaType(schema = Some(schema))
         }
         responses.addResponse(output.status, ApiResponse(output.description, content = ListMap.from(content)))
-      }
-      val automatic = Vector(500 -> "Internal server error") ++
-        Option.when(endpoint.inputs.nonEmpty)(400 -> "Invalid request").toVector ++
-        (if endpoint.inputs.exists(_.location == InputLocation.Body) then
-          Vector(413 -> "Request body too large", 415 -> "Expected application/json") else Vector.empty)
-      val responses = automatic.foldLeft(declared) { case (responses, (status, description)) =>
-        val existing = responses.responses.get(ResponsesCodeKey(status)).flatMap(_.toOption)
-        val response = if endpoint.method == "HEAD" then
-          ApiResponse(existing.fold(description)(r => s"${r.description}; $description"))
-        else existing match
-          case None => ApiResponse(description, content = ListMap("application/json" -> MediaType(schema = Some(errorSchema))))
-          case Some(original) =>
-            val schema = original.content.get("application/json").flatMap(_.schema) match
-              case Some(other) => ApiSchema(anyOf = List(other, errorSchema))
-              case None        => errorSchema
-            original.copy(description = s"${original.description}; $description",
-              content = original.content.updated("application/json", MediaType(schema = Some(schema))))
-        responses.addResponse(status, response)
       }
       val parameters = endpoint.inputs.filterNot(_.location == InputLocation.Body).map { input =>
         val in = input.location match

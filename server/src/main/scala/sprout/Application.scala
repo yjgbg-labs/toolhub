@@ -92,10 +92,9 @@ final class Application private[sprout] (
         val errors = results.collect { case Left(error) => error }.toList
         if errors.nonEmpty then IO.pure(errorResponse(400, "invalid_request", "Request validation failed", errors))
         else
-          val context = new RequestContext(spec.owner, results.collect { case Right(value) => value })
+          val context = new RequestContext(endpoint.inputSlots, results.collect { case Right(value) => value })
           endpoint.run(context).map { result =>
-            require(result.owner eq spec.owner, "Response belongs to a different endpoint")
-            val output = spec.outputs(result.slot)
+            val output = endpoint.outputs.getOrElse(result.key, throw new IllegalArgumentException("Response belongs to a different endpoint"))
             (output.mediaType, result.payload) match
               case (Some(mediaType), Some(payload)) => textResponse(output.status, payload, mediaType)
               case (None, None) => Response[IO](Status.fromInt(output.status).toOption.get)
@@ -126,5 +125,6 @@ final class Application private[sprout] (
       .putHeaders(Header.Raw(CIString("Content-Type"), mediaType))
 
 private[sprout] object Application:
-  def build(endpoints: Vector[BoundEndpoint], server: ServerSettings, docs: OpenApiSettings, groups: Vector[OperationGroup]): Application =
-    new Application(endpoints, server, docs, OpenApi.generate(endpoints.map(_.spec), docs, groups))
+  def build(api: ResolvedApi): Application =
+    new Application(api.endpoints.map(Compiler.bind), api.server, api.openApi,
+      OpenApi.generate(api.endpoints.map(_.spec), api.openApi, api.groups))

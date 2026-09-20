@@ -18,9 +18,13 @@ private[sprout] final case class Constraint[A](
     schema: Option[SchemaConstraint] = None
 )
 
+private[sprout] final class InputKey[A]
+private[sprout] final class ResponseKey[A]
+
+type Handler = RequestContext ?=> IO[EndpointResult]
+
 final class Input[A] private[sprout] (
-    private[sprout] val owner: Object,
-    private[sprout] val slot: Int,
+    private[sprout] val key: InputKey[A],
     private val config: InputScope[A]
 ):
   def apply(init: InputScope[A] ?=> Unit): Input[A] =
@@ -28,33 +32,31 @@ final class Input[A] private[sprout] (
     init(using config)
     this
 
-final class RequestContext private[sprout] (owner: Object, values: Vector[Any]):
+final class RequestContext private[sprout] (slots: Map[InputKey[?], Int], values: Vector[Any]):
   def read[A](input: Input[A]): A =
-    require(input.owner eq owner, "Input belongs to a different endpoint")
-    values(input.slot).asInstanceOf[A]
+    val slot = slots.getOrElse(input.key, throw new IllegalArgumentException("Input belongs to a different endpoint"))
+    values(slot).asInstanceOf[A]
 
 final class EndpointResult private[sprout] (
-    private[sprout] val owner: Object,
-    private[sprout] val slot: Int,
+    private[sprout] val key: ResponseKey[?],
     private[sprout] val payload: Option[String]
 )
 
-class Output[A] private[sprout] (owner: Object, slot: Int, encode: A => Option[String]):
-  def apply(value: A): EndpointResult = new EndpointResult(owner, slot, encode(value))
+class Output[A] private[sprout] (key: ResponseKey[A], encode: A => Option[String]):
+  def apply(value: A): EndpointResult = new EndpointResult(key, encode(value))
 
 final class OutputDeclaration[A] private[sprout] (
-    owner: Object,
-    slot: Int,
+    key: ResponseKey[A],
     encode: A => Option[String],
     config: ResponseScope
-) extends Output[A](owner, slot, encode):
+) extends Output[A](key, encode):
   private[sprout] def configure(init: ResponseScope ?=> Unit): Output[A] =
     config.gate.check()
     init(using config)
     this
 
 private[sprout] final case class InputSpec[A](
-    handle: Input[A],
+    key: InputKey[A],
     name: String,
     location: InputLocation,
     schema: Schema[A],
@@ -73,14 +75,17 @@ private[sprout] final case class InputSpec[A](
     }.left.map(message => FieldError(location.toString.toLowerCase, name, message))
 
 private[sprout] final case class ResponseSpec(
+    key: ResponseKey[?],
     status: Int,
     description: String,
     mediaType: Option[String],
     schema: Option[Schema[?]]
 )
 
+private[sprout] final case class ResponseContent(mediaType: String, schemas: Vector[Schema[?]])
+private[sprout] final case class ResponseContract(status: Int, description: String, content: Vector[ResponseContent])
+
 private[sprout] final case class EndpointSpec(
-    owner: Object,
     method: String,
     path: PathPattern,
     operationId: String,
@@ -88,10 +93,13 @@ private[sprout] final case class EndpointSpec(
     description: Option[String],
     tags: Vector[String],
     inputs: Vector[InputSpec[?]],
-    outputs: Vector[ResponseSpec]
+    outputs: Vector[ResponseSpec],
+    responses: Vector[ResponseContract]
 )
 
-private[sprout] final case class BoundEndpoint(spec: EndpointSpec, run: RequestContext => IO[EndpointResult])
+private[sprout] final case class BoundEndpoint(spec: EndpointSpec, run: RequestContext => IO[EndpointResult]):
+  val inputSlots: Map[InputKey[?], Int] = spec.inputs.zipWithIndex.map((input, slot) => input.key -> slot).toMap
+  val outputs: Map[ResponseKey[?], ResponseSpec] = spec.outputs.map(output => output.key -> output).toMap
 
 private[sprout] final case class OperationGroup(name: String, description: Option[String])
 

@@ -68,6 +68,7 @@ class OperationSuite extends CatsEffectSuite:
         group("daily") {
           description("Daily reports")
           operation[String]("get") {
+            operationId("reports.daily.get")
             summary("Get a report")
             description("Report details")
             val tenant = path[String]("tenant")

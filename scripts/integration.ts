@@ -41,6 +41,12 @@ try {
   }
   const scheduleOperations = ["schedule.config.read", "schedule.config.write", "schedule.delete", "schedule.list", "schedule.log", "schedule.new", "schedule.reset"];
   assert.deepEqual(client.catalog.operations.map(op => op.id), ["health", ...scheduleOperations, "users.create", "users.get", "users.list"]);
+  for (const item of Object.values(openapi.paths) as any[]) {
+    if (item.post.operationId.startsWith("schedule.")) {
+      assert.ok(item.post.responses["400"]);
+      assert.equal(item.post.responses["404"].description, "Job not found");
+    }
+  }
   assert.equal((await client.call("health")).body, "ok");
   assert.equal((await client.call("users.list")).body[0].name, "Groot");
 
@@ -114,6 +120,10 @@ try {
   const write = await cliWithInput(["schedule", "config", "write", "--body", "-"], JSON.stringify(configuration));
   assert.equal(write.code, 0, write.stderr);
   assert.deepEqual(JSON.parse(write.stdout), configuration);
+  const configTool = tools.find(tool => tool.options.namespace === "sprout_schedule_config" && tool.name === "write")!;
+  await assert.rejects(configTool.execute({ body: { ...configuration, tickMs: 0 } }, {}), (error: any) =>
+    error.response?.status === 400 && error.response.body.code === "invalid_schedule");
+  assert.deepEqual((await client.call("schedule.config.read")).body, configuration);
   const configHelp = await cli("schedule", "config", "--help");
   assert.equal(configHelp.code, 0, configHelp.stderr);
   assert.match(configHelp.stdout, /Manage scheduler configuration/);
