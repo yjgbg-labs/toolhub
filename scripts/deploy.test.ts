@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, readlink, rm, stat, writeFile } from "node:fs
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { deploy, runCommand, type DeploymentConfig, type Run } from "./deploy";
+import { socketUrl } from "../cli/src/api/transport";
 
 const temporary = await mkdtemp("/tmp/opencode/sprout-deploy-test-");
 afterAll(() => rm(temporary, { recursive: true, force: true }));
@@ -26,6 +27,8 @@ const first = await bundle("first");
 const second = await bundle("second");
 async function fixture(name: string) {
   const directory = join(temporary, name);
+  await mkdir(directory, { recursive: true });
+  const socket = join(directory, "http.sock");
   let downloads = 0;
   let corrupt = false;
   let started = false;
@@ -39,14 +42,17 @@ async function fixture(name: string) {
     return new Response(corrupt ? "corrupt archive" : entry.bytes);
   } });
   const baseUrl = server.url.href.replace(/\/$/, "");
+  const local = Bun.serve({ unix: socket, fetch(request) {
+    return new Response(started && request.method === "POST" && new URL(request.url).pathname === "/health" ? "ok" : "starting", { status: started ? 200 : 503 });
+  } });
   const config: DeploymentConfig = {
     root: join(directory, "data '$ 100%"), binDir: join(directory, "bin"), unitDir: join(directory, "units"), pluginDir: join(directory, "plugins"),
     downloadBase: `${baseUrl}/public/sprout-http`, artifact: first.artifact, sha256: first.sha256,
-    service: "groot-sprout-http.service", port: server.port!, startupTimeout: 3000,
-    baseUrl, namespace: "sprout_test", jdk: "25", bun: process.execPath, groot: Bun.which("groot")!, home: join(directory, "config"),
+    service: "groot-sprout-http.service", socket, startupTimeout: 3000,
+    baseUrl: socketUrl(socket), namespace: "sprout_test", jdk: "25", bun: process.execPath, groot: Bun.which("groot")!, home: join(directory, "config"),
   };
   return {
-    config, stop: () => server.stop(true), downloads: () => downloads,
+    config, stop: () => { server.stop(true); local.stop(true); }, downloads: () => downloads,
     corrupt: () => { corrupt = true; }, start: () => { started = true; },
   };
 }
@@ -84,7 +90,7 @@ test("checksum failure preserves the active release and installed CLI", async ()
   } finally { api.stop(); }
 });
 
-test("server deploy renders a valid user unit, uses Groot JDK selection, restarts and checks POST health", async () => {
+test("server deploy renders a valid user unit, manages the runtime directory and checks Unix socket health", async () => {
   const api = await fixture("server");
   const commands: string[][] = [];
   const run: Run = async (args, cwd) => {
@@ -99,7 +105,8 @@ test("server deploy renders a valid user unit, uses Groot JDK selection, restart
     const content = await readFile(unit, "utf8");
     expect((await stat(unit)).mode & 0o777).toBe(0o644);
     expect(content).toContain('"use-jdk" "25" "--" "java"');
-    expect(content).toContain(`SPROUT_PORT=${api.config.port}`);
+    expect(content).toContain(`SPROUT_SOCKET=${api.config.socket}`);
+    expect(content).toContain("RuntimeDirectory=sprout-http\nRuntimeDirectoryMode=0700\nUMask=0077");
     expect(content).toContain(`SPROUT_HOME=${api.config.home}`);
     expect(content).toContain("WantedBy=default.target");
     expect(content).toContain("data '$$ 100%%/server/current/groot.jar");

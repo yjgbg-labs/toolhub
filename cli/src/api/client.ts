@@ -2,8 +2,8 @@ import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import type { ValidateFunction } from "ajv";
 import { Catalog, type Location } from "./catalog";
+import { transport, type Fetch } from "./transport";
 
-export type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 export interface ClientOptions {
   baseUrl: string;
   schemaUrl?: string;
@@ -15,13 +15,10 @@ export type OperationInput = Partial<Record<Location, Record<string, unknown>>> 
 export interface ApiResult { status: number; headers: Record<string, string>; body: any }
 
 function connectionSettings(options: ClientOptions) {
-  const url = new URL(options.baseUrl);
-  if (!["http:", "https:"].includes(url.protocol) || url.search || url.hash || url.username || url.password) {
-    throw new Error("baseUrl must be an HTTP(S) URL without credentials, query or fragment");
-  }
+  const connection = transport(options.baseUrl, options.fetch);
   const timeoutMs = options.timeoutMs ?? 30_000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("timeoutMs must be a positive integer");
-  return { baseUrl: url.href.replace(/\/$/, ""), timeoutMs };
+  return { ...connection, timeoutMs };
 }
 
 export class ApiError extends Error {
@@ -40,7 +37,7 @@ export class ApiClient {
     const settings = connectionSettings(options);
     this.baseUrl = settings.baseUrl;
     this.timeoutMs = settings.timeoutMs;
-    this.fetch = options.fetch ?? globalThis.fetch;
+    this.fetch = settings.fetch;
     const ajv = new Ajv2020({ strict: false, allErrors: true, validateFormats: true });
     addFormats(ajv);
     ajv.addFormat("int32", { type: "number", validate: value => Number.isInteger(value) && value >= -2147483648 && value <= 2147483647 });
@@ -51,9 +48,10 @@ export class ApiClient {
   }
 
   static async connect(options: ClientOptions): Promise<ApiClient> {
-    const { baseUrl, timeoutMs } = connectionSettings(options);
+    const { baseUrl, timeoutMs, fetch } = connectionSettings(options);
     const schemaUrl = options.schemaUrl ?? `${baseUrl}/openapi.json`;
-    const response = await (options.fetch ?? globalThis.fetch)(schemaUrl, {
+    const request = options.schemaUrl ? options.fetch ?? globalThis.fetch : fetch;
+    const response = await request(schemaUrl, {
       headers: { ...options.headers, Accept: "application/json" },
       signal: AbortSignal.timeout(timeoutMs), redirect: "error",
     });

@@ -32,6 +32,11 @@ object dsl:
     scope.gate.check()
     scope.maxBodyBytesValue = value
 
+  def socket(value: String)(using scope: ServerScope): Unit =
+    scope.gate.check()
+    require(java.nio.file.Path.of(value).isAbsolute, "Socket path must be absolute")
+    scope.socketValue = Some(value)
+
   def openapi(init: OpenApiScope ?=> Unit)(using app: AppScope): Unit =
     app.gate.check()
     init(using app.openApiScope)

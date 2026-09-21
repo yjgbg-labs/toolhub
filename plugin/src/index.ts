@@ -1,5 +1,5 @@
 import * as Plugin from "@opencode/plugin/promise/plugin";
-import { ApiClient } from "@sprout/cli/api";
+import { ApiClient, defaultBaseUrl } from "@sprout/cli/api";
 import { operationTools } from "./tools";
 
 export default Plugin.define({
@@ -19,7 +19,7 @@ export default Plugin.define({
     const timeoutMs = ctx.options.timeoutMs ?? 30_000;
     if (typeof timeoutMs !== "number" || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("Sprout timeoutMs must be a positive integer");
     const client = await ApiClient.connect({
-      baseUrl: stringOption("baseUrl", process.env.SPROUT_URL ?? "http://127.0.0.1:8080")!,
+      baseUrl: stringOption("baseUrl", process.env.SPROUT_BASE_URL || defaultBaseUrl())!,
       schemaUrl: stringOption("schemaUrl", process.env.SPROUT_OPENAPI_URL),
       headers: { ...rawHeaders as Record<string, string>, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       timeoutMs,

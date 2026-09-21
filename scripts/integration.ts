@@ -1,31 +1,32 @@
 #!/usr/bin/env bun
 import assert from "node:assert/strict";
-import { cp, mkdtemp, rm } from "node:fs/promises";
+import { cp, lstat, mkdtemp, rm } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { ApiClient, ApiError, type ApiResult, type Schema } from "../cli/src/api";
+import { ApiClient, ApiError, defaultBaseUrl, transport, type ApiResult, type Schema } from "../cli/src/api";
 
 const config = await Bun.file("config.env").text();
 const major = config.match(/^JDK_MAJOR=(\d+)$/m)?.[1];
 if (!major) throw new Error("Missing JDK_MAJOR");
 const home = await mkdtemp("/tmp/opencode/sprout-integration-");
+const baseUrl = defaultBaseUrl({ XDG_RUNTIME_DIR: home });
+const socket = `${home}/sprout-http/http.sock`;
 const server = Bun.spawn(["groot", "use-jdk", major, "--", "java", "-XX:ActiveProcessorCount=4", "-jar", "server/dist/groot.jar"], {
-  env: { ...process.env, SPROUT_PORT: "0", SPROUT_HOME: home }, stdout: "pipe", stderr: "pipe", detached: true,
+  env: { ...process.env, XDG_RUNTIME_DIR: home, SPROUT_SOCKET: "", SPROUT_PORT: "", SPROUT_HOME: home }, stdout: "pipe", stderr: "pipe", detached: true,
 });
 let logs = "";
 let ready = false;
-let resolveUrl: (url: string) => void;
+let resolveReady: () => void;
 let rejectUrl: (reason: Error) => void;
-const urlPromise = new Promise<string>((resolve, reject) => { resolveUrl = resolve; rejectUrl = reject; });
+const readyPromise = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectUrl = reject; });
 const timer = setTimeout(() => rejectUrl(new Error(`Server readiness timed out\n${logs}`)), 30_000);
 async function capture(stream: ReadableStream<Uint8Array>) {
   const decoder = new TextDecoder();
   for await (const chunk of stream) {
     logs = (logs + decoder.decode(chunk, { stream: true })).slice(-30_000);
-    const match = logs.match(/Sprout HTTP listening at \/127\.0\.0\.1:(\d+)/);
-    if (!ready && match) {
+    if (!ready && logs.includes(`Sprout HTTP listening at ${baseUrl};`)) {
       ready = true;
       clearTimeout(timer);
-      resolveUrl(`http://127.0.0.1:${match[1]}`);
+      resolveReady();
     }
   }
 }
@@ -33,9 +34,13 @@ const streams = Promise.all([capture(server.stdout), capture(server.stderr)]);
 void server.exited.then(code => { if (!ready) rejectUrl(new Error(`Server exited ${code}\n${logs}`)); });
 
 try {
-  const baseUrl = await urlPromise;
+  await readyPromise;
+  const socketStat = await lstat(socket);
+  assert.ok(socketStat.isSocket());
+  assert.equal(socketStat.mode & 0o777, 0o600);
   const client = await ApiClient.connect({ baseUrl });
-  const openapi = await fetch(`${baseUrl}/openapi.json`).then(response => response.json());
+  const connection = transport(baseUrl);
+  const openapi = await connection.fetch(`${connection.baseUrl}/openapi.json`).then(response => response.json());
   for (const item of Object.values(openapi.paths) as any[]) {
     assert.deepEqual(Object.keys(item.post.responses).filter(status => /^2\d\d$/.test(status)), ["200"]);
   }
@@ -51,7 +56,7 @@ try {
 
   async function cliWithInput(args: string[], stdin?: string) {
     const child = Bun.spawn([Bun.which("bun")!, "cli/dist/sprout.js", ...args], {
-      env: { ...process.env, SPROUT_BASE_URL: baseUrl },
+      env: { ...process.env, XDG_RUNTIME_DIR: home, SPROUT_BASE_URL: "" },
       stdout: "pipe", stderr: "pipe", stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
     });
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -167,5 +172,6 @@ try {
   await server.exited;
   clearTimeout(kill);
   await streams;
+  if (ready) assert.equal(await lstat(socket).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; }), false);
   await rm(home, { recursive: true, force: true });
 }

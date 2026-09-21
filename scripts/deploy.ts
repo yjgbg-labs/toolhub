@@ -2,6 +2,7 @@
 import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { socketUrl, transport } from "../cli/src/api/transport";
 
 const marker = "Managed by sprout-http deployment";
 const receipt = ".sprout-release.json";
@@ -16,7 +17,7 @@ export interface DeploymentConfig {
   artifact: string;
   sha256: string;
   service: string;
-  port: number;
+  socket: string;
   startupTimeout: number;
   baseUrl: string;
   namespace: string;
@@ -40,27 +41,25 @@ export function configFromEnv(env = process.env): DeploymentConfig {
   const artifact = required("ARTIFACT_NAME");
   const sha256 = required("ARTIFACT_SHA256");
   const service = required("SERVER_SERVICE");
-  const port = Number(required("SERVER_PORT"));
+  const socket = directory("SERVER_SOCKET");
   const startupTimeout = Number(required("SERVER_START_TIMEOUT_MS"));
   const jdk = required("JDK_MAJOR");
   const namespace = required("PLUGIN_NAMESPACE");
   if (!/^[a-zA-Z0-9_-]+\.tar\.gz$/.test(artifact) || !/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Invalid artifact identity");
   if (!/^groot-[a-zA-Z0-9_.-]+\.service$/.test(service)) throw new Error("SERVER_SERVICE must be a groot-*.service unit");
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid SERVER_PORT");
   if (!Number.isSafeInteger(startupTimeout) || startupTimeout <= 0) throw new Error("Invalid SERVER_START_TIMEOUT_MS");
   if (!/^\d+$/.test(jdk)) throw new Error("Invalid JDK_MAJOR");
   if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(namespace)) throw new Error("Invalid PLUGIN_NAMESPACE");
   const downloadBase = required("DEPLOY_DOWNLOAD_BASE").replace(/\/$/, "");
   const baseUrl = required("CLIENT_BASE_URL").replace(/\/$/, "");
-  for (const value of [downloadBase, baseUrl]) {
-    const url = new URL(value);
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error(`Invalid deployment URL: ${value}`);
-  }
+  const url = new URL(downloadBase);
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error(`Invalid deployment URL: ${downloadBase}`);
+  transport(baseUrl);
   const groot = Bun.which("groot");
   if (!groot) throw new Error("groot is required for deployment");
   return {
     root: directory("DEPLOY_ROOT"), binDir: directory("CLI_BIN_DIR"), unitDir: directory("SYSTEMD_UNIT_DIR"),
-    pluginDir: directory("OPENCODE_PLUGIN_DIR"), artifact, sha256, service, port, startupTimeout, jdk,
+    pluginDir: directory("OPENCODE_PLUGIN_DIR"), artifact, sha256, service, socket, startupTimeout, jdk,
     downloadBase, baseUrl, namespace, bun: process.execPath, groot, home: directory("SPROUT_HOME"),
   };
 }
@@ -169,8 +168,12 @@ StartLimitBurst=5
 Type=simple
 WorkingDirectory=${home.replaceAll("%", "%%")}
 Environment=${unitQuote(`PATH=${path}`)}
-Environment=${unitQuote(`SPROUT_PORT=${config.port}`)}
+Environment=${unitQuote(`SPROUT_SOCKET=${config.socket}`)}
 Environment=${unitQuote(`SPROUT_HOME=${config.home}`)}
+UnsetEnvironment=SPROUT_PORT
+RuntimeDirectory=sprout-http
+RuntimeDirectoryMode=0700
+UMask=0077
 ExecStart=${command.map(value => unitQuote(value, true)).join(" ")}
 Restart=on-failure
 RestartSec=3
@@ -182,11 +185,12 @@ WantedBy=default.target
 }
 
 async function waitForServer(config: DeploymentConfig, run: Run) {
-  const url = `http://127.0.0.1:${config.port}/health`;
+  const connection = transport(socketUrl(config.socket));
+  const url = `${connection.baseUrl}/health`;
   const deadline = Date.now() + config.startupTimeout;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url, { method: "POST", signal: AbortSignal.timeout(Math.min(2000, deadline - Date.now())) });
+      const response = await connection.fetch(url, { method: "POST", signal: AbortSignal.timeout(Math.min(2000, deadline - Date.now())) });
       if (response.ok && await response.text() === "ok") {
         await run(["systemctl", "--user", "is-active", "--quiet", config.service]);
         return;
@@ -194,7 +198,7 @@ async function waitForServer(config: DeploymentConfig, run: Run) {
     } catch {}
     await Bun.sleep(250);
   }
-  throw new Error(`Server health check timed out: ${url}; inspect journalctl --user -u ${config.service}`);
+  throw new Error(`Server health check timed out: ${config.socket}; inspect journalctl --user -u ${config.service}`);
 }
 
 export async function deploy(component: Component, config: DeploymentConfig, run: Run = runCommand) {

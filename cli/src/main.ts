@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { ApiClient } from "./api";
+import { ApiClient, defaultBaseUrl } from "./api";
 import { commandTree, help } from "./commands/tree";
 import { operationInput, takeOption } from "./commands/input";
 
@@ -15,7 +15,7 @@ export async function run(args: string[], env: Record<string, string | undefined
       i += consumed;
     } else { rest.push(arg); i++; }
   }
-  const client = await ApiClient.connect({ baseUrl: env.SPROUT_BASE_URL || "http://127.0.0.1:8080" });
+  const client = await ApiClient.connect({ baseUrl: env.SPROUT_BASE_URL || defaultBaseUrl(env) });
   let node = commandTree(client.catalog);
   const path: string[] = [];
   let offset = 0;

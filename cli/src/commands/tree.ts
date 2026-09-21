@@ -43,6 +43,6 @@ export function help(node: CommandNode, path: string[]): string {
     lines.push("", "Commands:");
     for (const [name, child] of node.children) lines.push(`  ${name}  ${(child.description ?? child.operation?.description)?.split("\n")[0] ?? ""}`.trimEnd());
   }
-  lines.push("", "Environment: SPROUT_BASE_URL (default: http://127.0.0.1:8080)", "  --help, -h  Show help");
+  lines.push("", "Environment: SPROUT_BASE_URL (default: local Unix socket)", "  --help, -h  Show help");
   return lines.join("\n");
 }

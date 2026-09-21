@@ -3,11 +3,12 @@ package sprout
 import cats.data.Kleisli
 import cats.effect.{IO, Resource}
 import cats.syntax.all.*
-import com.comcast.ip4s.{Host, Port}
+import com.comcast.ip4s.{Host, Port, UnixSocketAddress}
 import io.circe.{Json, Printer}
 import io.circe.syntax.*
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets.UTF_8
+import java.nio.file.Path
 import java.security.MessageDigest
 import org.http4s.{Header, HttpApp, Request, Response, Status}
 import org.http4s.ember.server.EmberServerBuilder
@@ -16,7 +17,7 @@ import org.typelevel.ci.CIString
 import scala.util.Try
 import sttp.apispec.openapi.circe.*
 
-final case class ServerSettings(host: String, port: Int, maxBodyBytes: Long)
+final case class ServerSettings(host: String, port: Int, maxBodyBytes: Long, socket: Option[String] = None)
 final case class OpenApiSettings(endpoint: String, title: String, version: String, description: Option[String])
 
 final class Application private[sprout] (
@@ -40,12 +41,19 @@ final class Application private[sprout] (
   }
 
   def resource: Resource[IO, org.http4s.server.Server] =
-    EmberServerBuilder.default[IO]
+    val builder = EmberServerBuilder.default[IO]
       .withHost(Host.fromString(serverSettings.host).get)
       .withPort(Port.fromInt(serverSettings.port).get)
       .withHttpApp(httpApp)
-      .build
-      .evalTap(server => IO(scribe.info(s"Sprout HTTP listening at ${server.address}; OpenAPI: ${openApiSettings.endpoint}")))
+    val bound = serverSettings.socket match
+      case None => builder.build
+      case Some(value) =>
+        UnixListener.resource(Path.of(value),
+          builder.withUnixSocketConfig(UnixSocketAddress(value), deleteIfExists = false, deleteOnClose = false).build)
+    bound.evalTap(server => IO {
+      val address = serverSettings.socket.fold(server.address.toString)(path => s"unix://$path")
+      scribe.info(s"Sprout HTTP listening at $address; OpenAPI: ${openApiSettings.endpoint}")
+    })
 
   def serve: IO[Nothing] = resource.useForever
 

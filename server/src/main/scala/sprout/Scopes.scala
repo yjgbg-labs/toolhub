@@ -21,6 +21,7 @@ trait TagScope extends ConfigScope:
 final class ServerScope private[sprout] (private[sprout] val gate: ConfigurationGate) extends ConfigScope:
   private[sprout] var hostValue = "127.0.0.1"
   private[sprout] var portValue = 8080
+  private[sprout] var socketValue: Option[String] = None
   private[sprout] var maxBodyBytesValue = 1024L * 1024L
 
 final class InfoScope private[sprout] (private[sprout] val gate: ConfigurationGate) extends DescriptionScope:
@@ -137,5 +138,5 @@ final class AppScope private[sprout] () extends ConfigScope:
   private[sprout] def freeze(): ApplicationDecl =
     gate.close()
     val info = openApiScope.infoScope
-    ApplicationDecl(ServerSettings(serverScope.hostValue, serverScope.portValue, serverScope.maxBodyBytesValue),
+    ApplicationDecl(ServerSettings(serverScope.hostValue, serverScope.portValue, serverScope.maxBodyBytesValue, serverScope.socketValue),
       OpenApiSettings(openApiScope.endpointValue, info.titleValue, info.versionValue, info.descriptionValue), routes.map(_.freeze()).toVector)
