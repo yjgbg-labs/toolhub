@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { ApiClient, defaultBaseUrl } from "./api";
-import { commandTree, help } from "./commands/tree";
+import { commandTree, help, usage } from "./commands/tree";
 import { operationInput, takeOption } from "./commands/input";
 
 export async function run(args: string[], env: Record<string, string | undefined> = process.env): Promise<string> {
@@ -31,7 +31,11 @@ export async function run(args: string[], env: Record<string, string | undefined
     if (rest.length > offset && !showHelp) throw new Error("Choose an operation before passing parameters");
     return help(node, path);
   }
-  const result = await client.call(node.operation.id, await operationInput(node.operation, rest.slice(offset)));
+  const input = await operationInput(node.operation, rest.slice(offset)).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message}\n${usage(node, path)}\nRun 'sprout ${path.join(" ")} --help' for details.`);
+  });
+  const result = await client.call(node.operation.id, input);
   return typeof result.body === "string" ? result.body : result.body === null ? "" : JSON.stringify(result.body, null, 2);
 }
 

@@ -74,6 +74,25 @@ test("CLI flags convert types and support repeated arrays, JSON bodies and compl
   }
 });
 
+test("CLI names missing required arguments, shows usage and does not execute an incomplete operation", async () => {
+  const before = api.requests.length;
+  const missing = "Missing required arguments: <id>, --X-Trace, --session\nUsage: sprout admin users get <id> [options]";
+  await expect(run(["admin", "users", "get"], env)).rejects.toThrow(missing);
+  await expect(run(["admin", "users", "get", "--input", '{"path":{}}'], env)).rejects.toThrow(missing);
+  await expect(run(["admin", "users", "get", "9", "--X-Trace", "t"], env)).rejects.toThrow("Missing required argument: --session");
+  await expect(run(["users", "create"], env)).rejects.toThrow("Missing required argument: --body <json|@file|->");
+  expect(api.requests.length).toBe(before);
+
+  const input = { path: { id: "9" }, header: { "X-Trace": "t" }, cookie: { session: "s" } };
+  for (const args of [
+    ["9", "--X-Trace", "t", "--session", "s"],
+    ["--path.id", "9", "--X-Trace", "t", "--session", "s"],
+    ["--input", JSON.stringify(input)],
+  ]) {
+    expect(JSON.parse(await run(["admin", "users", "get", ...args], env)).path).toBe("/api/admin/users/get/9");
+  }
+});
+
 test("CLI process reports HTTP errors on stderr with a failing exit code", async () => {
   const child = Bun.spawn([process.execPath, "cli/src/main.ts", "users", "fail"], { env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);

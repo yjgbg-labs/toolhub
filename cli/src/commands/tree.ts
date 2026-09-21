@@ -22,9 +22,13 @@ export function commandTree(catalog: Catalog): CommandNode {
   return root;
 }
 
-export function help(node: CommandNode, path: string[]): string {
+export function usage(node: CommandNode, path: string[]): string {
   const positional = node.operation?.parameters.filter(param => param.in === "path").map(param => `<${param.name}>`) ?? [];
-  const lines = [`Usage: sprout ${[...path, ...(node.children.size ? ["<command>"] : positional)].join(" ")} [options]`];
+  return `Usage: sprout ${[...path, ...(node.children.size ? ["<command>"] : positional)].join(" ")} [options]`;
+}
+
+export function help(node: CommandNode, path: string[]): string {
+  const lines = [usage(node, path)];
   if (node.description) lines.push("", node.description);
   if (node.operation) {
     const op = node.operation;

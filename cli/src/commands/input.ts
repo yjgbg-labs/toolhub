@@ -78,5 +78,10 @@ export async function operationInput(operation: Operation, args: string[]): Prom
       }
     }
   }
+  const missing = operation.parameters.filter(param => param.required &&
+    (input[param.in] == null || !Object.hasOwn(input[param.in]!, param.name))).map(param =>
+    param.in === "path" ? `<${param.name}>` : `--${flags.has(param.name) ? param.name : `${param.in}.${param.name}`}`);
+  if (operation.body?.required && !Object.hasOwn(input, "body")) missing.push("--body <json|@file|->");
+  if (missing.length) throw new Error(`Missing required argument${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
   return input;
 }

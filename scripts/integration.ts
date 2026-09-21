@@ -73,6 +73,11 @@ try {
   assert.equal(scheduleHelp.code, 0, scheduleHelp.stderr);
   assert.match(scheduleHelp.stdout, /Manage scheduled jobs/);
   assert.match(scheduleHelp.stdout, /config  Manage scheduler configuration/);
+  const missingName = await cli("schedule", "log");
+  assert.equal(missingName.code, 1);
+  assert.equal(missingName.stdout, "");
+  assert.match(missingName.stderr, /Missing required argument: <name>/);
+  assert.match(missingName.stderr, /Usage: sprout schedule log <name> \[options\]/);
   const missing = await cli("schedule", "log", "missing-job");
   assert.equal(missing.code, 1);
   assert.match(missing.stderr, /HTTP 404/);
@@ -155,7 +160,7 @@ try {
   assert.match(edit.stderr, /Unknown command/);
   const missingBody = await cliWithInput(["schedule", "config", "write"], JSON.stringify(configuration));
   assert.equal(missingBody.code, 1);
-  assert.match(missingBody.stderr, /Invalid input/);
+  assert.match(missingBody.stderr, /Missing required argument: --body/);
   const updated = { ...configuration, tickMs: 50 };
   const writeInput = await cliWithInput(["schedule", "config", "write", "--input", "-"], JSON.stringify({ body: updated }));
   assert.equal(writeInput.code, 0, writeInput.stderr);
