@@ -13,12 +13,12 @@ import sprout.dsl.*
 class OperationResultSuite extends CatsEffectSuite:
   private def request(path: String): Request[IO] = Request[IO](Method.POST, Uri.unsafeFromString(path))
 
-  test("the operation type declares HTTP 200 and encodes typed success results") {
+  test("the operation type declares HTTP 200 and encodes IO success values") {
     val user = User(7, "Ada")
     val app = httpApp { routes {
       group("users") {
-        operation[User]("get") { handle { IO.pure(ok(user)) } }
-        operation[Page[User]]("list") { handle { IO.pure(Page(List(user))).map(ok(_)) } }
+        operation[User]("get") { handle { IO.pure(user) } }
+        operation[Page[User]]("list") { handle { IO.pure(Page(List(user))) } }
       }
     } }
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
@@ -41,10 +41,10 @@ class OperationResultSuite extends CatsEffectSuite:
 
   test("String is text, Unit is empty and nullable and scalar JSON keep their declared schemas") {
     val app = httpApp { routes {
-      operation[String]("text") { handle { IO.pure(ok("literal \"text\"\n")) } }
-      operation[Unit]("empty") { handle { IO.unit.map(ok(_)) } }
-      operation[Option[User]]("nullable") { handle { IO.pure(ok(None)) } }
-      operation[Int]("count") { handle { IO.pure(ok(7)) } }
+      operation[String]("text") { handle { IO.pure("literal \"text\"\n") } }
+      operation[Unit]("empty") { handle { IO.unit } }
+      operation[Option[User]]("nullable") { handle { IO.pure(None) } }
+      operation[Int]("count") { handle { IO.pure(7) } }
     } }
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
     def success(path: String) = doc.hcursor.downField("paths").downField(path).downField("post").downField("responses").downField("200")
@@ -69,21 +69,32 @@ class OperationResultSuite extends CatsEffectSuite:
       assertEquals(count, Json.fromInt(7))
   }
 
-  test("explicit errors and typed successes share the same EndpointResult type") {
+  test("declared errors short-circuit typed IO handlers with their own status and schema") {
     val app = httpApp { routes {
       operation[User]("get") {
         val id = path[Int]("id")
         val missing = response.json[sprout.ErrorBody](404) { description("User not found") }
-        handle { IO.pure {
-          if id.value == 1 then ok(User(1, "Ada")) else missing(sprout.ErrorBody("not_found", "User not found"))
-        } }
+        handle {
+          IO.pure(Option.when(id.value == 1)(User(1, "Ada"))).flatMap {
+            case Some(user) => IO.pure(user)
+            case None => missing.raise(sprout.ErrorBody("not_found", "User not found"))
+          }
+        }
       }
       operation[Int]("check") {
         val valid = query[Boolean]("valid")
         val bad = response.text(400) {}
-        handle { IO.pure(if valid.value then ok(1) else bad("rejected")) }
+        handle { if valid.value then IO.pure(1) else bad.raise("rejected") }
+      }
+      operation[Unit]("gone") {
+        val gone = response.empty(410) {}
+        handle { gone.raise(()) }
       }
     } }
+    val doc = io.circe.parser.parse(app.openApiJson).toOption.get
+    val responses = doc.hcursor.downField("paths").downField("/get/{id}").downField("post").downField("responses")
+    assert(responses.downField("200").downField("content").downField("application/json").succeeded)
+    assert(responses.downField("404").downField("content").downField("application/json").succeeded)
     for
       found <- app.httpApp(request("/get/1"))
       missing <- app.httpApp(request("/get/2"))
@@ -91,6 +102,8 @@ class OperationResultSuite extends CatsEffectSuite:
       valid <- app.httpApp(request("/check?valid=true"))
       invalid <- app.httpApp(request("/check?valid=false"))
       rejected <- invalid.as[String]
+      gone <- app.httpApp(request("/gone"))
+      empty <- gone.as[String]
     yield
       assertEquals(found.status, Status.Ok)
       assertEquals(missing.status, Status.NotFound)
@@ -98,13 +111,15 @@ class OperationResultSuite extends CatsEffectSuite:
       assertEquals(valid.status, Status.Ok)
       assertEquals(invalid.status, Status.BadRequest)
       assertEquals(rejected, "rejected")
+      assertEquals(gone.status, Status.Gone)
+      assertEquals(empty, "")
   }
 
   test("response encoding and IO construction stay suspended until each request executes") {
     val calls = new AtomicInteger()
     val app = httpApp { routes {
-      operation[Int]("pure") { handle { IO.pure(ok(calls.incrementAndGet())) } }
-      operation[Int]("effect") { handle { val value = calls.incrementAndGet(); IO.pure(value).map(ok(_)) } }
+      operation[Int]("pure") { handle { IO.pure(calls.incrementAndGet()) } }
+      operation[Int]("effect") { handle { val value = calls.incrementAndGet(); IO.pure(value) } }
     } }
     val pending = app.httpApp(request("/pure"))
     assertEquals(calls.get(), 0)
@@ -119,34 +134,38 @@ class OperationResultSuite extends CatsEffectSuite:
       assertEquals(calls.get(), 3)
   }
 
-  test("handle requires IO[EndpointResult] and ok checks the declared operation type") {
+  test("handle requires IO of the declared operation type and errors check their payload type") {
     val pure = typeCheckErrors("""
       import sprout.dsl.*
-      httpApp { routes { operation[Int]("wrong") { handle { ok(1) } } } }
+      httpApp { routes { operation[Int]("wrong") { handle { 1 } } } }
     """)
     val effect = typeCheckErrors("""
       import cats.effect.IO
       import sprout.dsl.*
-      httpApp { routes { operation[Int]("wrong") { handle { IO.pure(1) } } } }
+      httpApp { routes { operation[Int]("wrong") { handle { IO.pure("wrong") } } } }
     """)
     val widen = typeCheckErrors("""
+      import cats.effect.IO
       import sprout.dsl.*
-      httpApp { routes { operation[Int]("wrong") { handle { IO.pure(ok[Any, Any]("wrong")) } } } }
+      httpApp { routes { operation[Int]("wrong") { handle[Any] { IO.pure("wrong") } } } }
     """)
     val mixed = typeCheckErrors("""
+      import cats.effect.IO
       import sprout.dsl.*
       httpApp { routes { operation[Int]("wrong") {
         val flag = query[Boolean]("flag")
-        handle { IO.pure(ok(if flag.value then 1 else "wrong")) }
+        handle { IO.pure(if flag.value then 1 else "wrong") }
       } } }
     """)
     val raw = typeCheckErrors("""
+      import cats.effect.IO
       import sprout.dsl.*
       httpApp { routes { get("/wrong") { handle { IO.pure(1) } } } }
     """)
     val unit = typeCheckErrors("""
+      import cats.effect.IO
       import sprout.dsl.*
-      httpApp { routes { operation[Unit]("wrong") { handle { IO.unit } } } }
+      httpApp { routes { operation[Unit]("wrong") { handle { IO.pure[String]("wrong") } } } }
     """)
     assert(pure.nonEmpty)
     assert(effect.nonEmpty)
@@ -154,24 +173,30 @@ class OperationResultSuite extends CatsEffectSuite:
     assert(mixed.nonEmpty)
     assert(raw.nonEmpty)
     assert(unit.nonEmpty)
-    val mismatch = typeCheckErrors("""
+    val endpointResult = typeCheckErrors("""
       import cats.effect.IO
       import sprout.dsl.*
-      httpApp { routes { operation[Int]("wrong") { handle { IO.pure(ok("wrong")) } } } }
+      httpApp { routes { operation[Int]("wrong") {
+        val bad = response.text(400) {}
+        handle { IO.pure(bad("wrong")) }
+      } } }
     """)
-    assert(mismatch.nonEmpty)
-    val unitMismatch = typeCheckErrors("""
+    assert(endpointResult.nonEmpty)
+    val errorPayload = typeCheckErrors("""
       import cats.effect.IO
       import sprout.dsl.*
-      httpApp { routes { operation[Unit]("wrong") { handle { IO.pure(ok("wrong")) } } } }
+      httpApp { routes { operation[Unit]("wrong") {
+        val bad = response.json[Int](400) {}
+        handle { bad.raise("wrong") }
+      } } }
     """)
-    assert(unitMismatch.nonEmpty)
+    assert(errorPayload.nonEmpty)
   }
 
   test("typed operations still require handlers and reject a second HTTP 200 declaration") {
     intercept[IllegalArgumentException] { httpApp { routes { operation[Int]("missing") {} } } }
     intercept[IllegalArgumentException] { httpApp { routes { operation[Int]("duplicate") {
       response.json[String](200) {}
-      handle { IO.pure(ok(1)) }
+      handle { IO.pure(1) }
     } } } }
   }

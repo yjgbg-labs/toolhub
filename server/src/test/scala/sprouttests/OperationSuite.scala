@@ -14,7 +14,7 @@ class OperationSuite extends CatsEffectSuite:
         val tenant = path[String]("tenant")
         val id = path[Long]("id") { minimum(1L) }
         val detail = query[Boolean]("detail") { default(false) }
-        handle { IO.pure(ok(List(tenant.value, id.value.toString, detail.value.toString))) }
+        handle { IO.pure(List(tenant.value, id.value.toString, detail.value.toString)) }
       }
     } }
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
@@ -36,7 +36,7 @@ class OperationSuite extends CatsEffectSuite:
       operation[String]("users.get") {
         val tenant = path[String]("tenant")
         val id = path[Long]("id")
-        handle { IO.pure(ok(s"${tenant.value}:${id.value}")) }
+        handle { IO.pure(s"${tenant.value}:${id.value}") }
       }
     } } }
     app.httpApp(Request[IO](Method.POST, Uri.unsafeFromString("/api/acme/users/get/7"))).flatMap(_.as[String])
@@ -50,13 +50,13 @@ class OperationSuite extends CatsEffectSuite:
     intercept[IllegalArgumentException] {
       httpApp { routes { operation[String]("users.list") {
         operationId("renamed")
-        handle { IO.pure(ok("ok")) }
+        handle { IO.pure("ok") }
       } } }
     }
     intercept[IllegalArgumentException] {
       httpApp { routes {
         List("/a", "/b").foreach { prefix => group(prefix) {
-          operation[String]("users.list") { handle { IO.pure(ok("ok")) } }
+          operation[String]("users.list") { handle { IO.pure("ok") } }
         } }
       } }
     }
@@ -73,7 +73,7 @@ class OperationSuite extends CatsEffectSuite:
             description("Report details")
             val tenant = path[String]("tenant")
             val id = path[Int]("id")
-            handle { IO.pure(ok(s"${tenant.value}:${id.value}")) }
+            handle { IO.pure(s"${tenant.value}:${id.value}") }
           }
         }
         description("Manage reports")
@@ -96,10 +96,10 @@ class OperationSuite extends CatsEffectSuite:
     val app = httpApp { routes {
       group("reports") {
         description("Manage reports")
-        operation[String]("list") { handle { IO.pure(ok("list")) } }
+        operation[String]("list") { handle { IO.pure("list") } }
       }
       group("reports") {
-        operation[String]("get") { handle { IO.pure(ok("get")) } }
+        operation[String]("get") { handle { IO.pure("get") } }
       }
     } }
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
@@ -121,9 +121,9 @@ class OperationSuite extends CatsEffectSuite:
     }
     interceptMessage[IllegalArgumentException]("requirement failed: Duplicate operationId") {
       httpApp { routes {
-        operation[String]("reports.list") { handle { IO.pure(ok("first")) } }
+        operation[String]("reports.list") { handle { IO.pure("first") } }
         group("/api") { group("reports") {
-          operation[String]("list") { handle { IO.pure(ok("second")) } }
+          operation[String]("list") { handle { IO.pure("second") } }
         } }
       } }
     }

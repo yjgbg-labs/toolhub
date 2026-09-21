@@ -98,8 +98,11 @@ private[sprout] object Compiler:
     }
 
   def bind(endpoint: ResolvedEndpoint): BoundEndpoint =
-    val base: RequestContext => IO[EndpointResult] = context => IO.defer(endpoint.handler(context))
-    val run = endpoint.middleware.foldRight(base) { (wrap, next) => context => IO.defer {
+    def respond(action: => IO[EndpointResult]): IO[EndpointResult] = IO.defer(action).recover {
+      case raised: RaisedResponse => raised.result
+    }
+    val base: RequestContext => IO[EndpointResult] = context => respond(endpoint.handler(context))
+    val run = endpoint.middleware.foldRight(base) { (wrap, next) => context => respond {
       val handler: Handler = (ctx: RequestContext) ?=> next(ctx)
       val wrapped: Handler = wrap(handler)
       wrapped(using context)

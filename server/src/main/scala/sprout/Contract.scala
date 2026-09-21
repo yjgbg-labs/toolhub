@@ -42,8 +42,11 @@ final class EndpointResult private[sprout] (
     private[sprout] val payload: Option[String]
 )
 
+private[sprout] final class RaisedResponse(val result: EndpointResult) extends RuntimeException(null, null, false, false)
+
 class Output[A] private[sprout] (key: ResponseKey[A], encode: A => Option[String]):
   def apply(value: A): EndpointResult = new EndpointResult(key, encode(value))
+  def raise(value: A): IO[Nothing] = IO.defer(IO.raiseError(new RaisedResponse(apply(value))))
 
 final class OutputDeclaration[A] private[sprout] (
     key: ResponseKey[A],

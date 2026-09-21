@@ -23,7 +23,7 @@ object Main extends IOApp.Simple:
       routes {
         ScheduleRoutes.register(scheduler)
         operation[String]("health") {
-          handle { IO.pure(ok("ok")) }
+          handle { IO.pure("ok") }
         }
       }
     }

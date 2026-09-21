@@ -158,7 +158,7 @@ class OpenApiSuite extends FunSuite:
           description("Manage reports")
           group("daily") {
             description("Daily reports")
-            operation[String]("read") { handle { IO.pure(ok("report")) } }
+            operation[String]("read") { handle { IO.pure("report") } }
           }
         }
         get("/trees/{id}") {

@@ -112,17 +112,18 @@ final class EndpointScope[A] private[sprout] (
     gate: ConfigurationGate,
     method: String,
     path: String,
+    declareResult: EndpointScope[A] => (A => EndpointResult),
     operation: Option[String] = None
 ) extends DeclarationScope(gate):
   private var handler: Option[RequestContext => IO[EndpointResult]] = None
   private[sprout] var operationIdValue: Option[String] = None
   private[sprout] var summaryValue: Option[String] = None
-  private[sprout] var successValue: Option[Output[A]] = None
+  private val encodeResult = declareResult(this)
 
-  private[sprout] def setHandler(logic: RequestContext => IO[EndpointResult]): Unit =
+  private[sprout] def setHandler(logic: RequestContext => IO[A]): Unit =
     gate.check()
     require(handler.isEmpty, s"Duplicate handler: $method $path")
-    handler = Some(logic)
+    handler = Some(context => logic(context).map(encodeResult))
 
   private[sprout] def freeze(): EndpointDecl =
     EndpointDecl(method, path, operation, operationIdValue, summaryValue, descriptionValue, freezeDeclarations(), handler)

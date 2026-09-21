@@ -74,14 +74,13 @@ object dsl:
 
   private def register(method: String, path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using scope: RoutesScope): Unit =
     scope.gate.check()
-    val endpoint = new EndpointScope[EndpointResult](scope.gate, method, path)
+    val endpoint = new EndpointScope[EndpointResult](scope.gate, method, path, _ => identity)
     init(using endpoint)
     scope.children += (() => endpoint.freeze())
 
   def operation[A](id: String)(init: EndpointScope[A] ?=> Unit)(using scope: RoutesScope, success: SuccessResponse[A]): Unit =
     scope.gate.check()
-    val endpoint = new EndpointScope[A](scope.gate, "POST", "", Some(id))
-    endpoint.successValue = Some(success.declare(endpoint))
+    val endpoint = new EndpointScope[A](scope.gate, "POST", "", endpoint => success.declare(endpoint).apply, Some(id))
     init(using endpoint)
     scope.children += (() => endpoint.freeze())
 
@@ -163,8 +162,5 @@ object dsl:
     scope.gate.check()
     scope.middlewareValue += wrap
 
-  def ok[A, B](using scope: EndpointScope[A])(value: B)(using conforms: B <:< A): EndpointResult =
-    scope.successValue.getOrElse(throw new IllegalStateException("No automatic success response declared")).apply(conforms(value))
-
-  def handle(logic: RequestContext ?=> IO[EndpointResult])(using scope: EndpointScope[?]): Unit =
+  def handle[A](using scope: EndpointScope[A])(logic: RequestContext ?=> IO[A]): Unit =
     scope.setHandler(context => logic(using context))
