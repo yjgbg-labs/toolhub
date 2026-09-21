@@ -12,7 +12,7 @@ async function bundle(version: string) {
   const payload = join(directory, "payload");
   for (const path of ["server", "cli/dist", "plugin/dist"]) await mkdir(join(payload, path), { recursive: true });
   await writeFile(join(payload, "server/groot.jar"), "test JAR");
-  await writeFile(join(payload, "cli/dist/sprout.js"), `console.log(JSON.stringify({ version: ${JSON.stringify(version)}, url: process.env.SPROUT_URL, args: process.argv.slice(2) }));`);
+  await writeFile(join(payload, "cli/dist/sprout.js"), `console.log(JSON.stringify({ version: ${JSON.stringify(version)}, url: process.env.SPROUT_BASE_URL, args: process.argv.slice(2) }));`);
   await writeFile(join(payload, "plugin/dist/index.js"), `export default { id: "sprout", setup(ctx) { return ctx.options; } };`);
   await writeFile(join(payload, "plugin/package.json"), JSON.stringify({ name: "opencode-sprout-plugin", type: "module", dependencies: {} }));
   const file = join(directory, "bundle.tar.gz");
@@ -57,10 +57,13 @@ test("CLI deploy verifies the remote release, forwards arguments and atomically 
     await deploy("cli", api.config);
     const path = join(api.config.binDir, "sprout");
     expect((await stat(path)).mode & 0o777).toBe(0o755);
-    const process = Bun.spawn([path, "users", "get", "--id", "a b"], { env: { ...Bun.env, SPROUT_URL: "" }, stdout: "pipe", stderr: "pipe" });
+    const process = Bun.spawn([path, "users", "get", "--id", "a b"], { env: { ...Bun.env, SPROUT_BASE_URL: "" }, stdout: "pipe", stderr: "pipe" });
     const result = JSON.parse(await new Response(process.stdout).text());
     expect(await process.exited).toBe(0);
     expect(result).toEqual({ version: "first", url: api.config.baseUrl, args: ["users", "get", "--id", "a b"] });
+    const override = Bun.spawn([path, "health"], { env: { ...Bun.env, SPROUT_BASE_URL: "http://localhost:9000/api" }, stdout: "pipe", stderr: "pipe" });
+    expect(JSON.parse(await new Response(override.stdout).text()).url).toBe("http://localhost:9000/api");
+    expect(await override.exited).toBe(0);
     await deploy("cli", api.config);
     expect(api.downloads()).toBe(1);
     await deploy("cli", { ...api.config, artifact: second.artifact, sha256: second.sha256 });

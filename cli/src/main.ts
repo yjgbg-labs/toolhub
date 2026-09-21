@@ -1,29 +1,21 @@
 #!/usr/bin/env bun
-import { ApiClient, type ClientOptions } from "./api";
+import { ApiClient } from "./api";
 import { commandTree, help } from "./commands/tree";
 import { operationInput, takeOption } from "./commands/input";
 
 export async function run(args: string[], env: Record<string, string | undefined> = process.env): Promise<string> {
-  const options: ClientOptions = {
-    baseUrl: env.SPROUT_URL ?? "http://127.0.0.1:8080",
-    schemaUrl: env.SPROUT_OPENAPI_URL,
-    headers: env.SPROUT_TOKEN ? { Authorization: `Bearer ${env.SPROUT_TOKEN}` } : {},
-  };
   const rest: string[] = [];
   let showHelp = false;
   for (let i = 0; i < args.length;) {
     const arg = args[i]!;
     if (arg === "--help" || arg === "-h") { showHelp = true; i++; continue; }
     if (arg.startsWith("--")) {
-      const [name, value, consumed] = takeOption(args, i);
-      if (name === "url") options.baseUrl = value;
-      else if (name === "schema") options.schemaUrl = value;
-      else if (name === "timeout") options.timeoutMs = Number(value);
-      else rest.push(...args.slice(i, i + consumed));
+      const [, , consumed] = takeOption(args, i);
+      rest.push(...args.slice(i, i + consumed));
       i += consumed;
     } else { rest.push(arg); i++; }
   }
-  const client = await ApiClient.connect(options);
+  const client = await ApiClient.connect({ baseUrl: env.SPROUT_BASE_URL || "http://127.0.0.1:8080" });
   let node = commandTree(client.catalog);
   const path: string[] = [];
   let offset = 0;

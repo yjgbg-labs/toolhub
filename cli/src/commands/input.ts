@@ -1,6 +1,6 @@
 import type { Operation, OperationInput, Parameter, Schema } from "../api";
 
-const reserved = new Set(["body", "input", "help", "url", "schema", "timeout"]);
+const reserved = new Set(["body", "input", "help"]);
 export async function jsonArgument(raw: string): Promise<unknown> {
   const text = raw === "-" ? await Bun.stdin.text() : raw.startsWith("@") ? await Bun.file(raw.slice(1)).text() : raw;
   return JSON.parse(text);

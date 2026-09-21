@@ -223,8 +223,8 @@ export async function deploy(component: Component, config: DeploymentConfig, run
     const current = await activate(config, component, release);
     await installFile(target, `#!/bin/sh
 # ${marker}
-if [ -z "\${SPROUT_URL:-}" ]; then
-  export SPROUT_URL=${shellQuote(config.baseUrl)}
+if [ -z "\${SPROUT_BASE_URL:-}" ]; then
+  export SPROUT_BASE_URL=${shellQuote(config.baseUrl)}
 fi
 exec ${shellQuote(config.bun)} ${shellQuote(join(current, "dist/sprout.js"))} "$@"
 `, 0o755);

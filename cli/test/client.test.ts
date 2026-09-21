@@ -4,6 +4,7 @@ import { run } from "../src/main";
 import { document, fixture } from "./fixture";
 
 const api = fixture();
+const env = { SPROUT_BASE_URL: api.baseUrl };
 afterAll(() => api.server.stop(true));
 const client = await ApiClient.connect({ baseUrl: api.baseUrl, headers: { Authorization: "Bearer test" } });
 
@@ -47,29 +48,34 @@ test("text, empty and HTTP error responses have consistent outcomes", async () =
 });
 
 test("hierarchical CLI help lists groups and location-qualified ambiguous parameters", async () => {
-  const root = await run(["--url", api.baseUrl, "--help"], {});
+  const root = await run(["--help"], env);
   expect(root).toContain("admin  Administration");
   expect(root).not.toContain("Administrative operations");
   expect(root).not.toContain("unused");
-  expect(await run(["--url", api.baseUrl, "admin", "--help"], {})).toContain("Administration\nAdministrative operations");
-  expect(await run(["--url", api.baseUrl, "admin", "--help"], {})).toContain("users  Administer users");
-  expect(await run(["--url", api.baseUrl, "admin", "users", "--help"], {})).toContain("get  Get a user");
-  const leaf = await run(["--url", api.baseUrl, "admin", "users", "get", "--help"], {});
+  expect(root).toContain("Environment: SPROUT_BASE_URL");
+  expect(root).not.toMatch(/--url|--schema|--timeout|SPROUT_URL|SPROUT_OPENAPI_URL|SPROUT_TOKEN/);
+  expect(await run(["admin", "--help"], env)).toContain("Administration\nAdministrative operations");
+  expect(await run(["admin", "--help"], env)).toContain("users  Administer users");
+  expect(await run(["admin", "users", "--help"], env)).toContain("get  Get a user");
+  const leaf = await run(["admin", "users", "get", "--help"], env);
   expect(leaf).toContain("--path.id <string>");
   expect(leaf).toContain("--query.id <integer>");
   expect(leaf).toContain("default 20");
 });
 
 test("CLI flags convert types and support repeated arrays, JSON bodies and complete inputs", async () => {
-  const result = JSON.parse(await run(["admin", "users", "get", "--url", api.baseUrl, "--path.id", "9", "--query.id=2", "--tag", "a", "--tag", "b", "--active", "false", "--X-Trace", "trace", "--session", "s"], {}));
+  const result = JSON.parse(await run(["admin", "users", "get", "--path.id", "9", "--query.id=2", "--tag", "a", "--tag", "b", "--active", "false", "--X-Trace", "trace", "--session", "s"], env));
   expect(result.query).toEqual([["id", "2"], ["tag", "a"], ["tag", "b"], ["active", "false"]]);
-  expect(JSON.parse(await run(["users", "create", "--body", '{"name":"Ada"}'], { SPROUT_URL: api.baseUrl }))).toEqual({ name: "Ada" });
-  expect(JSON.parse(await run(["--url", api.baseUrl, "users", "create", "--input", '{"body":{"name":"Ada"}}'], {}))).toEqual({ name: "Ada" });
-  await expect(run(["--url", api.baseUrl, "users", "create", "--typo", "x"], {})).rejects.toThrow("Unknown option");
+  expect(JSON.parse(await run(["users", "create", "--body", '{"name":"Ada"}'], env))).toEqual({ name: "Ada" });
+  expect(JSON.parse(await run(["users", "create", "--input", '{"body":{"name":"Ada"}}'], env))).toEqual({ name: "Ada" });
+  await expect(run(["users", "create", "--typo", "x"], env)).rejects.toThrow("Unknown option");
+  for (const name of ["url", "schema", "timeout"]) {
+    await expect(run(["health", `--${name}`, "unused"], env)).rejects.toThrow(`Unknown option --${name}`);
+  }
 });
 
 test("CLI process reports HTTP errors on stderr with a failing exit code", async () => {
-  const child = Bun.spawn([process.execPath, "cli/src/main.ts", "--url", api.baseUrl, "users", "fail"], { stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([process.execPath, "cli/src/main.ts", "users", "fail"], { env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect(code).toBe(1);
   expect(stdout).toBe("");
@@ -79,7 +85,7 @@ test("CLI process reports HTTP errors on stderr with a failing exit code", async
 
 test("CLI discovers changed operation IDs from OpenAPI on each invocation", async () => {
   const dynamic = fixture();
-  const env = { SPROUT_URL: dynamic.baseUrl };
+  const env = { SPROUT_BASE_URL: dynamic.baseUrl };
   try {
     dynamic.doc.paths["/health"].get.operationId = "reports.daily.summary";
     dynamic.doc.tags.push({ name: "reports", description: "Report operations" }, { name: "reports.daily", description: "Daily reports" });

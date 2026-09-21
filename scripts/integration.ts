@@ -50,7 +50,8 @@ try {
   assert.equal((await client.call("health")).body, "ok");
 
   async function cliWithInput(args: string[], stdin?: string) {
-    const child = Bun.spawn([Bun.which("bun")!, "cli/dist/sprout.js", "--url", baseUrl, ...args], {
+    const child = Bun.spawn([Bun.which("bun")!, "cli/dist/sprout.js", ...args], {
+      env: { ...process.env, SPROUT_BASE_URL: baseUrl },
       stdout: "pipe", stderr: "pipe", stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
     });
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -61,6 +62,8 @@ try {
   assert.equal(rootHelp.code, 0, rootHelp.stderr);
   assert.match(rootHelp.stdout, /schedule  Manage scheduled jobs/);
   assert.doesNotMatch(rootHelp.stdout, /\busers\b/);
+  assert.match(rootHelp.stdout, /Environment: SPROUT_BASE_URL/);
+  assert.doesNotMatch(rootHelp.stdout, /--url|--schema|--timeout|SPROUT_URL|SPROUT_OPENAPI_URL|SPROUT_TOKEN/);
   const scheduleHelp = await cli("schedule", "--help");
   assert.equal(scheduleHelp.code, 0, scheduleHelp.stderr);
   assert.match(scheduleHelp.stdout, /Manage scheduled jobs/);

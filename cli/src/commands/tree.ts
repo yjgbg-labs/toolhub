@@ -30,7 +30,7 @@ export function help(node: CommandNode, path: string[]): string {
     const op = node.operation;
     lines.push("", op.description, `${op.method} ${op.path}`, "", "Parameters (location-qualified flags are always available):");
     for (const param of op.parameters) {
-      const ambiguous = op.parameters.filter(other => other.name === param.name).length > 1 || ["body", "input", "help", "url", "schema", "timeout"].includes(param.name);
+      const ambiguous = op.parameters.filter(other => other.name === param.name).length > 1 || ["body", "input", "help"].includes(param.name);
       const name = ambiguous ? `${param.in}.${param.name}` : param.name;
       const type = Array.isArray(param.schema.type) ? param.schema.type.join("|") : param.schema.type;
       const fallback = Object.hasOwn(param.schema, "default") ? `; default ${JSON.stringify(param.schema.default)}` : "";
@@ -43,7 +43,6 @@ export function help(node: CommandNode, path: string[]): string {
     lines.push("", "Commands:");
     for (const [name, child] of node.children) lines.push(`  ${name}  ${(child.description ?? child.operation?.description)?.split("\n")[0] ?? ""}`.trimEnd());
   }
-  lines.push("", "Connection: --url <base-url>, --schema <openapi-url>, --timeout <milliseconds>",
-    "Environment: SPROUT_URL, SPROUT_OPENAPI_URL, SPROUT_TOKEN", "  --help, -h  Show help");
+  lines.push("", "Environment: SPROUT_BASE_URL (default: http://127.0.0.1:8080)", "  --help, -h  Show help");
   return lines.join("\n");
 }
