@@ -5,7 +5,8 @@ import { document } from "./fixture";
 
 test("path positionals remain typed and reject duplicate location-qualified flags", async () => {
   const op = new Catalog(document()).byId.get("admin.users.get")!;
-  expect((await operationInput(op, ["a/b +?", "--query.id", "9"]))).toEqual({ path: { id: "a/b +?" }, query: { id: 9 } });
+  expect((await operationInput(op, ["a/b +?", "--query.id", "9", "--X-Trace", "trace", "--session", "s"])))
+    .toEqual({ path: { id: "a/b +?" }, query: { id: 9 }, header: { "X-Trace": "trace" }, cookie: { session: "s" } });
   await expect(operationInput(op, ["first", "--path.id", "second"])).rejects.toThrow("Duplicate");
   await expect(operationInput(op, ["first", "second"])).rejects.toThrow("Unexpected argument");
   await expect(operationInput(op, ["first", "--input", "{}"])).rejects.toThrow("alone");
