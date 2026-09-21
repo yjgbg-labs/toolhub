@@ -15,8 +15,8 @@ class CompilerSuite extends CatsEffectSuite:
       group("users") {
         val tenant = header[String]("X-Tenant") { default("default") }
         configure = () => tenant { default("changed") }
-        operation[String]("get") { handle { calls.incrementAndGet(); tenant.value } }
-        group("admin") { operation[String]("get") { handle { tenant.value } } }
+        operation[String]("get") { handle { calls.incrementAndGet(); IO.pure(ok(tenant.value)) } }
+        group("admin") { operation[String]("get") { handle { IO.pure(ok(tenant.value)) } } }
         val failed = response.text(503) {}
         middleware { next => next.recover { case _: IllegalStateException => failed("unavailable") } }
       }

@@ -163,5 +163,8 @@ object dsl:
     scope.gate.check()
     scope.middlewareValue += wrap
 
-  def handle[A](using scope: EndpointScope[A])(logic: RequestContext ?=> A | EndpointResult | IO[A | EndpointResult]): Unit =
+  def ok[A, B](using scope: EndpointScope[A])(value: B)(using conforms: B <:< A): EndpointResult =
+    scope.successValue.getOrElse(throw new IllegalStateException("No automatic success response declared")).apply(conforms(value))
+
+  def handle(logic: RequestContext ?=> IO[EndpointResult])(using scope: EndpointScope[?]): Unit =
     scope.setHandler(context => logic(using context))

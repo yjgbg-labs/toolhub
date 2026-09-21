@@ -98,20 +98,10 @@ private[sprout] object Compiler:
     }
 
   def bind(endpoint: ResolvedEndpoint): BoundEndpoint =
-    val base = bindHandler(endpoint.handler)
+    val base: RequestContext => IO[EndpointResult] = context => IO.defer(endpoint.handler(context))
     val run = endpoint.middleware.foldRight(base) { (wrap, next) => context => IO.defer {
       val handler: Handler = (ctx: RequestContext) ?=> next(ctx)
       val wrapped: Handler = wrap(handler)
       wrapped(using context)
     } }
     BoundEndpoint(endpoint.spec, run)
-
-  private def bindHandler[A](handler: HandlerDecl[A]): RequestContext => IO[EndpointResult] =
-    def result(value: A | EndpointResult): EndpointResult = value match
-      case response: EndpointResult => response
-      case value => handler.success.get.apply(value.asInstanceOf[A])
-    context => IO.defer {
-      handler.logic(context) match
-        case effect: IO[?] => effect.asInstanceOf[IO[A | EndpointResult]].map(result)
-        case value => IO.pure(result(value.asInstanceOf[A | EndpointResult]))
-    }

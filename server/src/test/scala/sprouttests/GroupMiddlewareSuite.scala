@@ -29,10 +29,10 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
         val session = cookie[Option[String]]("session")
         operation[List[String]]("get") {
           val id = path[Long]("id")
-          handle { IO.cede.as(List(tenant.value, id.value.toString, limit.value.toString, token.value, session.value.getOrElse("none"))) }
+          handle { IO.cede.as(ok(List(tenant.value, id.value.toString, limit.value.toString, token.value, session.value.getOrElse("none")))) }
         }
         group("admin") {
-          operation[String]("read") { handle { IO.cede *> IO(s"${tenant.value}:${token.value}:${limit.value}") } }
+          operation[String]("read") { handle { IO.cede *> IO(ok(s"${tenant.value}:${token.value}:${limit.value}")) } }
         }
       }
     } } }
@@ -61,7 +61,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
         val section = path[String]("section")
         operation[String]("get") {
           val id = path[Int]("id")
-          handle { s"${tenant.value}:${section.value}:${id.value}" }
+          handle { IO.pure(ok(s"${tenant.value}:${section.value}:${id.value}")) }
         }
       }
     } } }
@@ -87,9 +87,9 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
       middleware { next =>
         IO { assert(input.value.active); seen.incrementAndGet() } *> next
       }
-      operation[String]("name") { handle { input.value.name } }
+      operation[String]("name") { handle { IO.pure(ok(input.value.name)) } }
       group("copy") {
-        operation[CreateUser]("read") { handle { IO.pure(input.value) } }
+        operation[CreateUser]("read") { handle { IO.pure(ok(input.value)) } }
       }
     } } }
     assert(operationDoc(app, "/users/copy/read").downField("requestBody").succeeded)
@@ -115,7 +115,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
         middleware(trace("first"))
         group("inner") {
           operation[String]("run") {
-            handle { events += "handle"; "ok" }
+            handle { events += "handle"; IO.pure(ok("ok")) }
             middleware(trace("operation"))
           }
           middleware(trace("child"))
@@ -142,13 +142,13 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
         case error: IllegalArgumentException => rejected(s"${label.value}:${error.getMessage}")
       } }
       operation[String]("pure") { handle { throw new IllegalStateException("pure") } }
-      operation[Int]("effect") { handle { IO.raiseError[Int](new IllegalStateException("effect")) } }
+      operation[Int]("effect") { handle { IO.raiseError[EndpointResult](new IllegalStateException("effect")) } }
       operation[Unit]("construct") {
         def action: IO[Unit] = throw new IllegalStateException("construct")
-        handle { action }
+        handle { action.map(ok(_)) }
       }
       group("nested") {
-        operation[Double]("encode") { handle { Double.PositiveInfinity } }
+        operation[Double]("encode") { handle { IO.pure(ok(Double.PositiveInfinity)) } }
       }
     } } }
     List("pure", "effect", "construct", "nested/encode").traverse_ { path =>
@@ -170,14 +170,14 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
       group("inner") {
         val inner = response.text(409) {}
         middleware { next => next.recoverWith { case _: IllegalStateException => IO.pure(inner("inner")) } }
-        operation[String]("handled") { handle { IO.raiseError[String](new IllegalStateException("failure")) } }
+        operation[String]("handled") { handle { IO.raiseError[EndpointResult](new IllegalStateException("failure")) } }
         operation[String]("rethrow") {
           middleware { next => next.recover { case _: IllegalStateException => throw new IllegalArgumentException("recovery") } }
           handle { throw new IllegalStateException("failure") }
         }
         operation[String]("middleware") {
           middleware { _ => throw new IllegalArgumentException("middleware") }
-          handle { "unused" }
+          handle { IO.pure(ok("unused")) }
         }
       }
     } } }
@@ -201,8 +201,8 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
     val handled = new AtomicInteger()
     val wrapped = new AtomicInteger()
     val app = httpApp { routes { group("late") {
-      operation[Int]("count") { handle { handled.incrementAndGet() } }
-      group("child") { operation[Unit]("empty") { handle { handled.incrementAndGet(); () } } }
+      operation[Int]("count") { handle { IO.pure(ok(handled.incrementAndGet())) } }
+      group("child") { operation[Unit]("empty") { handle { handled.incrementAndGet(); IO.pure(ok(())) } } }
       val enabled = query[Boolean]("enabled")
       val denied = response.text(403) {}
       middleware { next =>
@@ -235,10 +235,10 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
       val missing = response.json[sprout.ErrorBody](404) {}
       get("/manual") {
         val ok = response.text(200) {}
-        handle { if id.value == 1 then ok("manual") else missing(sprout.ErrorBody("not_found", "missing")) }
+        handle { IO.pure(if id.value == 1 then ok("manual") else missing(sprout.ErrorBody("not_found", "missing"))) }
       }
       operation[String]("typed") {
-        handle { if id.value == 1 then "typed" else missing(sprout.ErrorBody("not_found", "missing")) }
+        handle { IO.pure(if id.value == 1 then ok("typed") else missing(sprout.ErrorBody("not_found", "missing"))) }
       }
     } } }
     List(request("/api/2/manual", Method.GET), request("/api/2/typed")).traverse_ { req =>
@@ -261,12 +261,12 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
         input = Some(n)
         output = Some(denied)
         middleware { _ => IO.pure(denied(n.value.toString)) }
-        operation[Int]("first") { handle { n.value } }
+        operation[Int]("first") { handle { IO.pure(ok(n.value)) } }
       }
       group("users") {
-        operation[String]("second") { handle { "independent" } }
-        operation[Int]("input") { handle { input.get.value } }
-        operation[String]("output") { handle { output.get("foreign") } }
+        operation[String]("second") { handle { IO.pure(ok("independent")) } }
+        operation[Int]("input") { handle { IO.pure(ok(input.get.value)) } }
+        operation[String]("output") { handle { IO.pure(output.get("foreign")) } }
       }
     } }
     val doc = operationDoc(app, "/users/second")
@@ -289,27 +289,27 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
       intercept[IllegalArgumentException] { httpApp { routes(init) } }
     invalid {
       query[Int]("n")
-      operation[Int]("read") { query[Int]("n"); handle { 1 } }
+      operation[Int]("read") { query[Int]("n"); handle { IO.pure(ok(1)) } }
     }
     invalid { group("one") {
       header[String]("X-Token")
-      group("two") { header[String]("x-token"); operation[Int]("read") { handle { 1 } } }
+      group("two") { header[String]("x-token"); operation[Int]("read") { handle { IO.pure(ok(1)) } } }
     } }
     invalid {
       body.json[Int]
-      operation[Int]("read") { body.json[String]; handle { 1 } }
+      operation[Int]("read") { body.json[String]; handle { IO.pure(ok(1)) } }
     }
     invalid {
       response.text(404) {}
-      operation[Int]("read") { response.json[Int](404) {}; handle { 1 } }
+      operation[Int]("read") { response.json[Int](404) {}; handle { IO.pure(ok(1)) } }
     }
     invalid {
       response.text(200) {}
-      operation[Int]("read") { handle { 1 } }
+      operation[Int]("read") { handle { IO.pure(ok(1)) } }
     }
     invalid {
       response.text(404) {}
-      head("/head") { val ok = response.empty(200) {}; handle { ok(()) } }
+      head("/head") { val ok = response.empty(200) {}; handle { IO.pure(ok(())) } }
     }
   }
 

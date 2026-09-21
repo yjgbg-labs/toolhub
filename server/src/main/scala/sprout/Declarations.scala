@@ -11,11 +11,6 @@ private[sprout] final case class ScopeDecl(
 
 private[sprout] sealed trait RouteDecl
 
-private[sprout] final case class HandlerDecl[A](
-    success: Option[Output[A]],
-    logic: RequestContext => (A | EndpointResult | IO[A | EndpointResult])
-)
-
 private[sprout] final case class GroupDecl(
     name: String,
     description: Option[String],
@@ -31,7 +26,7 @@ private[sprout] final case class EndpointDecl(
     summary: Option[String],
     description: Option[String],
     scope: ScopeDecl,
-    handler: Option[HandlerDecl[?]]
+    handler: Option[RequestContext => IO[EndpointResult]]
 ) extends RouteDecl
 
 private[sprout] final case class ApplicationDecl(
@@ -42,7 +37,7 @@ private[sprout] final case class ApplicationDecl(
 
 private[sprout] final case class ResolvedEndpoint(
     spec: EndpointSpec,
-    handler: HandlerDecl[?],
+    handler: RequestContext => IO[EndpointResult],
     middleware: Vector[Handler => Handler]
 )
 

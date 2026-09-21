@@ -1,5 +1,6 @@
 package sprouttests
 
+import cats.effect.IO
 import io.circe.{Json, JsonObject}
 import munit.FunSuite
 import sprout.dsl.*
@@ -40,13 +41,13 @@ class OpenApiSuite extends FunSuite:
               val id = path[Long]("id") { description("User ID"); minimum(1L) }
               val limit = query[Int]("limit") { default(20); minimum(5); minimum(1); maximum(100) }
               val ok = response.json[User](200) { description("Found") }
-              handle { ok(User(id.value, limit.value.toString)) }
+              handle { IO.pure(ok(User(id.value, limit.value.toString))) }
             }
             post("") {
               val id = path[Long]("id")
               val input = body.json[CreateUser] { description("User payload") }
               val created = response.json[User](201) {}
-              handle { created(User(id.value, input.value.name)) }
+              handle { IO.pure(created(User(id.value, input.value.name))) }
             }
           }
           tag("API")
@@ -80,10 +81,10 @@ class OpenApiSuite extends FunSuite:
   test("recursive and generic schemas use stable distinct component references") {
     val app = httpApp {
       routes {
-        get("/users") { val ok = response.json[Page[User]](200) {}; handle { ok(Page(Nil)) } }
-        get("/strings") { val ok = response.json[Page[String]](200) {}; handle { ok(Page(Nil)) } }
-        get("/tree") { val ok = response.json[Tree](200) {}; handle { ok(Tree("root")) } }
-        get("/branch") { val ok = response.json[Branch](200) {}; handle { ok(Branch(Nil)) } }
+        get("/users") { val ok = response.json[Page[User]](200) {}; handle { IO.pure(ok(Page(Nil))) } }
+        get("/strings") { val ok = response.json[Page[String]](200) {}; handle { IO.pure(ok(Page(Nil))) } }
+        get("/tree") { val ok = response.json[Tree](200) {}; handle { IO.pure(ok(Tree("root"))) } }
+        get("/branch") { val ok = response.json[Branch](200) {}; handle { IO.pure(ok(Branch(Nil))) } }
       }
     }
     val doc = parse(app)
@@ -102,9 +103,9 @@ class OpenApiSuite extends FunSuite:
   test("model defaults, nullability and enum encoding are reflected in the same contract") {
     val app = httpApp {
       routes {
-        post("/create") { val in = body.json[CreateUser]; val ok = response.json[CreateUser](200) {}; handle { ok(in.value) } }
-        get("/color") { val ok = response.json[Color](200) {}; handle { ok(Color.Red) } }
-        get("/event") { val ok = response.json[Event](200) {}; handle { ok(Event.Created(1L)) } }
+        post("/create") { val in = body.json[CreateUser]; val ok = response.json[CreateUser](200) {}; handle { IO.pure(ok(in.value)) } }
+        get("/color") { val ok = response.json[Color](200) {}; handle { IO.pure(ok(Color.Red)) } }
+        get("/event") { val ok = response.json[Event](200) {}; handle { IO.pure(ok(Event.Created(1L))) } }
       }
     }
     val doc = parse(app)
@@ -126,7 +127,7 @@ class OpenApiSuite extends FunSuite:
         get("/") {
           val n = query[Int]("n")
           val bad = response.json[String](400) {}
-          handle { bad(n.value.toString) }
+          handle { IO.pure(bad(n.value.toString)) }
         }
       }
     }
@@ -140,7 +141,7 @@ class OpenApiSuite extends FunSuite:
       routes {
         head("/health") {
           val ok = response.empty(200) {}
-          handle { ok(()) }
+          handle { IO.pure(ok(())) }
         }
       }
     }
@@ -157,19 +158,19 @@ class OpenApiSuite extends FunSuite:
           description("Manage reports")
           group("daily") {
             description("Daily reports")
-            operation[String]("read") { handle { "report" } }
+            operation[String]("read") { handle { IO.pure(ok("report")) } }
           }
         }
         get("/trees/{id}") {
           val id = path[Long]("id") { minimum(1L) }
           val color = query[Option[String]]("color")
           val ok = response.json[Page[Tree]](200) {}
-          handle { ok(Page(List(Tree(id.value.toString)))) }
+          handle { IO.pure(ok(Page(List(Tree(id.value.toString))))) }
         }
         post("/events") {
           val input = body.json[Event]
           val created = response.json[Event](201) {}
-          handle { created(input.value) }
+          handle { IO.pure(created(input.value)) }
         }
       }
     }

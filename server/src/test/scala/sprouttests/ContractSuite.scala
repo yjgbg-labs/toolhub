@@ -1,5 +1,6 @@
 package sprouttests
 
+import cats.effect.IO
 import munit.FunSuite
 import sprout.dsl.*
 import scala.compiletime.testing.typeCheckErrors
@@ -10,10 +11,10 @@ class ContractSuite extends FunSuite:
       httpApp { routes { get("/") { response.text(200) {} } } }
     }
     intercept[IllegalArgumentException] {
-      httpApp { routes { get("/{id}") { val ok = response.text(200) {}; handle { ok("ok") } } } }
+      httpApp { routes { get("/{id}") { val ok = response.text(200) {}; handle { IO.pure(ok("ok")) } } } }
     }
     intercept[IllegalArgumentException] {
-      httpApp { routes { get("/") { handle[EndpointResult] { throw new RuntimeException("not executed") } } } }
+      httpApp { routes { get("/") { handle { throw new RuntimeException("not executed") } } } }
     }
   }
 
@@ -21,29 +22,29 @@ class ContractSuite extends FunSuite:
     intercept[IllegalArgumentException] {
       httpApp {
         routes {
-          get("/") { val ok = response.text(200) {}; handle { ok("first") } }
-          get("/") { val ok = response.text(200) {}; handle { ok("second") } }
+          get("/") { val ok = response.text(200) {}; handle { IO.pure(ok("first")) } }
+          get("/") { val ok = response.text(200) {}; handle { IO.pure(ok("second")) } }
         }
       }
     }
     intercept[IllegalArgumentException] {
       httpApp {
         routes {
-          get("/{id}") { val id = path[Int]("id"); val ok = response.json[Int](200) {}; handle { ok(id.value) } }
-          post("/{name}") { val name = path[String]("name"); val ok = response.text(200) {}; handle { ok(name.value) } }
+          get("/{id}") { val id = path[Int]("id"); val ok = response.json[Int](200) {}; handle { IO.pure(ok(id.value)) } }
+          post("/{name}") { val name = path[String]("name"); val ok = response.text(200) {}; handle { IO.pure(ok(name.value)) } }
         }
       }
     }
     intercept[IllegalArgumentException] {
       httpApp {
         routes {
-          get("/a") { operationId("same"); val ok = response.text(200) {}; handle { ok("a") } }
-          get("/b") { operationId("same"); val ok = response.text(200) {}; handle { ok("b") } }
+          get("/a") { operationId("same"); val ok = response.text(200) {}; handle { IO.pure(ok("a")) } }
+          get("/b") { operationId("same"); val ok = response.text(200) {}; handle { IO.pure(ok("b")) } }
         }
       }
     }
     intercept[IllegalArgumentException] {
-      httpApp { routes { get("/openapi.json") { val ok = response.text(200) {}; handle { ok("bad") } } } }
+      httpApp { routes { get("/openapi.json") { val ok = response.text(200) {}; handle { IO.pure(ok("bad")) } } } }
     }
   }
 
@@ -52,14 +53,14 @@ class ContractSuite extends FunSuite:
       httpApp { routes { get("/") {
         val n = query[Int]("n") { default(0); minimum(1) }
         val ok = response.json[Int](200) {}
-        handle { ok(n.value) }
+        handle { IO.pure(ok(n.value)) }
       } } }
     }
     intercept[IllegalArgumentException] {
       httpApp { routes { get("/{id}") {
         val id = path[Option[Int]]("id")
         val ok = response.json[Option[Int]](200) {}
-        handle { ok(id.value) }
+        handle { IO.pure(ok(id.value)) }
       } } }
     }
     intercept[IllegalArgumentException] {
@@ -67,11 +68,11 @@ class ContractSuite extends FunSuite:
         header[Int]("X-Test")
         header[String]("x-test")
         val ok = response.text(200) {}
-        handle { ok("ok") }
+        handle { IO.pure(ok("ok")) }
       } } }
     }
     intercept[IllegalArgumentException] {
-      httpApp { routes { get("/") { val ok = response.json[String](204) {}; handle { ok("invalid") } } } }
+      httpApp { routes { get("/") { val ok = response.json[String](204) {}; handle { IO.pure(ok("invalid")) } } } }
     }
   }
 
@@ -84,7 +85,7 @@ class ContractSuite extends FunSuite:
             val id = path[Int]("id")
             val invalid = id.value
             val ok = response.json[Int](200) {}
-            handle { ok(id.value) }
+            handle { IO.pure(ok(id.value)) }
           }
         }
       }
@@ -97,7 +98,7 @@ class ContractSuite extends FunSuite:
       httpApp { routes { get("/") {
         val token = header[String]("Authorization")
         val ok = response.text(200) {}
-        handle { ok(token.value) }
+        handle { IO.pure(ok(token.value)) }
       } } }
     }
   }
@@ -108,14 +109,14 @@ class ContractSuite extends FunSuite:
       httpApp { routes { get("/") {
         val n = query[Int]("n") { default("wrong") }
         val ok = response.json[Int](200) {}
-        handle { ok(n.value) }
+        handle { IO.pure(ok(n.value)) }
       } } }
     """)
     val responseErrors = typeCheckErrors("""
       import sprout.dsl.*
       httpApp { routes { get("/") {
         val ok = response.json[Int](200) {}
-        handle { ok("wrong") }
+        handle { IO.pure(ok("wrong")) }
       } } }
     """)
     val constraintErrors = typeCheckErrors("""
@@ -125,7 +126,7 @@ class ContractSuite extends FunSuite:
           constraint[String]("Must not be empty")(_.nonEmpty)
         }
         val ok = response.json[Int](200) {}
-        handle { ok(n.value) }
+        handle { IO.pure(ok(n.value)) }
       } } }
     """)
     assert(defaultErrors.nonEmpty)

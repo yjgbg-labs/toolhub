@@ -18,33 +18,33 @@ object ScheduleRoutes:
 
     operation[List[ScheduleEntry]]("list") {
       summary("List scheduled jobs, their runtime state and queue status")
-      handle { scheduler.list }
+      handle { scheduler.list.map(ok(_)) }
     }
 
     operation[ScheduleJob]("new") {
       summary("Create or replace a scheduled command and clear its runtime state")
       val name = path[String]("name") { minLength(1) }
       val input = body.json[ScheduleJob]
-      handle { scheduler.put(name.value, input.value) }
+      handle { scheduler.put(name.value, input.value).map(ok(_)) }
     }
 
     operation[Unit]("delete") {
       summary("Delete a job; existing execution may finish and historical logs are retained")
       val name = path[String]("name") { minLength(1) }
-      handle { scheduler.delete(name.value) }
+      handle { scheduler.delete(name.value).map(ok(_)) }
     }
 
     operation[JobState]("reset") {
       summary("Clear runtime state so an enabled job becomes due without overlapping an active run")
       val name = path[String]("name") { minLength(1) }
-      handle { scheduler.reset(name.value) }
+      handle { scheduler.reset(name.value).map(ok(_)) }
     }
 
     operation[String]("log") {
       summary("Read the last lines of a scheduled job's combined stdout/stderr log")
       val name = path[String]("name") { minLength(1) }
       val lines = query[Int]("lines") { default(100); minimum(1); maximum(10000) }
-      handle { scheduler.log(name.value, lines.value) }
+      handle { scheduler.log(name.value, lines.value).map(ok(_)) }
     }
 
     group("config") {
@@ -52,13 +52,13 @@ object ScheduleRoutes:
 
       operation[ScheduleConfig]("read") {
         summary("Read the scheduler's static configuration")
-        handle { scheduler.config }
+        handle { scheduler.config.map(ok(_)) }
       }
 
       operation[ScheduleConfig]("write") {
         summary("Validate and atomically replace the full scheduler configuration; changes apply on the next tick")
         val input = body.json[ScheduleConfig]
-        handle { scheduler.writeConfig(input.value) }
+        handle { scheduler.writeConfig(input.value).map(ok(_)) }
       }
     }
   }

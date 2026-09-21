@@ -30,7 +30,7 @@ class HttpSuite extends CatsEffectSuite:
           val ok = response.json[List[Long]](200) {}
           handle {
             calls.incrementAndGet()
-            ok(List(id.value, limit.value.toLong))
+            IO.pure(ok(List(id.value, limit.value.toLong)))
           }
         }
       }
@@ -77,7 +77,7 @@ class HttpSuite extends CatsEffectSuite:
           val count = header[Int]("X-Count")
           val session = cookie[String]("session")
           val ok = response.json[List[String]](200) {}
-          handle { ok(List(optional.value.toString, repeated.value.mkString(","), count.value.toString, session.value)) }
+          handle { IO.pure(ok(List(optional.value.toString, repeated.value.mkString(","), count.value.toString, session.value))) }
         }
       }
     }
@@ -105,7 +105,7 @@ class HttpSuite extends CatsEffectSuite:
         post("/users") {
           val input = body.json[CreateUser](using counted, summon[sprout.EndpointScope[EndpointResult]])
           val created = response.json[User](201) {}
-          handle { created(User(1L, input.value.name, input.value.nickname)) }
+          handle { IO.pure(created(User(1L, input.value.name, input.value.nickname))) }
         }
       }
     }
@@ -125,7 +125,7 @@ class HttpSuite extends CatsEffectSuite:
         post("/") {
           val input = body.json[CreateUser]
           val ok = response.json[CreateUser](200) {}
-          handle { ok(input.value) }
+          handle { IO.pure(ok(input.value)) }
         }
       }
     }
@@ -153,11 +153,11 @@ class HttpSuite extends CatsEffectSuite:
         get("/users/{name}") {
           val name = path[String]("name")
           val ok = response.text(200) {}
-          handle { ok(name.value) }
+          handle { IO.pure(ok(name.value)) }
         }
         post("/users/me") {
           val done = response.empty(204) {}
-          handle { done(()) }
+          handle { IO.pure(done(())) }
         }
       }
     }
@@ -178,7 +178,7 @@ class HttpSuite extends CatsEffectSuite:
   }
 
   test("OpenAPI is served as cached JSON with conditional GET and HEAD") {
-    val app = httpApp { routes { get("/") { val ok = response.text(200) {}; handle { ok("ok") } } } }
+    val app = httpApp { routes { get("/") { val ok = response.text(200) {}; handle { IO.pure(ok("ok")) } } } }
     for
       first <- app.httpApp(request("/openapi.json"))
       doc <- first.as[Json]
@@ -204,15 +204,15 @@ class HttpSuite extends CatsEffectSuite:
           val ok = response.json[Int](200) {}
           foreignInput = Some(id)
           foreignOutput = Some(ok)
-          handle { ok(id.value) }
+          handle { IO.pure(ok(id.value)) }
         }
         get("/bad-input") {
           val ok = response.json[Int](200) {}
-          handle { ok(foreignInput.get.value) }
+          handle { IO.pure(ok(foreignInput.get.value)) }
         }
         get("/bad-output") {
           val ok = response.json[Int](200) {}
-          handle { foreignOutput.get(1) }
+          handle { IO.pure(foreignOutput.get(1)) }
         }
       }
     }
@@ -231,7 +231,7 @@ class HttpSuite extends CatsEffectSuite:
       routes {
         get("/") {
           val ok = response.text(200) {}
-          handle { summary("too late"); ok("ok") }
+          handle { summary("too late"); IO.pure(ok("ok")) }
         }
       }
     }
@@ -245,7 +245,7 @@ class HttpSuite extends CatsEffectSuite:
         group("/health") {
           get() {
             val ok = response.text(200) {}
-            handle { ok("healthy") }
+            handle { IO.pure(ok("healthy")) }
           }
         }
       }

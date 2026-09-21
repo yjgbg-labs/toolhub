@@ -40,7 +40,7 @@ class ConstraintSuite extends CatsEffectSuite:
         val ok = response.json[List[Int]](200) {}
         handle {
           calls.incrementAndGet()
-          ok(List(id.value, count.value))
+          IO.pure(ok(List(id.value, count.value)))
         }
       }
     } }
@@ -84,7 +84,7 @@ class ConstraintSuite extends CatsEffectSuite:
         val ok = response.json[List[Int]](200) {}
         handle {
           calls.incrementAndGet()
-          ok(List(input.value.start, input.value.end))
+          IO.pure(ok(List(input.value.start, input.value.end)))
         }
       }
     } }
@@ -113,7 +113,7 @@ class ConstraintSuite extends CatsEffectSuite:
           constraint[Int]("Count must be even")(_ % 2 == 0)
         }
         val ok = response.json[Int](200) {}
-        handle { ok(count.value) }
+        handle { IO.pure(ok(count.value)) }
       } } }
     }
     interceptMessage[IllegalArgumentException]("requirement failed: Invalid body default") {
@@ -123,7 +123,7 @@ class ConstraintSuite extends CatsEffectSuite:
           constraint[Interval]("Start must be before end")(value => value.start < value.end)
         }
         val ok = response.json[Interval](200) {}
-        handle { ok(input.value) }
+        handle { IO.pure(ok(input.value)) }
       } } }
     }
   }
@@ -143,14 +143,14 @@ class ConstraintSuite extends CatsEffectSuite:
           if custom then constraint[String]("Name is reserved")(_ != "reserved")
         }
         val ok = response.text(200) {}
-        handle { ok(s"${name.value}:${count.value}") }
+        handle { IO.pure(ok(s"${name.value}:${count.value}")) }
       }
       post("/") {
         val input = body.json[Interval] {
           if custom then constraint[Interval]("Start must be before end")(value => value.start < value.end)
         }
         val ok = response.json[Interval](200) {}
-        handle { ok(input.value) }
+        handle { IO.pure(ok(input.value)) }
       }
     } }
     val app = application(true)
