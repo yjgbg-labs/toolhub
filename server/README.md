@@ -20,6 +20,7 @@ val app = httpApp {
   routes {
     group("/users") {
       get("/{id}") {
+        description("Get a user ID")
         val id = path[Long]("id") { minimum(1L) }
         val ok = response.json[Long](200) {}
         handle { IO.pure(ok(id.value)) }
@@ -48,11 +49,13 @@ val app = httpApp {
     description("User management")
 
     command[User]("get") {
+      description("Get a user")
       val id = param[Long]("id", "User ID") { minimum(1L) }
       handle { IO.pure(User(id.value, "Ada")) }
     }
 
     command[User]("create") {
+      description("Create a user")
       val id = param[Long]("id", "User ID") { minimum(1L) }
       val input = body[CreateUser]("User payload") {
         constraint[CreateUser]("Name must not be blank")(_.name.trim.nonEmpty)
@@ -80,6 +83,17 @@ val app = httpApp {
   commands. An optional/defaulted body still selects POST.
 - `CommandScope[A] extends CommandsScope`: reusable parameter and middleware
   declarations accept `CommandsScope`; only `CommandScope[A]` permits `handle`.
+
+## Documentation text
+
+Use `description("...")` consistently for documentation text, including named
+`commands` groups, individual commands, HTTP endpoints, inputs and responses.
+It maps directly to the corresponding OpenAPI `description` field.
+`param` and `body` accept their description directly as an argument.
+
+The `summary` API remains available for commands and HTTP endpoints and still
+sets the separate OpenAPI Operation `summary` field. Business declarations and
+examples use `description` only.
 
 ## Middleware and errors
 

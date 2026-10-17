@@ -17,31 +17,31 @@ object ScheduleRoutes:
     }
 
     command[List[ScheduleEntry]]("list") {
-      summary("List scheduled jobs, their runtime state and queue status")
+      description("List scheduled jobs, their runtime state and queue status")
       handle { scheduler.list }
     }
 
     command[ScheduleJob]("new") {
-      summary("Create or replace a scheduled command and clear its runtime state")
+      description("Create or replace a scheduled command and clear its runtime state")
       val name = param[String]("name", "Job name") { minLength(1) }
       val input = body[ScheduleJob]("Scheduled command and interval")
       handle { scheduler.put(name.value, input.value) }
     }
 
     command[Unit]("delete") {
-      summary("Delete a job; existing execution may finish and historical logs are retained")
+      description("Delete a job; existing execution may finish and historical logs are retained")
       val name = param[String]("name", "Job name") { minLength(1) }
       handle { scheduler.delete(name.value) }
     }
 
     command[JobState]("reset") {
-      summary("Clear runtime state so an enabled job becomes due without overlapping an active run")
+      description("Clear runtime state so an enabled job becomes due without overlapping an active run")
       val name = param[String]("name", "Job name") { minLength(1) }
       handle { scheduler.reset(name.value) }
     }
 
     command[String]("log") {
-      summary("Read the last lines of a scheduled job's combined stdout/stderr log")
+      description("Read the last lines of a scheduled job's combined stdout/stderr log")
       val name = param[String]("name", "Job name") { minLength(1) }
       val lines = param[Int]("lines", "Number of log lines") { default(100); minimum(1); maximum(10000) }
       handle { scheduler.log(name.value, lines.value) }
@@ -51,12 +51,12 @@ object ScheduleRoutes:
       description("Manage scheduler configuration")
 
       command[ScheduleConfig]("read") {
-        summary("Read the scheduler's static configuration")
+        description("Read the scheduler's static configuration")
         handle { scheduler.config }
       }
 
       command[ScheduleConfig]("write") {
-        summary("Validate and atomically replace the full scheduler configuration; changes apply on the next tick")
+        description("Validate and atomically replace the full scheduler configuration; changes apply on the next tick")
         val input = body[ScheduleConfig]("Complete scheduler configuration")
         handle { scheduler.writeConfig(input.value) }
       }
