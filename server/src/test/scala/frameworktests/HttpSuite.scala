@@ -244,11 +244,10 @@ class HttpSuite extends CatsEffectSuite:
     val app = httpApp {
       server { host("127.0.0.1"); port(0) }
       routes {
-        group("/health") {
-          get() {
-            val ok = response.text(200) {}
-            handle { IO.pure(ok("healthy")) }
-          }
+        get("/health") {
+          operationId("health")
+          val ok = response.text(200) {}
+          handle { IO.pure(ok("healthy")) }
         }
       }
     }

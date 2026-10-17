@@ -12,14 +12,10 @@ private[framework] final case class ScopeDecl(
     tags: Vector[String]
 )
 
-private[framework] sealed trait RouteDecl
-
-private[framework] final case class GroupDecl(
-    path: String,
-    tag: Option[ApiTag],
-    scope: ScopeDecl,
-    children: Vector[RouteDecl]
-) extends RouteDecl
+private[framework] object ScopeDecl:
+  def combine(scopes: Vector[ScopeDecl]): ScopeDecl =
+    ScopeDecl(scopes.flatMap(_.inputs), scopes.flatMap(_.responses),
+      scopes.flatMap(_.middleware), scopes.flatMap(_.tags).distinct)
 
 private[framework] final case class EndpointDecl(
     method: String,
@@ -29,12 +25,13 @@ private[framework] final case class EndpointDecl(
     description: Option[String],
     scope: ScopeDecl,
     handler: Option[RequestContext => IO[EndpointResult]]
-) extends RouteDecl
+)
 
 private[framework] final case class ApplicationDecl(
     server: ServerSettings,
     openApi: OpenApiSettings,
-    routes: Vector[GroupDecl]
+    endpoints: Vector[EndpointDecl],
+    tags: Vector[ApiTag]
 )
 
 private[framework] final case class ResolvedEndpoint(

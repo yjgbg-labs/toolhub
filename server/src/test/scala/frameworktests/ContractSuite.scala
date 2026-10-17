@@ -93,6 +93,23 @@ class ContractSuite extends FunSuite:
     assert(errors.exists(_.message.contains("RequestContext")), errors.toString)
   }
 
+  test("HTTP paths are absolute and the DSL has no path-group abstraction") {
+    val errors = typeCheckErrors("""
+      import framework.httpDsl.*
+      httpApp { routes { group("/users") {} } }
+    """)
+    assert(errors.exists(_.message.contains("group")), errors.toString)
+    List("", "users", "users/get").foreach { value =>
+      interceptMessage[IllegalArgumentException](s"requirement failed: Path must start with '/': $value") {
+        httpApp { routes { get(value) {
+          operationId("users.get")
+          val ok = response.text(200) {}
+          handle { IO.pure(ok("ok")) }
+        } } }
+      }
+    }
+  }
+
   test("OpenAPI-reserved headers cannot silently become ignored parameters") {
     intercept[IllegalArgumentException] {
       httpApp { routes { get("/") {

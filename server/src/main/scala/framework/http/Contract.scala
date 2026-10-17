@@ -98,7 +98,3 @@ private[framework] object PathPattern:
     val result = PathPattern(normalized, segments)
     require(result.parameters.distinct.size == result.parameters.size, s"Duplicate path parameter in $value")
     result
-
-  def join(prefix: String, path: String): String =
-    require(path.isEmpty || path.startsWith("/"), s"Path must start with '/': $path")
-    normalize(Option(prefix.stripSuffix("/") + path).filter(_.nonEmpty).getOrElse("/"))

@@ -1,7 +1,7 @@
 package framework
 
 import cats.effect.IO
-import framework.http.{AppScope, DescriptionScope, EndpointScope, ResponseScope, RoutesScope}
+import framework.http.{ApiTag, AppScope, DescriptionScope, EndpointScope, ResponseScope, RoutesScope}
 import framework.rpc.{Command, CommandGroup, CommandScope, CommandsScope, SuccessResponse}
 import framework.runtime.Application
 
@@ -27,23 +27,22 @@ object rpcDsl:
     val parent = group(scope)
     val names = parent.namespace :+ name
     val tag = names.mkString(".")
-    httpDsl.group(s"/$name") {
-      val http = summon[RoutesScope]
-      http.documentedTag = Some(tag)
-      httpDsl.tag(tag)
-      init(using new CommandGroup(http, names, parent.ancestors :+ parent.http))
-    }(using parent.http)
+    val child = new CommandGroup(parent.routes, names, parent.ancestors :+ parent.http)
+    httpDsl.tag(tag)(using child)
+    init(using child)
+    parent.routes.tagDefinitions += (() => ApiTag(tag, child.descriptionValue))
 
   def command[A](name: String)(init: CommandScope[A] ?=> Unit)(using scope: CommandsScope, success: SuccessResponse[A]): Unit =
     require(name.matches("[A-Za-z][A-Za-z0-9_-]*"), s"Invalid command name: $name")
     val parent = group(scope)
+    val names = parent.namespace :+ name
     val ancestors = parent.ancestors :+ parent.http
     // Choose the method when the HTTP declaration freezes, including late inherited bodies.
-    httpDsl.register(http => if (ancestors :+ http).exists(_.hasBody) then "POST" else "GET", s"/$name") {
+    httpDsl.register(http => if (ancestors :+ http).exists(_.hasBody) then "POST" else "GET", names.mkString("/", "/", ""), ancestors) {
       val http = summon[EndpointScope]
-      httpDsl.operationId((parent.namespace :+ name).mkString("."))
+      httpDsl.operationId(names.mkString("."))
       init(using new Command(http, success.declare(http)))
-    }(using parent.http)
+    }(using parent.routes)
 
   def param[A](using codec: ParamCodec[A], scope: CommandsScope)(name: String, description: String): Input[A] =
     httpDsl.query[A](using codec, scope.http)(name) { httpDsl.description(description) }

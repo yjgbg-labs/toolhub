@@ -8,7 +8,7 @@ import framework.rpcDsl.*
 import framework.runtime.Application
 
 class CompilerSuite extends CatsEffectSuite:
-  test("a frozen declaration tree can be resolved and compiled repeatedly without running handlers") {
+  test("RPC nesting freezes into flat HTTP declarations that can be compiled repeatedly without running handlers") {
     val calls = new AtomicInteger()
     var builder = Option.empty[AppScope]
     var configure: () => Unit = () => ()
@@ -25,14 +25,13 @@ class CompilerSuite extends CatsEffectSuite:
     }
     val declaration = builder.get.freeze()
     intercept[IllegalArgumentException](configure())
-    val groupDecl = declaration.routes.head.children.head.asInstanceOf[GroupDecl]
-    assertEquals(groupDecl.path, "/users")
-    assertEquals(groupDecl.tag.map(_.name), Some("users"))
-    assertEquals(groupDecl.scope.inputs.size, 1)
-    assertEquals(groupDecl.children.head.asInstanceOf[EndpointDecl].scope.inputs.size, 0)
+    assertEquals(declaration.endpoints.map(_.path), Vector("/users/get", "/users/admin/get"))
+    assertEquals(declaration.tags.map(_.name).toSet, Set("users", "users.admin"))
+    assert(declaration.endpoints.forall(_.scope.inputs.size == 1))
+    val sharedInput = declaration.endpoints.head.scope.inputs.head
     val resolved = Compiler.resolve(declaration)
     assertEquals(resolved.endpoints.map(_.spec.operationId), Vector("users.get", "users.admin.get"))
-    assert(resolved.endpoints.forall(_.spec.inputs.head.key eq groupDecl.scope.inputs.head.key))
+    assert(resolved.endpoints.forall(_.spec.inputs.head.key eq sharedInput.key))
     assert(resolved.endpoints.forall(_.spec.responses.map(_.status).toSet == Set(200, 400, 500, 503)))
     val first = Application.build(resolved)
     val second = Application.build(Compiler.resolve(declaration))

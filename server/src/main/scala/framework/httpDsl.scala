@@ -66,28 +66,21 @@ object httpDsl:
 
   def routes(init: RoutesScope ?=> Unit)(using app: AppScope): Unit =
     app.gate.check()
-    val scope = new RoutesScope(app.gate, "")
+    val scope = new RoutesScope(app.gate)
     init(using scope)
     app.routes += scope
-
-  def group(path: String)(init: RoutesScope ?=> Unit)(using scope: RoutesScope): Unit =
-    scope.gate.check()
-    PathPattern.join("", path)
-    val child = new RoutesScope(scope.gate, path)
-    init(using child)
-    scope.children += (() => child.freeze())
 
   def tag(value: String)(using scope: TagScope): Unit =
     scope.gate.check()
     scope.tags += value
 
-  private[framework] def register(method: EndpointScope => String, path: String)(init: EndpointScope ?=> Unit)(using scope: RoutesScope): Unit =
+  private[framework] def register(method: EndpointScope => String, path: String, inherited: Vector[DeclarationScope] = Vector.empty)(init: EndpointScope ?=> Unit)(using scope: RoutesScope): Unit =
     scope.gate.check()
-    val endpoint = new EndpointScope(scope.gate, method, path)
+    val endpoint = new EndpointScope(scope.gate, method, path, scope +: inherited)
     init(using endpoint)
-    scope.children += (() => endpoint.freeze())
+    scope.endpoints += endpoint
 
-  def get(path: String = "")(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register(_ => "GET", path)(init)
+  def get(path: String = "/")(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register(_ => "GET", path)(init)
   def post(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register(_ => "POST", path)(init)
   def put(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register(_ => "PUT", path)(init)
   def patch(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register(_ => "PATCH", path)(init)

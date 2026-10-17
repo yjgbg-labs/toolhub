@@ -106,17 +106,20 @@ abstract class DeclarationScope private[framework] (
       config.descriptionValue.getOrElse(org.http4s.Status.fromInt(status).toOption.get.reason), mediaType, schema))
     result
 
-final class RoutesScope private[framework] (gate: ConfigurationGate, path: String) extends DeclarationScope(gate):
-  private[framework] val children = ArrayBuffer.empty[() => RouteDecl]
-  private[framework] var documentedTag: Option[String] = None
+final class RoutesScope private[framework] (gate: ConfigurationGate) extends DeclarationScope(gate):
+  private[framework] val endpoints = ArrayBuffer.empty[EndpointScope]
+  private[framework] val sharedScopes = ArrayBuffer[DeclarationScope](this)
+  private[framework] val tagDefinitions = ArrayBuffer.empty[() => ApiTag]
 
-  private[framework] def freeze(): GroupDecl =
-    GroupDecl(path, documentedTag.map(ApiTag(_, descriptionValue)), freezeDeclarations(), children.map(_()).toVector)
+  private[framework] def freeze(): Vector[EndpointDecl] =
+    val shared = sharedScopes.map(scope => scope -> scope.freezeDeclarations()).toMap
+    endpoints.map(_.freeze(shared)).toVector
 
 final class EndpointScope private[framework] (
     gate: ConfigurationGate,
     method: EndpointScope => String,
-    path: String
+    path: String,
+    inherited: Vector[DeclarationScope]
 ) extends DeclarationScope(gate):
   private var handler: Option[RequestContext => IO[EndpointResult]] = None
   private[framework] var operationIdValue: Option[String] = None
@@ -127,8 +130,9 @@ final class EndpointScope private[framework] (
     require(handler.isEmpty, s"Duplicate handler: ${method(this)} $path")
     handler = Some(logic)
 
-  private[framework] def freeze(): EndpointDecl =
-    EndpointDecl(method(this), path, operationIdValue, summaryValue, descriptionValue, freezeDeclarations(), handler)
+  private[framework] def freeze(shared: Map[DeclarationScope, ScopeDecl]): EndpointDecl =
+    val scope = ScopeDecl.combine(inherited.map(shared) :+ freezeDeclarations())
+    EndpointDecl(method(this), path, operationIdValue, summaryValue, descriptionValue, scope, handler)
 
 final class AppScope private[framework] () extends ConfigScope:
   private[framework] val gate = new ConfigurationGate
@@ -140,4 +144,5 @@ final class AppScope private[framework] () extends ConfigScope:
     gate.close()
     val info = openApiScope.infoScope
     ApplicationDecl(ServerSettings(serverScope.hostValue, serverScope.portValue, serverScope.maxBodyBytesValue, serverScope.socketValue),
-      OpenApiSettings(openApiScope.endpointValue, info.titleValue, info.versionValue, info.descriptionValue), routes.map(_.freeze()).toVector)
+      OpenApiSettings(openApiScope.endpointValue, info.titleValue, info.versionValue, info.descriptionValue),
+      routes.flatMap(_.freeze()).toVector, routes.flatMap(_.tagDefinitions.map(_())).toVector)

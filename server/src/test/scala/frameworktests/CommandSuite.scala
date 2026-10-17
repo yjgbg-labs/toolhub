@@ -183,11 +183,12 @@ class CommandSuite extends CatsEffectSuite:
     val app = httpApp {
       framework.httpDsl.routes {
         import framework.httpDsl.*
-        group("/api") { put("/{id}") {
+        put("/api/{id}") {
+          operationId("api.update")
           val id = path[Int]("id")
           val ok = response.json[Int](201) {}
           handle { IO.pure(ok(id.value)) }
-        } }
+        }
       }
       command[String]("health") { handle { IO.pure("ok") } }
     }

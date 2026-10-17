@@ -37,12 +37,13 @@ framework/
 
 - `model` owns JSON codecs, schema definitions and derivation, independently of
   HTTP, RPC and the runtime.
-- `http` owns configuration scopes, frozen declarations, endpoint contracts,
+- `http` owns configuration scopes, flat frozen declarations, endpoint contracts,
   parameter validation, middleware binding and OpenAPI generation.
   `Exchange.scala` contains the public input/output and handler types, including
   `ErrorBody` and `FieldError`; settings live in `Declarations.scala`.
 - `rpc` contains command scopes and HTTP 200 result conventions, using the HTTP
-  and model packages.
+  and model packages. The RPC DSL turns command nesting into complete HTTP paths,
+  operation IDs and shared declaration scopes before the HTTP compiler runs.
 - `runtime` executes HTTP contracts and manages TCP/Unix listeners. It depends
   on `http` and `model`, rather than the DSL entry points.
 
@@ -59,22 +60,28 @@ import framework.httpDsl.*
 val app = httpApp {
   server { port(8080) }
   routes {
-    group("/users") {
-      get("/{id}") {
-        description("Get a user ID")
-        val id = path[Long]("id") { minimum(1L) }
-        val ok = response.json[Long](200) {}
-        handle { IO.pure(ok(id.value)) }
-      }
+    get("/users/{id}") {
+      operationId("users.get")
+      description("Get a user ID")
+      val id = path[Long]("id") { minimum(1L) }
+      val ok = response.json[Long](200) {}
+      handle { IO.pure(ok(id.value)) }
     }
   }
 }
 ```
 
 `get`, `post`, `put`, `patch`, `delete`, `head` and `options` declare explicit
-methods. `group` adds a path prefix. Inputs use `path`, `query`, `header`,
-`cookie` and `body.json`; responses use `response.json`, `response.text` and
-`response.empty`. HTTP handlers return `IO[EndpointResult]`.
+methods and complete absolute paths. `get()` defaults to `/`.
+`operationId("users.get")` sets the OpenAPI operation ID independently of the
+path. When omitted, an ID is derived from the HTTP method and path.
+
+`routes` is a flat collection: inputs, responses, tags and middleware declared
+there apply to all of its endpoints, including declarations made after an
+endpoint. Multiple `routes` blocks have independent shared declarations.
+Inputs use `path`, `query`, `header`, `cookie` and `body.json`; responses use
+`response.json`, `response.text` and `response.empty`. HTTP handlers return
+`IO[EndpointResult]`.
 
 ## RPC
 
@@ -199,6 +206,12 @@ or `commands()` container; `httpApp` supplies the root command context. Rename
 `group/operation` to `commands/command`, and use `param` and `body` for inputs.
 Replace dotted shorthand such as `command[A]("users.get")` with
 `commands("users") { command[A]("get") { ... } }`.
+
+For HTTP, flatten former `group` path prefixes into each endpoint's full path:
+`group("/users") { get("/{id}") { ... } }` becomes
+`get("/users/{id}") { operationId("users.get"); ... }`. Put shared declarations
+in a `routes` block containing the relevant endpoints. Nested grouping belongs
+to RPC `commands`.
 
 Scheduled job names now use `?name=...` instead of a path segment. Consequently,
 CLI calls use `sprout schedule log --name example`, and Code Mode/client inputs

@@ -272,22 +272,33 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
       assertEquals(wrapped.get(), 2)
   }
 
-  test("HTTP groups retain inherited locations, responses and middleware") {
+  test("HTTP routes share inputs, responses and late middleware without path groups") {
     import framework.httpDsl.*
-    val app = httpApp { routes { group("/api/{id}") {
-      val id = path[Int]("id")
-      val token = header[String]("X-Token")
-      val session = cookie[Option[String]]("session")
-      val missing = response.json[framework.http.ErrorBody](404) {}
-      middleware { next =>
-        if token.value == "secret" && session.value.contains("abc") then next
-        else missing.raise(framework.http.ErrorBody("not_found", "missing"))
+    val app = httpApp {
+      routes {
+        val id = path[Int]("id")
+        val token = header[String]("X-Token")
+        val session = cookie[Option[String]]("session")
+        val missing = response.json[framework.http.ErrorBody](404) {}
+        get("/api/{id}/child/manual") {
+          operationId("manual.read")
+          val ok = response.text(200) {}
+          handle { IO.pure(if id.value == 1 then ok("manual") else missing(framework.http.ErrorBody("not_found", "missing"))) }
+        }
+        get("/other/{id}") {
+          operationId("other.read")
+          val ok = response.text(200) {}
+          handle { IO.pure(ok(s"other:${id.value}")) }
+        }
+        middleware { next =>
+          if token.value == "secret" && session.value.contains("abc") then next
+          else missing.raise(framework.http.ErrorBody("not_found", "missing"))
+        }
       }
-      group("/child") { get("/manual") {
-        val ok = response.text(200) {}
-        handle { IO.pure(if id.value == 1 then ok("manual") else missing(framework.http.ErrorBody("not_found", "missing"))) }
+      routes { get("/health") {
+        val ok = response.text(200) {}; handle { IO.pure(ok("healthy")) }
       } }
-    } } }
+    }
     def req(id: Int) = request(s"/api/$id/child/manual").putHeaders(
       Header.Raw(CIString("X-Token"), "secret"), Header.Raw(CIString("Cookie"), "session=abc"))
     for
@@ -295,11 +306,15 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
       missing <- app.httpApp(req(2))
       invalid <- app.httpApp(request("/api/1/child/manual"))
       denied <- app.httpApp(request("/api/1/child/manual").putHeaders(Header.Raw(CIString("X-Token"), "wrong")))
+      other <- app.httpApp(req(2).withUri(Uri.unsafeFromString("/other/2"))).flatMap(_.as[String])
+      health <- app.httpApp(request("/health")).flatMap(_.as[String])
     yield
       assertEquals(success, "manual")
       assertEquals(missing.status, Status.NotFound)
       assertEquals(invalid.status, Status.BadRequest)
       assertEquals(denied.status, Status.NotFound)
+      assertEquals(other, "other:2")
+      assertEquals(health, "healthy")
   }
 
   test("same-named groups keep independent contracts and reject foreign inherited handles") {
@@ -358,6 +373,9 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
       response.text(200) {}
       command[Int]("read") { handle { IO.pure(1) } }
     }
+    invalid { commands("empty") {
+      param[Int]("n", "Invalid shared default") { default(0); minimum(1) }
+    } }
     intercept[IllegalArgumentException] {
       import framework.httpDsl.*
       httpApp { routes {
