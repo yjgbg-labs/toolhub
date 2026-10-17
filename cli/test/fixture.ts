@@ -2,11 +2,16 @@ export function document() {
   return {
     openapi: "3.1.2", info: { title: "Client contract tests", version: "1" },
     tags: [
-      { name: "admin", description: "Administration\nAdministrative operations" },
-      { name: "admin.users", description: "Administer users" },
-      { name: "users", description: "Manage users" },
+      { name: "admin", description: "HTTP classification, independent of RPC groups" },
       { name: "unused", description: "A tag without any operations" },
     ],
+    "x-rpc": {
+      commands: [
+        { name: "admin", description: "Administration\nAdministrative operations" },
+        { name: "admin.users", description: "Administer users" },
+        { name: "users", description: "Manage users" },
+      ],
+    },
     paths: {
       "/admin/users/get/{id}": { post: {
         operationId: "admin.users.get", summary: "Get a user",

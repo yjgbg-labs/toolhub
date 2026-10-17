@@ -1,8 +1,8 @@
 package framework
 
 import cats.effect.IO
-import framework.http.{ApiTag, AppScope, DescriptionScope, EndpointScope, ResponseScope, RoutesScope}
-import framework.rpc.{Command, CommandGroup, CommandScope, CommandsScope, SuccessResponse}
+import framework.http.{AppScope, DescriptionScope, EndpointScope, ResponseScope, RoutesScope}
+import framework.rpc.{Command, CommandGroup, CommandScope, CommandsScope, Metadata, SuccessResponse}
 import framework.runtime.Application
 
 object rpcDsl:
@@ -17,20 +17,20 @@ object rpcDsl:
 
   def httpApp(init: (AppScope, CommandsScope) ?=> Unit): Application =
     httpDsl.httpApp {
+      val app = summon[AppScope]
+      val metadata = new Metadata
       httpDsl.routes {
-        init(using summon[AppScope], new CommandGroup(summon[RoutesScope], Vector.empty, Vector.empty))
+        init(using app, new CommandGroup(summon[RoutesScope], Vector.empty, Vector.empty, metadata))
       }
+      app.extensions("x-rpc") = () => metadata.freeze()
     }
 
   def commands(name: String)(init: CommandsScope ?=> Unit)(using scope: CommandsScope): Unit =
     require(name.matches("[A-Za-z][A-Za-z0-9_-]*"), s"Invalid commands name: $name")
     val parent = group(scope)
     val names = parent.namespace :+ name
-    val tag = names.mkString(".")
-    val child = new CommandGroup(parent.routes, names, parent.ancestors :+ parent.http)
-    httpDsl.tag(tag)(using child)
+    val child = new CommandGroup(parent.routes, names, parent.ancestors :+ parent.http, parent.metadata)
     init(using child)
-    parent.routes.tagDefinitions += (() => ApiTag(tag, child.descriptionValue))
 
   def command[A](name: String)(init: CommandScope[A] ?=> Unit)(using scope: CommandsScope, success: SuccessResponse[A]): Unit =
     require(name.matches("[A-Za-z][A-Za-z0-9_-]*"), s"Invalid command name: $name")

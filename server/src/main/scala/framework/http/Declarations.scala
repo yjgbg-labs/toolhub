@@ -1,6 +1,7 @@
 package framework.http
 
 import cats.effect.IO
+import io.circe.Json
 
 final case class ServerSettings(host: String, port: Int, maxBodyBytes: Long, socket: Option[String] = None)
 final case class OpenApiSettings(endpoint: String, title: String, version: String, description: Option[String])
@@ -31,7 +32,7 @@ private[framework] final case class ApplicationDecl(
     server: ServerSettings,
     openApi: OpenApiSettings,
     endpoints: Vector[EndpointDecl],
-    tags: Vector[ApiTag]
+    extensions: Map[String, Json]
 )
 
 private[framework] final case class ResolvedEndpoint(
@@ -44,5 +45,5 @@ private[framework] final case class ResolvedApi(
     server: ServerSettings,
     openApi: OpenApiSettings,
     endpoints: Vector[ResolvedEndpoint],
-    tags: Vector[ApiTag]
+    extensions: Map[String, Json]
 )

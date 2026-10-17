@@ -49,8 +49,14 @@ try {
   }
   const scheduleOperations = ["schedule.config.read", "schedule.config.write", "schedule.delete", "schedule.list", "schedule.log", "schedule.new", "schedule.reset"];
   assert.deepEqual(client.catalog.operations.map(op => op.id), ["health", ...scheduleOperations]);
+  assert.deepEqual(openapi["x-rpc"].commands, [
+    { name: "schedule", description: "Manage scheduled jobs" },
+    { name: "schedule.config", description: "Manage scheduler configuration" },
+  ]);
+  assert.ok(!openapi.tags?.length);
   for (const item of Object.values(openapi.paths) as any[]) {
     const operation = item.get ?? item.post;
+    assert.ok(!operation.tags?.length);
     if (operation.operationId.startsWith("schedule.")) {
       assert.ok(operation.responses["400"]);
       assert.equal(operation.responses["404"].description, "Job not found");

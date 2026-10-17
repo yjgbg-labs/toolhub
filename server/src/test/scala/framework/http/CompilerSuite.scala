@@ -26,7 +26,8 @@ class CompilerSuite extends CatsEffectSuite:
     val declaration = builder.get.freeze()
     intercept[IllegalArgumentException](configure())
     assertEquals(declaration.endpoints.map(_.path), Vector("/users/get", "/users/admin/get"))
-    assertEquals(declaration.tags.map(_.name).toSet, Set("users", "users.admin"))
+    val groups = declaration.extensions("x-rpc").hcursor.get[List[io.circe.Json]]("commands").toOption.get
+    assertEquals(groups.map(_.hcursor.get[String]("name").toOption.get).toSet, Set("users", "users.admin"))
     assert(declaration.endpoints.forall(_.scope.inputs.size == 1))
     val sharedInput = declaration.endpoints.head.scope.inputs.head
     val resolved = Compiler.resolve(declaration)

@@ -29,6 +29,7 @@ framework/
 │   └── OpenApi.scala
 ├── rpc/
 │   ├── Scopes.scala
+│   ├── Metadata.scala
 │   └── SuccessResponse.scala
 └── runtime/
     ├── Application.scala
@@ -44,6 +45,8 @@ framework/
 - `rpc` contains command scopes and HTTP 200 result conventions, using the HTTP
   and model packages. The RPC DSL turns command nesting into complete HTTP paths,
   operation IDs and shared declaration scopes before the HTTP compiler runs.
+  `Metadata.scala` owns RPC group descriptions. HTTP and
+  runtime carry generic OpenAPI extensions without depending on the RPC model.
 - `runtime` executes HTTP contracts and manages TCP/Unix listeners. It depends
   on `http` and `model`, rather than the DSL entry points.
 
@@ -142,12 +145,41 @@ val app = httpApp {
 
 Use `description("...")` consistently for documentation text, including named
 `commands` groups, individual commands, HTTP endpoints, inputs and responses.
-It maps directly to the corresponding OpenAPI `description` field.
+It maps to the corresponding `description` field; group descriptions are
+published in the `x-rpc` extension described below.
 `param` and `body` accept their description directly as an argument.
 
-The RPC DSL exposes neither `summary` nor `tag`; named `commands` groups generate
-OpenAPI tags automatically. The HTTP DSL retains both methods for explicit HTTP
-metadata. Business declarations and examples use `description` only.
+The RPC DSL exposes neither `summary` nor `tag`. Named `commands` groups publish
+their descriptions through the `x-rpc` extension. The HTTP DSL provides `summary`
+and `tag` for standard HTTP/OpenAPI metadata. Business declarations and examples
+use `description` only.
+
+## RPC group descriptions
+
+`operationId` is the dot-separated command path: `users.admin.get` means
+`users admin get`. The top-level `x-rpc` extension supplies descriptions for
+the groups in that hierarchy:
+
+```json
+{
+  "x-rpc": {
+      "commands": [
+      { "name": "users", "description": "User management" },
+      { "name": "users.admin", "description": "Administrative operations" }
+    ]
+  }
+}
+```
+
+- `commands` corresponds to DSL `commands(...)` declarations: an array of unique
+  dot-separated group names and optional
+  descriptions. Reopened DSL groups merge consistent descriptions, including
+  descriptions declared after their commands.
+- CLI group help and plugin namespace descriptions read `x-rpc.commands`.
+  OpenAPI tags are independent HTTP classifications.
+- Command discovery and tool names are derived from `operationId`. The extension
+  only supplies group documentation; it contains no command-to-operation mapping.
+- Without `x-rpc`, commands remain available with no group descriptions.
 
 ## Middleware and errors
 
@@ -206,6 +238,9 @@ or `commands()` container; `httpApp` supplies the root command context. Rename
 `group/operation` to `commands/command`, and use `param` and `body` for inputs.
 Replace dotted shorthand such as `command[A]("users.get")` with
 `commands("users") { command[A]("get") { ... } }`.
+Clients should read `x-rpc.commands` instead of OpenAPI tags for group descriptions.
+The TypeScript catalog exposes these through `groupDescriptions`; command paths
+continue to come from `operationId.split(".")`.
 
 For HTTP, flatten former `group` path prefixes into each endpoint's full path:
 `group("/users") { get("/{id}") { ... } }` becomes

@@ -4,6 +4,7 @@ import cats.effect.IO
 import framework.model.{JsonModel, Schema}
 import io.circe.Json
 import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.LinkedHashMap
 
 private[framework] final class ConfigurationGate:
   private var open = true
@@ -109,7 +110,6 @@ abstract class DeclarationScope private[framework] (
 final class RoutesScope private[framework] (gate: ConfigurationGate) extends DeclarationScope(gate):
   private[framework] val endpoints = ArrayBuffer.empty[EndpointScope]
   private[framework] val sharedScopes = ArrayBuffer[DeclarationScope](this)
-  private[framework] val tagDefinitions = ArrayBuffer.empty[() => ApiTag]
 
   private[framework] def freeze(): Vector[EndpointDecl] =
     val shared = sharedScopes.map(scope => scope -> scope.freezeDeclarations()).toMap
@@ -139,10 +139,11 @@ final class AppScope private[framework] () extends ConfigScope:
   private[framework] val serverScope = new ServerScope(gate)
   private[framework] val openApiScope = new OpenApiScope(gate)
   private[framework] val routes = ArrayBuffer.empty[RoutesScope]
+  private[framework] val extensions = LinkedHashMap.empty[String, () => Json]
 
   private[framework] def freeze(): ApplicationDecl =
     gate.close()
     val info = openApiScope.infoScope
     ApplicationDecl(ServerSettings(serverScope.hostValue, serverScope.portValue, serverScope.maxBodyBytesValue, serverScope.socketValue),
       OpenApiSettings(openApiScope.endpointValue, info.titleValue, info.versionValue, info.descriptionValue),
-      routes.flatMap(_.freeze()).toVector, routes.flatMap(_.tagDefinitions.map(_())).toVector)
+      routes.flatMap(_.freeze()).toVector, extensions.iterator.map((name, value) => name -> value()).toMap)

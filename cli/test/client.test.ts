@@ -107,7 +107,8 @@ test("CLI discovers changed operation IDs from OpenAPI on each invocation", asyn
   const env = { SPROUT_BASE_URL: dynamic.baseUrl };
   try {
     dynamic.doc.paths["/health"].get.operationId = "reports.daily.summary";
-    dynamic.doc.tags.push({ name: "reports", description: "Report operations" }, { name: "reports.daily", description: "Daily reports" });
+    dynamic.doc["x-rpc"].commands.push({ name: "reports", description: "Report operations" }, { name: "reports.daily", description: "Daily reports" });
+    dynamic.doc.tags.push({ name: "reports", description: "Unrelated HTTP tag" });
     expect(await run(["--help"], env)).toContain("reports  Report operations");
     expect(await run(["reports", "--help"], env)).toContain("daily  Daily reports");
     expect(await run(["reports", "daily", "--help"], env)).toContain("summary");
@@ -128,12 +129,19 @@ test("ambiguous operation IDs and unsupported contracts fail catalog constructio
   expect(() => new Catalog(doc)).toThrow("operationId");
 });
 
-test("group descriptions are optional and malformed tag metadata is rejected", () => {
+test("RPC group descriptions are independent of tags and optional for command discovery", () => {
+  const { "x-rpc": rpc, ...withoutRpc } = document();
+  const catalog = new Catalog(withoutRpc);
+  expect(catalog.groupDescriptions.size).toBe(0);
+  expect(catalog.operations.find(op => op.id === "admin.users.get")?.segments).toEqual(["admin", "users", "get"]);
   const { tags, ...withoutTags } = document();
-  expect(new Catalog(withoutTags).groupDescriptions.size).toBe(0);
-  expect(() => new Catalog({ ...withoutTags, tags: {} })).toThrow("tags array");
-  expect(() => new Catalog({ ...withoutTags, tags: [{ name: "admin", description: 1 }] })).toThrow("Invalid OpenAPI tag");
-  expect(() => new Catalog({ ...withoutTags, tags: [...tags, tags[0]] })).toThrow("Duplicate OpenAPI tag");
+  expect(new Catalog(withoutTags).groupDescriptions.get("admin")).toBe("Administration\nAdministrative operations");
+  expect(new Catalog({ ...withoutRpc, "x-rpc": { commands: [{ name: "admin" }] } }).groupDescriptions.size).toBe(0);
+  expect(() => new Catalog({ ...withoutRpc, "x-rpc": null })).toThrow("x-rpc object");
+  expect(() => new Catalog({ ...withoutRpc, "x-rpc": { commands: {} } })).toThrow("commands array");
+  expect(() => new Catalog({ ...withoutRpc, "x-rpc": { commands: [{ name: "admin", description: 1 }] } })).toThrow("Invalid RPC group");
+  expect(() => new Catalog({ ...withoutRpc, "x-rpc": { commands: [{ name: "admin..users" }] } })).toThrow("Invalid RPC group");
+  expect(() => new Catalog({ ...withoutRpc, "x-rpc": { commands: [...rpc.commands, rpc.commands[0]] } })).toThrow("Duplicate RPC group");
 });
 
 test("abort propagates to HTTP calls without executing the operation", async () => {

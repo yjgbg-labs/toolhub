@@ -12,10 +12,12 @@ sealed trait CommandScope[A] extends CommandsScope:
 private[framework] final class CommandGroup(
     val routes: RoutesScope,
     val namespace: Vector[String],
-    val ancestors: Vector[DeclarationScope]
+    val ancestors: Vector[DeclarationScope],
+    val metadata: Metadata
 ) extends DeclarationScope(routes.gate) with CommandsScope:
   routes.gate.check()
   routes.sharedScopes += this
+  if namespace.nonEmpty then metadata.commands += this
   val http: DeclarationScope = this
 
 private[framework] final class Command[A](

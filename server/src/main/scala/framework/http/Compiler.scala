@@ -32,17 +32,13 @@ private[framework] object Compiler:
     }
     val ids = resolved.map(_.spec.operationId)
     require(ids.distinct.size == ids.size, "Duplicate operationId")
-    val tagSpecs = app.tags.groupBy(_.name).toVector.sortBy(_._1).map { (name, declarations) =>
-      val descriptions = declarations.flatMap(_.description).distinct
-      require(descriptions.size <= 1, s"Conflicting descriptions for tag: $name")
-      ApiTag(name, descriptions.headOption)
-    }
     val docsPath = PathPattern.parse(app.openApi.endpoint)
     require(docsPath.parameters.isEmpty, "OpenAPI endpoint must be a static path")
     require(!resolved.exists(_.spec.path.value == docsPath.value), "OpenAPI endpoint conflicts with a registered route")
     require(app.server.maxBodyBytes > 0 && app.server.maxBodyBytes <= Int.MaxValue - 1L, "Invalid maximum body size")
     require(app.openApi.title.nonEmpty && app.openApi.version.nonEmpty, "OpenAPI title and version must not be empty")
-    ResolvedApi(app.server, app.openApi.copy(endpoint = docsPath.value), resolved, tagSpecs)
+    require(app.extensions.keys.forall(_.startsWith("x-")), "OpenAPI extension names must start with x-")
+    ResolvedApi(app.server, app.openApi.copy(endpoint = docsPath.value), resolved, app.extensions)
 
   private def responses(method: String, scope: ScopeDecl): Vector[ResponseContract] =
     val declared = scope.responses.map { response =>

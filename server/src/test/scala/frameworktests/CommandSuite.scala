@@ -105,7 +105,7 @@ class CommandSuite extends CatsEffectSuite:
       }
   }
 
-  test("nested commands qualify operation IDs and publish inherited tags and descriptions") {
+  test("nested commands publish group descriptions in RPC metadata, including late descriptions") {
     val app = httpApp { commands("reports") {
       commands("daily") {
         description("Daily reports")
@@ -118,14 +118,16 @@ class CommandSuite extends CatsEffectSuite:
       description("Manage reports")
     } }
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
-    val tags = doc.hcursor.get[List[Json]]("tags").toOption.get.map { tag =>
-      tag.hcursor.get[String]("name").toOption.get -> tag.hcursor.get[String]("description").toOption.get
+    val metadata = doc.hcursor.downField("x-rpc")
+    val groups = metadata.get[List[Json]]("commands").toOption.get.map { group =>
+      group.hcursor.get[String]("name").toOption.get -> group.hcursor.get[String]("description").toOption.get
     }.toMap
-    assertEquals(tags, Map("reports" -> "Manage reports", "reports.daily" -> "Daily reports"))
+    assertEquals(groups, Map("reports" -> "Manage reports", "reports.daily" -> "Daily reports"))
     val op = doc.hcursor.downField("paths").downField("/reports/daily/get").downField("get")
     assertEquals(op.get[String]("operationId"), Right("reports.daily.get"))
     assertEquals(op.get[String]("description"), Right("Report details"))
-    assertEquals(op.get[List[String]]("tags"), Right(List("reports", "reports.daily")))
+    assert(doc.hcursor.get[List[Json]]("tags").toOption.forall(_.isEmpty))
+    assert(op.get[List[String]]("tags").toOption.forall(_.isEmpty))
     app.httpApp(request("/reports/daily/get?id=7")).flatMap(_.as[String]).map(value => assertEquals(value, "7"))
   }
 
@@ -135,7 +137,7 @@ class CommandSuite extends CatsEffectSuite:
       commands("reports") { command[String]("get") { handle { IO.pure("get") } } }
     }
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
-    assertEquals(doc.hcursor.get[List[Json]]("tags").toOption.get.size, 1)
+    assertEquals(doc.hcursor.downField("x-rpc").get[List[Json]]("commands").toOption.get.size, 1)
     app.httpApp(request("/reports/get")).flatMap(_.as[String]).map(value => assertEquals(value, "get"))
   }
 
@@ -269,4 +271,15 @@ class CommandSuite extends CatsEffectSuite:
       def run(using CommandScope[Int]): Unit = { val n = common; handle { IO.pure(n.value) } }
       httpApp { command[Int]("get") { run }; commands("users") { command[Int]("get") { run } } }
     """))
+  }
+
+  test("RPC metadata preserves descriptions of empty groups") {
+    val app = httpApp { commands("empty") { description("No commands yet") } }
+    val doc = io.circe.parser.parse(app.openApiJson).toOption.get
+    val metadata = doc.hcursor.downField("x-rpc")
+    assertEquals(metadata.get[List[Json]]("commands"), Right(List(Json.obj(
+      "name" -> Json.fromString("empty"), "description" -> Json.fromString("No commands yet")
+    ))))
+    val empty = io.circe.parser.parse(httpApp {}.openApiJson).toOption.get.hcursor.downField("x-rpc")
+    assertEquals(empty.get[List[Json]]("commands"), Right(Nil))
   }

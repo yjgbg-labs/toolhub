@@ -53,6 +53,7 @@ class OpenApiSuite extends FunSuite:
       }
     }
     val doc = parse(app)
+    assert(!doc.hcursor.downField("x-rpc").succeeded)
     val getCursor = doc.hcursor.downField("paths").downField("/api/users/{id}").downField("get")
     assertEquals(doc.hcursor.downField("info").get[String]("description"), Right("API description"))
     assertEquals(getCursor.get[String]("description"), Right("Operation description"))
@@ -180,5 +181,6 @@ class OpenApiSuite extends FunSuite:
     options.setResolve(false)
     val result = new io.swagger.v3.parser.OpenAPIV3Parser().readContents(app.openApiJson, null, options)
     assert(result.getOpenAPI() != null)
+    assert(result.getOpenAPI().getExtensions().containsKey("x-rpc"))
     assertEquals(result.getMessages().asScala.toList, Nil)
   }
