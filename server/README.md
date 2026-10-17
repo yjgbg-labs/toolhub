@@ -29,6 +29,7 @@ framework/
 │   └── OpenApi.scala
 ├── rpc/
 │   ├── Scopes.scala
+│   ├── Metadata.scala
 │   └── SuccessResponse.scala
 └── runtime/
     ├── Application.scala
@@ -37,12 +38,15 @@ framework/
 
 - `model` owns JSON codecs, schema definitions and derivation, independently of
   HTTP, RPC and the runtime.
-- `http` owns configuration scopes, frozen declarations, endpoint contracts,
+- `http` owns configuration scopes, flat frozen declarations, endpoint contracts,
   parameter validation, middleware binding and OpenAPI generation.
   `Exchange.scala` contains the public input/output and handler types, including
   `ErrorBody` and `FieldError`; settings live in `Declarations.scala`.
 - `rpc` contains command scopes and HTTP 200 result conventions, using the HTTP
-  and model packages.
+  and model packages. The RPC DSL turns command nesting into complete HTTP paths,
+  operation IDs and shared declaration scopes before the HTTP compiler runs.
+  `Metadata.scala` owns RPC group descriptions. HTTP and
+  runtime carry generic OpenAPI extensions without depending on the RPC model.
 - `runtime` executes HTTP contracts and manages TCP/Unix listeners. It depends
   on `http` and `model`, rather than the DSL entry points.
 
@@ -59,22 +63,28 @@ import framework.httpDsl.*
 val app = httpApp {
   server { port(8080) }
   routes {
-    group("/users") {
-      get("/{id}") {
-        description("Get a user ID")
-        val id = path[Long]("id") { minimum(1L) }
-        val ok = response.json[Long](200) {}
-        handle { IO.pure(ok(id.value)) }
-      }
+    get("/users/{id}") {
+      operationId("users.get")
+      description("Get a user ID")
+      val id = path[Long]("id") { minimum(1L) }
+      val ok = response.json[Long](200) {}
+      handle { IO.pure(ok(id.value)) }
     }
   }
 }
 ```
 
 `get`, `post`, `put`, `patch`, `delete`, `head` and `options` declare explicit
-methods. `group` adds a path prefix. Inputs use `path`, `query`, `header`,
-`cookie` and `body.json`; responses use `response.json`, `response.text` and
-`response.empty`. HTTP handlers return `IO[EndpointResult]`.
+methods and complete absolute paths. `get()` defaults to `/`.
+`operationId("users.get")` sets the OpenAPI operation ID independently of the
+path. When omitted, an ID is derived from the HTTP method and path.
+
+`routes` is a flat collection: inputs, responses, tags and middleware declared
+there apply to all of its endpoints, including declarations made after an
+endpoint. Multiple `routes` blocks have independent shared declarations.
+Inputs use `path`, `query`, `header`, `cookie` and `body.json`; responses use
+`response.json`, `response.text` and `response.empty`. HTTP handlers return
+`IO[EndpointResult]`.
 
 ## RPC
 
@@ -112,6 +122,12 @@ val app = httpApp {
   server and OpenAPI configuration.
 - `commands("users")` creates a namespace and path prefix. Nested namespaces
   produce IDs such as `users.admin.list` and paths such as `/users/admin/list`.
+- Both `commands` and `command` take one name matching `[A-Za-z][A-Za-z0-9_-]*`.
+  The nesting determines the path and operationId; names cannot contain dots
+  or slashes. For example, `commands("users") { command[String]("get") { ... } }`
+  produces `/users/get` and `users.get`. A root `command[String]("health")`
+  produces `/health` and `health`. Commands are leaves and cannot contain groups
+  or other commands.
 - `command[A]` declares the HTTP 200 result type. Its handler returns `IO[A]`.
   `String` produces text, `Unit` an empty body, and other `JsonModel` types JSON.
 - `param[A]("name", "description") { ... }` declares a query parameter.
@@ -129,12 +145,41 @@ val app = httpApp {
 
 Use `description("...")` consistently for documentation text, including named
 `commands` groups, individual commands, HTTP endpoints, inputs and responses.
-It maps directly to the corresponding OpenAPI `description` field.
+It maps to the corresponding `description` field; group descriptions are
+published in the `x-rpc` extension described below.
 `param` and `body` accept their description directly as an argument.
 
-The RPC DSL exposes neither `summary` nor `tag`; named `commands` groups generate
-OpenAPI tags automatically. The HTTP DSL retains both methods for explicit HTTP
-metadata. Business declarations and examples use `description` only.
+The RPC DSL exposes neither `summary` nor `tag`. Named `commands` groups publish
+their descriptions through the `x-rpc` extension. The HTTP DSL provides `summary`
+and `tag` for standard HTTP/OpenAPI metadata. Business declarations and examples
+use `description` only.
+
+## RPC group descriptions
+
+`operationId` is the dot-separated command path: `users.admin.get` means
+`users admin get`. The top-level `x-rpc` extension supplies descriptions for
+the groups in that hierarchy:
+
+```json
+{
+  "x-rpc": {
+      "commands": [
+      { "name": "users", "description": "User management" },
+      { "name": "users.admin", "description": "Administrative operations" }
+    ]
+  }
+}
+```
+
+- `commands` corresponds to DSL `commands(...)` declarations: an array of unique
+  dot-separated group names and optional
+  descriptions. Reopened DSL groups merge consistent descriptions, including
+  descriptions declared after their commands.
+- CLI group help and plugin namespace descriptions read `x-rpc.commands`.
+  OpenAPI tags are independent HTTP classifications.
+- Command discovery and tool names are derived from `operationId`. The extension
+  only supplies group documentation; it contains no command-to-operation mapping.
+- Without `x-rpc`, commands remain available with no group descriptions.
 
 ## Middleware and errors
 
@@ -191,6 +236,17 @@ Replace legacy `sprout` DSL imports with `framework.httpDsl.*` or
 retain their explicit method and path APIs. For RPC, remove the outer `routes`
 or `commands()` container; `httpApp` supplies the root command context. Rename
 `group/operation` to `commands/command`, and use `param` and `body` for inputs.
+Replace dotted shorthand such as `command[A]("users.get")` with
+`commands("users") { command[A]("get") { ... } }`.
+Clients should read `x-rpc.commands` instead of OpenAPI tags for group descriptions.
+The TypeScript catalog exposes these through `groupDescriptions`; command paths
+continue to come from `operationId.split(".")`.
+
+For HTTP, flatten former `group` path prefixes into each endpoint's full path:
+`group("/users") { get("/{id}") { ... } }` becomes
+`get("/users/{id}") { operationId("users.get"); ... }`. Put shared declarations
+in a `routes` block containing the relevant endpoints. Nested grouping belongs
+to RPC `commands`.
 
 Scheduled job names now use `?name=...` instead of a path segment. Consequently,
 CLI calls use `sprout schedule log --name example`, and Code Mode/client inputs

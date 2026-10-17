@@ -19,13 +19,15 @@ class CommandSuite extends CatsEffectSuite:
 
   test("commands without a body use GET and described, typed query parameters") {
     val app = httpApp {
-      command[List[String]]("admin.users.get") {
-        val id = param[Long]("id", "User ID") { minimum(1L) }
-        val detail = param[Boolean]("detail", "Include details") { default(false) }
-        val filter = param[Option[String]]("filter", "Optional filter")
-        val labels = param[List[String]]("label", "Labels")
-        handle { IO.pure(List(id.value.toString, detail.value.toString, filter.value.getOrElse("none")) ++ labels.value) }
-      }
+      commands("admin") { commands("users") {
+        command[List[String]]("get") {
+          val id = param[Long]("id", "User ID") { minimum(1L) }
+          val detail = param[Boolean]("detail", "Include details") { default(false) }
+          val filter = param[Option[String]]("filter", "Optional filter")
+          val labels = param[List[String]]("label", "Labels")
+          handle { IO.pure(List(id.value.toString, detail.value.toString, filter.value.getOrElse("none")) ++ labels.value) }
+        }
+      } }
     }
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
     val path = doc.hcursor.downField("paths").downField("/admin/users/get")
@@ -103,7 +105,7 @@ class CommandSuite extends CatsEffectSuite:
       }
   }
 
-  test("nested commands qualify operation IDs and publish inherited tags and descriptions") {
+  test("nested commands publish group descriptions in RPC metadata, including late descriptions") {
     val app = httpApp { commands("reports") {
       commands("daily") {
         description("Daily reports")
@@ -116,14 +118,16 @@ class CommandSuite extends CatsEffectSuite:
       description("Manage reports")
     } }
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
-    val tags = doc.hcursor.get[List[Json]]("tags").toOption.get.map { tag =>
-      tag.hcursor.get[String]("name").toOption.get -> tag.hcursor.get[String]("description").toOption.get
+    val metadata = doc.hcursor.downField("x-rpc")
+    val groups = metadata.get[List[Json]]("commands").toOption.get.map { group =>
+      group.hcursor.get[String]("name").toOption.get -> group.hcursor.get[String]("description").toOption.get
     }.toMap
-    assertEquals(tags, Map("reports" -> "Manage reports", "reports.daily" -> "Daily reports"))
+    assertEquals(groups, Map("reports" -> "Manage reports", "reports.daily" -> "Daily reports"))
     val op = doc.hcursor.downField("paths").downField("/reports/daily/get").downField("get")
     assertEquals(op.get[String]("operationId"), Right("reports.daily.get"))
     assertEquals(op.get[String]("description"), Right("Report details"))
-    assertEquals(op.get[List[String]]("tags"), Right(List("reports", "reports.daily")))
+    assert(doc.hcursor.get[List[Json]]("tags").toOption.forall(_.isEmpty))
+    assert(op.get[List[String]]("tags").toOption.forall(_.isEmpty))
     app.httpApp(request("/reports/daily/get?id=7")).flatMap(_.as[String]).map(value => assertEquals(value, "7"))
   }
 
@@ -133,36 +137,60 @@ class CommandSuite extends CatsEffectSuite:
       commands("reports") { command[String]("get") { handle { IO.pure("get") } } }
     }
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
-    assertEquals(doc.hcursor.get[List[Json]]("tags").toOption.get.size, 1)
+    assertEquals(doc.hcursor.downField("x-rpc").get[List[Json]]("commands").toOption.get.size, 1)
     app.httpApp(request("/reports/get")).flatMap(_.as[String]).map(value => assertEquals(value, "get"))
   }
 
   test("invalid names, conflicting metadata and duplicate command identities fail at startup") {
-    List("", ".users", "users.", "users..list", "users/list").foreach { name =>
-      intercept[IllegalArgumentException] { httpApp { command[String](name) {} } }
-    }
-    List("", "/users", "users.admin", "bad name").foreach { name =>
-      intercept[IllegalArgumentException] { httpApp { commands(name) {} } }
+    List("", ".users", "users.", "users..list", "users.get", "admin.users.get", "/users", "users/list", "bad name").foreach { name =>
+      val commandError = intercept[IllegalArgumentException] { httpApp {
+        command[String](name) { handle { IO.pure("ok") } }
+      } }
+      assert(commandError.getMessage.contains(s"Invalid command name: $name"), commandError.getMessage)
+      val groupError = intercept[IllegalArgumentException] { httpApp {
+        commands(name) { command[String]("get") { handle { IO.pure("ok") } } }
+      } }
+      assert(groupError.getMessage.contains(s"Invalid commands name: $name"), groupError.getMessage)
     }
     intercept[IllegalArgumentException] { httpApp {
       commands("users") { description("First") }
       commands("users") { description("Second") }
     } }
-    intercept[IllegalArgumentException] { httpApp {
-      command[String]("users.get") { handle { IO.pure("one") } }
+    val duplicate = intercept[IllegalArgumentException] { httpApp {
+      commands("users") { command[String]("get") { handle { IO.pure("one") } } }
       commands("users") { command[String]("get") { body[Int]("Payload"); handle { IO.pure("two") } } }
     } }
+    assert(duplicate.getMessage.contains("Duplicate operationId"), duplicate.getMessage)
+  }
+
+  test("commands are leaves and cannot contain groups or other commands") {
+    val nestedCommand = intercept[IllegalArgumentException] { httpApp {
+      command[String]("parent") {
+        command[String]("child") { handle { IO.pure("child") } }
+        handle { IO.pure("parent") }
+      }
+    } }
+    val nestedGroup = intercept[IllegalArgumentException] { httpApp {
+      command[String]("parent") {
+        commands("children") { command[String]("get") { handle { IO.pure("child") } } }
+        handle { IO.pure("parent") }
+      }
+    } }
+    List(nestedCommand, nestedGroup).foreach { error =>
+      assertEquals(error.getMessage, "Declare commands inside httpApp or a commands block")
+    }
   }
 
   test("HTTP and RPC declarations share the application and detect cross-DSL conflicts") {
     val app = httpApp {
       framework.httpDsl.routes {
         import framework.httpDsl.*
-        group("/api") { put("/{id}") {
+        put("/api/{id}") {
+          operationId("api.update")
           val id = path[Int]("id")
           val ok = response.json[Int](201) {}
           handle { IO.pure(ok(id.value)) }
-        } }
+        }
       }
       command[String]("health") { handle { IO.pure("ok") } }
     }
@@ -215,6 +243,7 @@ class CommandSuite extends CatsEffectSuite:
       assertEquals(wrongMethod.status, Status.MethodNotAllowed)
       List("/read", "/nested/read").foreach { path =>
         val operation = doc.hcursor.downField("paths").downField(path).downField("post")
+        assertEquals(operation.get[String]("operationId"), Right(if path == "/read" then "read" else "nested.read"))
         assertEquals(operation.downField("requestBody").get[String]("description"), Right("Optional root payload"))
         assert(operation.downField("responses").downField("403").succeeded)
       }
@@ -242,4 +271,15 @@ class CommandSuite extends CatsEffectSuite:
       def run(using CommandScope[Int]): Unit = { val n = common; handle { IO.pure(n.value) } }
       httpApp { command[Int]("get") { run }; commands("users") { command[Int]("get") { run } } }
     """))
+  }
+
+  test("RPC metadata preserves descriptions of empty groups") {
+    val app = httpApp { commands("empty") { description("No commands yet") } }
+    val doc = io.circe.parser.parse(app.openApiJson).toOption.get
+    val metadata = doc.hcursor.downField("x-rpc")
+    assertEquals(metadata.get[List[Json]]("commands"), Right(List(Json.obj(
+      "name" -> Json.fromString("empty"), "description" -> Json.fromString("No commands yet")
+    ))))
+    val empty = io.circe.parser.parse(httpApp {}.openApiJson).toOption.get.hcursor.downField("x-rpc")
+    assertEquals(empty.get[List[Json]]("commands"), Right(Nil))
   }

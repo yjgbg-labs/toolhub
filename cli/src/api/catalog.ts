@@ -87,18 +87,19 @@ export class Catalog {
   constructor(value: unknown) {
     const doc = object(value, "OpenAPI document");
     if (!/^3\.1\./.test(doc.openapi)) throw new Error("Expected an OpenAPI 3.1 document");
-    this.title = doc.info?.title ?? "Sprout";
-    const tags = doc.tags ?? [];
-    if (!Array.isArray(tags)) throw new Error("Expected OpenAPI tags array");
+    this.title = doc.info?.title ?? "API";
+    const commands = doc["x-rpc"] === undefined ? [] : object(doc["x-rpc"], "x-rpc").commands;
+    if (!Array.isArray(commands)) throw new Error("Expected x-rpc commands array");
     const names = new Set<string>();
-    for (const raw of tags) {
-      const tag = object(raw, "tag");
-      if (typeof tag.name !== "string" || !tag.name || (tag.description !== undefined && typeof tag.description !== "string")) {
-        throw new Error("Invalid OpenAPI tag");
+    for (const raw of commands) {
+      const group = object(raw, "RPC group");
+      if (typeof group.name !== "string" || !operationPattern.test(group.name) ||
+          (group.description !== undefined && typeof group.description !== "string")) {
+        throw new Error("Invalid RPC group");
       }
-      if (names.has(tag.name)) throw new Error(`Duplicate OpenAPI tag: ${tag.name}`);
-      names.add(tag.name);
-      if (tag.description) this.groupDescriptions.set(tag.name, tag.description);
+      if (names.has(group.name)) throw new Error(`Duplicate RPC group: ${group.name}`);
+      names.add(group.name);
+      if (group.description) this.groupDescriptions.set(group.name, group.description);
     }
     for (const [path, rawItem] of Object.entries(object(doc.paths, "paths"))) {
       const item = resolve(doc, rawItem);

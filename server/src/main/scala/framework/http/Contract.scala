@@ -65,8 +65,6 @@ private[framework] final case class BoundEndpoint(spec: EndpointSpec, run: Reque
   val inputSlots: Map[InputKey[?], Int] = spec.inputs.zipWithIndex.map((input, slot) => input.key -> slot).toMap
   val outputs: Map[ResponseKey[?], ResponseSpec] = spec.outputs.map(output => output.key -> output).toMap
 
-private[framework] final case class ApiTag(name: String, description: Option[String])
-
 private[framework] final case class PathPattern(value: String, segments: Vector[String]):
   val parameters: Vector[String] = segments.filter(_.startsWith("{")).map(_.drop(1).dropRight(1))
   val shape: String = segments.map(s => if s.startsWith("{") then "{}" else s).mkString("/", "/", "")
@@ -98,7 +96,3 @@ private[framework] object PathPattern:
     val result = PathPattern(normalized, segments)
     require(result.parameters.distinct.size == result.parameters.size, s"Duplicate path parameter in $value")
     result
-
-  def join(prefix: String, path: String): String =
-    require(path.isEmpty || path.startsWith("/"), s"Path must start with '/': $path")
-    normalize(Option(prefix.stripSuffix("/") + path).filter(_.nonEmpty).getOrElse("/"))

@@ -27,39 +27,39 @@ class OpenApiSuite extends FunSuite:
       json.asArray.foreach(_.foreach(walk))
     walk(doc)
 
-  test("group inheritance, scoped metadata, input constraints and multiple methods are documented") {
+  test("flat HTTP paths, explicit operation IDs, scoped metadata and input constraints are documented") {
     val app = httpApp {
       openapi { info { title("Users API"); version("2.0.0"); description("API description") } }
       routes {
-        group("/api") {
-          group("/users/{id}") {
-            tag("Users")
-            get() {
-              operationId("getUser")
-              summary("Find a user")
-              description("Operation description")
-              val id = path[Long]("id") { description("User ID"); minimum(1L) }
-              val limit = query[Int]("limit") { default(20); minimum(5); minimum(1); maximum(100) }
-              val ok = response.json[User](200) { description("Found") }
-              handle { IO.pure(ok(User(id.value, limit.value.toString))) }
-            }
-            post("") {
-              val id = path[Long]("id")
-              val input = body.json[CreateUser] { description("User payload") }
-              val created = response.json[User](201) {}
-              handle { IO.pure(created(User(id.value, input.value.name))) }
-            }
-          }
-          tag("API")
+        get("/api/users/{id}") {
+          operationId("users.lookup")
+          tag("Users")
+          summary("Find a user")
+          description("Operation description")
+          val id = path[Long]("id") { description("User ID"); minimum(1L) }
+          val limit = query[Int]("limit") { default(20); minimum(5); minimum(1); maximum(100) }
+          val ok = response.json[User](200) { description("Found") }
+          handle { IO.pure(ok(User(id.value, limit.value.toString))) }
         }
+        post("/api/users/{id}") {
+          operationId("users.create")
+          tag("Users")
+          val id = path[Long]("id")
+          val input = body.json[CreateUser] { description("User payload") }
+          val created = response.json[User](201) {}
+          handle { IO.pure(created(User(id.value, input.value.name))) }
+        }
+        tag("API")
       }
     }
     val doc = parse(app)
+    assert(!doc.hcursor.downField("x-rpc").succeeded)
     val getCursor = doc.hcursor.downField("paths").downField("/api/users/{id}").downField("get")
     assertEquals(doc.hcursor.downField("info").get[String]("description"), Right("API description"))
     assertEquals(getCursor.get[String]("description"), Right("Operation description"))
     assertEquals(getCursor.get[List[String]]("tags"), Right(List("API", "Users")))
-    assertEquals(getCursor.get[String]("operationId"), Right("getUser"))
+    assertEquals(getCursor.get[String]("operationId"), Right("users.lookup"))
+    assertEquals(doc.hcursor.downField("paths").keys.map(_.toList), Some(List("/api/users/{id}")))
     val params = getCursor.get[List[Json]]("parameters").toOption.get
     val id = params.find(_.hcursor.get[String]("name").contains("id")).get.hcursor
     val limit = params.find(_.hcursor.get[String]("name").contains("limit")).get.hcursor
@@ -71,6 +71,8 @@ class OpenApiSuite extends FunSuite:
     assertEquals(getCursor.downField("responses").downField("200").get[String]("description"), Right("Found"))
     assert(getCursor.downField("responses").downField("400").succeeded)
     val postCursor = doc.hcursor.downField("paths").downField("/api/users/{id}").downField("post")
+    assertEquals(postCursor.get[String]("operationId"), Right("users.create"))
+    assertEquals(postCursor.get[List[String]]("tags"), Right(List("API", "Users")))
     assertEquals(postCursor.downField("requestBody").get[String]("description"), Right("User payload"))
     assert(postCursor.downField("responses").downField("413").succeeded)
     assert(postCursor.downField("responses").downField("415").succeeded)
@@ -179,5 +181,6 @@ class OpenApiSuite extends FunSuite:
     options.setResolve(false)
     val result = new io.swagger.v3.parser.OpenAPIV3Parser().readContents(app.openApiJson, null, options)
     assert(result.getOpenAPI() != null)
+    assert(result.getOpenAPI().getExtensions().containsKey("x-rpc"))
     assertEquals(result.getMessages().asScala.toList, Nil)
   }

@@ -2,7 +2,7 @@ package framework
 
 import cats.effect.IO
 import framework.http.{AppScope, DescriptionScope, EndpointScope, ResponseScope, RoutesScope}
-import framework.rpc.{Command, CommandGroup, CommandScope, CommandsScope, SuccessResponse}
+import framework.rpc.{Command, CommandGroup, CommandScope, CommandsScope, Metadata, SuccessResponse}
 import framework.runtime.Application
 
 object rpcDsl:
@@ -11,38 +11,38 @@ object rpcDsl:
   export httpDsl.{server, host, port, socket, maxBodyBytes, openapi, endpoint, info, title, version,
     default, constraint, minimum, maximum, minLength, maxLength, pattern, value}
 
-  private def routes(scope: CommandsScope): RoutesScope = scope.http match
-    case routes: RoutesScope => routes
+  private def group(scope: CommandsScope): CommandGroup = scope match
+    case group: CommandGroup => group
     case _ => throw new IllegalArgumentException("Declare commands inside httpApp or a commands block")
 
   def httpApp(init: (AppScope, CommandsScope) ?=> Unit): Application =
     httpDsl.httpApp {
+      val app = summon[AppScope]
+      val metadata = new Metadata
       httpDsl.routes {
-        init(using summon[AppScope], new CommandGroup(summon[RoutesScope], Vector.empty, Vector.empty))
+        init(using app, new CommandGroup(summon[RoutesScope], Vector.empty, Vector.empty, metadata))
       }
+      app.extensions("x-rpc") = () => metadata.freeze()
     }
 
   def commands(name: String)(init: CommandsScope ?=> Unit)(using scope: CommandsScope): Unit =
     require(name.matches("[A-Za-z][A-Za-z0-9_-]*"), s"Invalid commands name: $name")
-    val names = scope.namespace :+ name
-    httpDsl.group(s"/$name") {
-      val http = summon[RoutesScope]
-      http.documentedTag = Some(names.mkString("."))
-      httpDsl.tag(names.mkString("."))
-      init(using new CommandGroup(http, names, scope.ancestors :+ scope.http))
-    }(using routes(scope))
+    val parent = group(scope)
+    val names = parent.namespace :+ name
+    val child = new CommandGroup(parent.routes, names, parent.ancestors :+ parent.http, parent.metadata)
+    init(using child)
 
   def command[A](name: String)(init: CommandScope[A] ?=> Unit)(using scope: CommandsScope, success: SuccessResponse[A]): Unit =
-    val segments = name.split("\\.", -1).toVector
-    require(segments.forall(_.matches("[A-Za-z][A-Za-z0-9_-]*")), s"Invalid command name: $name")
-    val names = scope.namespace ++ segments
-    val ancestors = scope.ancestors :+ scope.http
+    require(name.matches("[A-Za-z][A-Za-z0-9_-]*"), s"Invalid command name: $name")
+    val parent = group(scope)
+    val names = parent.namespace :+ name
+    val ancestors = parent.ancestors :+ parent.http
     // Choose the method when the HTTP declaration freezes, including late inherited bodies.
-    httpDsl.register(http => if (ancestors :+ http).exists(_.hasBody) then "POST" else "GET", "/" + segments.mkString("/")) {
+    httpDsl.register(http => if (ancestors :+ http).exists(_.hasBody) then "POST" else "GET", names.mkString("/", "/", ""), ancestors) {
       val http = summon[EndpointScope]
       httpDsl.operationId(names.mkString("."))
-      init(using new Command(http, names, ancestors, success.declare(http)))
-    }(using routes(scope))
+      init(using new Command(http, success.declare(http)))
+    }(using parent.routes)
 
   def param[A](using codec: ParamCodec[A], scope: CommandsScope)(name: String, description: String): Input[A] =
     httpDsl.query[A](using codec, scope.http)(name) { httpDsl.description(description) }

@@ -134,4 +134,4 @@ final class Application private[framework] (
 private[framework] object Application:
   def build(api: ResolvedApi): Application =
     new Application(api.endpoints.map(Compiler.bind), api.server, api.openApi,
-      OpenApi.generate(api.endpoints.map(_.spec), api.openApi, api.tags))
+      OpenApi.generate(api.endpoints.map(_.spec), api.openApi, api.extensions))
