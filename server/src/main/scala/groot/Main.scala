@@ -1,7 +1,7 @@
 package groot
 
 import cats.effect.{IO, IOApp}
-import sprout.rpcDsl.*
+import framework.rpcDsl.*
 import groot.schedule.{Scheduler, ScheduleRoutes}
 import java.nio.file.Path
 
