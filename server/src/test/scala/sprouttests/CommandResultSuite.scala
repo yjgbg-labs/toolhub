@@ -15,12 +15,12 @@ class CommandResultSuite extends CatsEffectSuite:
 
   test("the command type declares HTTP 200 and encodes IO success values") {
     val user = User(7, "Ada")
-    val app = httpApp { commands() {
+    val app = httpApp {
       commands("users") {
         command[User]("get") { handle { IO.pure(user) } }
         command[Page[User]]("list") { handle { IO.pure(Page(List(user))) } }
       }
-    } }
+    }
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
     val schema = doc.hcursor.downField("paths").downField("/users/list").downField("get")
       .downField("responses").downField("200").downField("content").downField("application/json").downField("schema")
@@ -40,12 +40,12 @@ class CommandResultSuite extends CatsEffectSuite:
   }
 
   test("String is text, Unit is empty and nullable and scalar JSON keep their declared schemas") {
-    val app = httpApp { commands() {
+    val app = httpApp {
       command[String]("text") { handle { IO.pure("literal \"text\"\n") } }
       command[Unit]("empty") { handle { IO.unit } }
       command[Option[User]]("nullable") { handle { IO.pure(None) } }
       command[Int]("count") { handle { IO.pure(7) } }
-    } }
+    }
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
     def success(path: String) = doc.hcursor.downField("paths").downField(path).downField("get").downField("responses").downField("200")
     assertEquals(success("/text").downField("content").downField("text/plain").downField("schema").get[String]("type"), Right("string"))
@@ -70,7 +70,7 @@ class CommandResultSuite extends CatsEffectSuite:
   }
 
   test("declared errors short-circuit typed IO handlers with their own status and schema") {
-    val app = httpApp { commands() {
+    val app = httpApp {
       command[User]("get") {
         val id = param[Int]("id", "User ID")
         val missing = response.json[sprout.ErrorBody](404) { description("User not found") }
@@ -90,7 +90,7 @@ class CommandResultSuite extends CatsEffectSuite:
         val gone = response.empty(410) {}
         handle { gone.raise(()) }
       }
-    } }
+    }
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
     val responses = doc.hcursor.downField("paths").downField("/get").downField("get").downField("responses")
     assert(responses.downField("200").downField("content").downField("application/json").succeeded)
@@ -117,10 +117,10 @@ class CommandResultSuite extends CatsEffectSuite:
 
   test("response encoding and IO construction stay suspended until each request executes") {
     val calls = new AtomicInteger()
-    val app = httpApp { commands() {
+    val app = httpApp {
       command[Int]("pure") { handle { IO.pure(calls.incrementAndGet()) } }
       command[Int]("effect") { handle { val value = calls.incrementAndGet(); IO.pure(value) } }
-    } }
+    }
     val pending = app.httpApp(request("/pure"))
     assertEquals(calls.get(), 0)
     for
@@ -137,25 +137,25 @@ class CommandResultSuite extends CatsEffectSuite:
   test("handle requires IO of the declared command type and errors check their payload type") {
     val pure = typeCheckErrors("""
       import sprout.rpcDsl.*
-      httpApp { commands() { command[Int]("wrong") { handle { 1 } } } }
+      httpApp { command[Int]("wrong") { handle { 1 } } }
     """)
     val effect = typeCheckErrors("""
       import cats.effect.IO
       import sprout.rpcDsl.*
-      httpApp { commands() { command[Int]("wrong") { handle { IO.pure("wrong") } } } }
+      httpApp { command[Int]("wrong") { handle { IO.pure("wrong") } } }
     """)
     val widen = typeCheckErrors("""
       import cats.effect.IO
       import sprout.rpcDsl.*
-      httpApp { commands() { command[Int]("wrong") { handle[Any] { IO.pure("wrong") } } } }
+      httpApp { command[Int]("wrong") { handle[Any] { IO.pure("wrong") } } }
     """)
     val mixed = typeCheckErrors("""
       import cats.effect.IO
       import sprout.rpcDsl.*
-      httpApp { commands() { command[Int]("wrong") {
+      httpApp { command[Int]("wrong") {
         val flag = param[Boolean]("flag", "Flag")
         handle { IO.pure(if flag.value then 1 else "wrong") }
-      } } }
+      } }
     """)
     val raw = typeCheckErrors("""
       import cats.effect.IO
@@ -165,7 +165,7 @@ class CommandResultSuite extends CatsEffectSuite:
     val unit = typeCheckErrors("""
       import cats.effect.IO
       import sprout.rpcDsl.*
-      httpApp { commands() { command[Unit]("wrong") { handle { IO.pure[String]("wrong") } } } }
+      httpApp { command[Unit]("wrong") { handle { IO.pure[String]("wrong") } } }
     """)
     assert(pure.nonEmpty)
     assert(effect.nonEmpty)
@@ -176,27 +176,27 @@ class CommandResultSuite extends CatsEffectSuite:
     val endpointResult = typeCheckErrors("""
       import cats.effect.IO
       import sprout.rpcDsl.*
-      httpApp { commands() { command[Int]("wrong") {
+      httpApp { command[Int]("wrong") {
         val bad = response.text(400) {}
         handle { IO.pure(bad("wrong")) }
-      } } }
+      } }
     """)
     assert(endpointResult.nonEmpty)
     val errorPayload = typeCheckErrors("""
       import cats.effect.IO
       import sprout.rpcDsl.*
-      httpApp { commands() { command[Unit]("wrong") {
+      httpApp { command[Unit]("wrong") {
         val bad = response.json[Int](400) {}
         handle { bad.raise("wrong") }
-      } } }
+      } }
     """)
     assert(errorPayload.nonEmpty)
   }
 
   test("typed commands still require handlers and reject a second HTTP 200 declaration") {
-    intercept[IllegalArgumentException] { httpApp { commands() { command[Int]("missing") {} } } }
-    intercept[IllegalArgumentException] { httpApp { commands() { command[Int]("duplicate") {
+    intercept[IllegalArgumentException] { httpApp { command[Int]("missing") {} } }
+    intercept[IllegalArgumentException] { httpApp { command[Int]("duplicate") {
       response.json[String](200) {}
       handle { IO.pure(1) }
-    } } } }
+    } } }
   }

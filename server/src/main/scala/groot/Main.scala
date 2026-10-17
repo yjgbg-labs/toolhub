@@ -25,11 +25,9 @@ object Main extends IOApp.Simple:
         }
       }
 
-      commands() {
-        ScheduleRoutes.register(scheduler)
-        command[String]("health") {
-          handle { IO.pure("ok") }
-        }
+      ScheduleRoutes.register(scheduler)
+      command[String]("health") {
+        handle { IO.pure("ok") }
       }
     }
     app.serve

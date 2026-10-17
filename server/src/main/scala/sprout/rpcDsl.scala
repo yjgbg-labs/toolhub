@@ -13,7 +13,7 @@ sealed trait CommandScope[A] extends CommandsScope:
 
 object rpcDsl:
   export sprout.{JsonModel, ParamCodec, RequestContext, EndpointResult, Handler, Input, Output}
-  export httpDsl.{httpApp, server, host, port, socket, maxBodyBytes, openapi, endpoint, info, title, version,
+  export httpDsl.{server, host, port, socket, maxBodyBytes, openapi, endpoint, info, title, version,
     default, constraint, minimum, maximum, minLength, maxLength, pattern, value}
 
   private final class Group(
@@ -31,11 +31,13 @@ object rpcDsl:
 
   private def routes(scope: CommandsScope): RoutesScope = scope.http match
     case routes: RoutesScope => routes
-    case _ => throw new IllegalArgumentException("Declare commands inside a commands block")
+    case _ => throw new IllegalArgumentException("Declare commands inside httpApp or a commands block")
 
-  def commands()(init: CommandsScope ?=> Unit)(using AppScope): Unit =
-    httpDsl.routes {
-      init(using new Group(summon[RoutesScope], Vector.empty, Vector.empty))
+  def httpApp(init: (AppScope, CommandsScope) ?=> Unit): Application =
+    httpDsl.httpApp {
+      httpDsl.routes {
+        init(using summon[AppScope], new Group(summon[RoutesScope], Vector.empty, Vector.empty))
+      }
     }
 
   def commands(name: String)(init: CommandsScope ?=> Unit)(using scope: CommandsScope): Unit =

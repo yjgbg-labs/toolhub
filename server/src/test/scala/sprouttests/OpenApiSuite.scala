@@ -152,15 +152,13 @@ class OpenApiSuite extends FunSuite:
 
   test("Swagger's independent OpenAPI 3.1 parser accepts the generated document") {
     import scala.jdk.CollectionConverters.*
-    val app = httpApp {
-      sprout.rpcDsl.commands() {
+    val app = sprout.rpcDsl.httpApp {
+      sprout.rpcDsl.commands("reports") {
         import sprout.rpcDsl.*
-        commands("reports") {
-          description("Manage reports")
-          commands("daily") {
-            description("Daily reports")
-            command[String]("read") { handle { IO.pure("report") } }
-          }
+        description("Manage reports")
+        commands("daily") {
+          description("Daily reports")
+          command[String]("read") { handle { IO.pure("report") } }
         }
       }
       routes {

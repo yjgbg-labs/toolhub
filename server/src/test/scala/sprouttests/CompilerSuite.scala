@@ -9,9 +9,10 @@ import sprout.rpcDsl.*
 class CompilerSuite extends CatsEffectSuite:
   test("a frozen declaration tree can be resolved and compiled repeatedly without running handlers") {
     val calls = new AtomicInteger()
-    val builder = new AppScope
+    var builder = Option.empty[AppScope]
     var configure: () => Unit = () => ()
-    commands() {
+    httpApp {
+      builder = Some(summon[AppScope])
       commands("users") {
         val tenant = param[String]("tenant", "Tenant") { default("default") }
         configure = () => tenant { default("changed") }
@@ -20,8 +21,8 @@ class CompilerSuite extends CatsEffectSuite:
         val failed = response.text(503) {}
         middleware { next => next.recover { case _: IllegalStateException => failed("unavailable") } }
       }
-    }(using builder)
-    val declaration = builder.freeze()
+    }
+    val declaration = builder.get.freeze()
     intercept[IllegalArgumentException](configure())
     val groupDecl = declaration.routes.head.children.head.asInstanceOf[GroupDecl]
     assertEquals(groupDecl.path, "/users")

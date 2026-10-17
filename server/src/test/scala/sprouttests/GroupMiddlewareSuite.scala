@@ -21,7 +21,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
     io.circe.parser.parse(app.openApiJson).toOption.get.hcursor.downField("paths").downField(path).downField(method)
 
   test("nested commands inherit parameters, defaults, constraints and request-local values") {
-    val app = httpApp { commands() { commands("api") {
+    val app = httpApp { commands("api") {
       val tenant = param[String]("tenant", "Tenant") { minLength(1) }
       commands("users") {
         val limit = param[Int]("limit", "Limit") { default(20); minimum(1) }
@@ -35,7 +35,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
           command[String]("read") { handle { IO.cede *> IO(s"${tenant.value}:${token.value}:${limit.value}") } }
         }
       }
-    } } }
+    } }
     val parameters = operationDoc(app, "/api/users/get").get[List[Json]]("parameters").toOption.get
     assertEquals(parameters.map(p => p.hcursor.get[String]("name").toOption.get), List("tenant", "limit", "token", "session", "id"))
     assertEquals(parameters.map(p => p.hcursor.get[String]("in").toOption.get), List.fill(5)("query"))
@@ -54,7 +54,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
   }
 
   test("inherited parameters retain ancestor declaration order without changing command paths") {
-    val app = httpApp { commands() { commands("tenants") {
+    val app = httpApp { commands("tenants") {
       val tenant = param[String]("tenant", "Tenant")
       commands("users") {
         val section = param[String]("section", "Section")
@@ -63,7 +63,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
           handle { IO.pure(s"${tenant.value}:${section.value}:${id.value}") }
         }
       }
-    } } }
+    } }
     val op = operationDoc(app, "/tenants/users/get")
     assertEquals(op.get[String]("operationId"), Right("tenants.users.get"))
     assertEquals(op.get[List[Json]]("parameters").toOption.get.map(_.hcursor.get[String]("name").toOption.get), List("tenant", "section", "id"))
@@ -83,7 +83,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
         decoded.incrementAndGet()
         original.decoder(cursor)
       }
-    val app = httpApp { commands() { commands("users") {
+    val app = httpApp { commands("users") {
       val input = body[CreateUser](using counted, summon[CommandsScope])("User payload")
       middleware { next =>
         IO { assert(input.value.active); seen.incrementAndGet() } *> next
@@ -92,7 +92,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
       commands("copy") {
         command[CreateUser]("read") { handle { IO.pure(input.value) } }
       }
-    } } }
+    } }
     assert(operationDoc(app, "/users/copy/read", "post").downField("requestBody").succeeded)
     assert(operationDoc(app, "/users/copy/read", "post").downField("responses").downField("415").succeeded)
     def req(path: String) = request(path, Method.POST).withEntity("""{"name":"Ada"}""")
@@ -111,7 +111,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
     val events = ArrayBuffer.empty[String]
     def trace(name: String): Handler => Handler = next =>
       IO { events += s"+$name" } *> next.guarantee(IO { events += s"-$name" })
-    val app = httpApp { commands() {
+    val app = httpApp {
       commands("outer") {
         middleware(trace("first"))
         commands("inner") {
@@ -124,7 +124,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
         middleware(trace("second"))
       }
       middleware(trace("root"))
-    } }
+    }
     val pending = app.httpApp(request("/outer/inner/run"))
     assertEquals(events.toList, Nil)
     pending.flatMap(_.as[String]).map { result =>
@@ -135,7 +135,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
   }
 
   test("group recovery handles synchronous, asynchronous, IO construction and encoding failures") {
-    val app = httpApp { commands() { commands("recover") {
+    val app = httpApp { commands("recover") {
       val label = param[String]("label", "Label") { default("shared") }
       val rejected = response.text(422) { description("Recovered failure") }
       middleware { next => next.recover {
@@ -156,7 +156,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
           handle { failed }
         }
       }
-    } } }
+    } }
     List("pure", "effect", "construct", "nested/encode", "nested/error-encode").traverse_ { path =>
       assertEquals(operationDoc(app, s"/recover/$path").downField("responses").downField("422").get[String]("description"), Right("Recovered failure"))
       for
@@ -173,7 +173,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
     val continued = new AtomicInteger()
     val finalized = new AtomicInteger()
     val recovered = new AtomicInteger()
-    val app = httpApp { commands() { commands("errors") {
+    val app = httpApp { commands("errors") {
       val denied = response.text(403) {}
       val unexpected = response.text(502) {}
       val reject = denied.raise("denied")
@@ -188,7 +188,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
         middleware { _ => reject }
         command[Int]("middleware") { handle { IO(continued.incrementAndGet()) } }
       }
-    } } }
+    } }
     assertEquals(continued.get(), 0)
     assertEquals(finalized.get(), 0)
     List("handler", "child/middleware").traverse_ { path =>
@@ -206,7 +206,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
   }
 
   test("inner recovery wins and errors thrown by middleware or recovery reach outer middleware") {
-    val app = httpApp { commands() { commands("outer") {
+    val app = httpApp { commands("outer") {
       val outer = response.text(502) {}
       middleware { next => next.recover { case e: IllegalArgumentException => outer(e.getMessage) } }
       commands("inner") {
@@ -222,7 +222,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
           handle { IO.pure("unused") }
         }
       }
-    } } }
+    } }
     for
       inner <- app.httpApp(request("/outer/inner/handled"))
       body <- inner.as[String]
@@ -242,7 +242,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
   test("late group contracts apply to earlier children and validation precedes short-circuit middleware") {
     val handled = new AtomicInteger()
     val wrapped = new AtomicInteger()
-    val app = httpApp { commands() { commands("late") {
+    val app = httpApp { commands("late") {
       command[Int]("count") { handle { IO.pure(handled.incrementAndGet()) } }
       commands("child") { command[Unit]("empty") { handle { handled.incrementAndGet(); IO.unit } } }
       val enabled = param[Boolean]("enabled", "Enabled")
@@ -251,7 +251,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
         wrapped.incrementAndGet()
         if enabled.value then next else IO.pure(denied("disabled"))
       }
-    } } }
+    } }
     assertEquals(wrapped.get(), 0)
     val doc = operationDoc(app, "/late/child/empty")
     assertEquals(doc.get[List[Json]]("parameters").toOption.get.head.hcursor.get[String]("name"), Right("enabled"))
@@ -304,7 +304,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
   test("same-named groups keep independent contracts and reject foreign inherited handles") {
     var input: Option[Input[Int]] = None
     var output: Option[Output[String]] = None
-    val app = httpApp { commands() {
+    val app = httpApp {
       commands("users") {
         val n = param[Int]("n", "Number")
         val denied = response.text(403) {}
@@ -318,7 +318,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
         command[Int]("input") { handle { IO.pure(input.get.value) } }
         command[String]("output") { handle { output.get.raise("foreign") } }
       }
-    } }
+    }
     val doc = operationDoc(app, "/users/second")
     assert(doc.get[List[Json]]("parameters").toOption.forall(_.isEmpty))
     assert(!doc.downField("responses").downField("403").succeeded)
@@ -336,7 +336,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
 
   test("inherited contracts reject duplicate parameters, bodies, statuses and HEAD bodies") {
     def invalid(init: CommandsScope ?=> Unit): Unit =
-      intercept[IllegalArgumentException] { httpApp { commands()(init) } }
+      intercept[IllegalArgumentException] { httpApp { init } }
     invalid {
       param[Int]("n", "Number")
       command[Int]("read") { param[Int]("n", "Duplicate"); handle { IO.pure(1) } }
@@ -369,23 +369,23 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
   test("group declarations and middleware retain compile-time parameter and response types") {
     val value = typeCheckErrors("""
       import sprout.rpcDsl.*
-      httpApp { commands() { commands("users") { val n = param[Int]("n", "Number"); val invalid = n.value } } }
+      httpApp { commands("users") { val n = param[Int]("n", "Number"); val invalid = n.value } }
     """)
     val defaultErrors = typeCheckErrors("""
       import sprout.rpcDsl.*
-      httpApp { commands() { commands("users") { param[Int]("n", "Number") { default("wrong") } } } }
+      httpApp { commands("users") { param[Int]("n", "Number") { default("wrong") } } }
     """)
     val responseErrors = typeCheckErrors("""
       import sprout.rpcDsl.*
-      httpApp { commands() { commands("users") {
+      httpApp { commands("users") {
         val bad = response.json[Int](400) {}
         middleware { next => next.recover { case _: RuntimeException => bad("wrong") } }
-      } } }
+      } }
     """)
     val middlewareResult = typeCheckErrors("""
       import cats.effect.IO
       import sprout.rpcDsl.*
-      httpApp { commands() { middleware { _ => IO.pure("wrong") } } }
+      httpApp { middleware { _ => IO.pure("wrong") } }
     """)
     assert(value.exists(_.message.contains("RequestContext")))
     assert(defaultErrors.nonEmpty)

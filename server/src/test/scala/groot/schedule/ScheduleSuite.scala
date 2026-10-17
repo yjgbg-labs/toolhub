@@ -28,7 +28,7 @@ class ScheduleSuite extends CatsEffectSuite:
   private def job(command: String, cpu: Double = 0): ScheduleJob =
     ScheduleJob("1h", List(command), if cpu == 0 then Map.empty else Map("cpu" -> cpu))
 
-  private def app(scheduler: Scheduler): Application = httpApp { commands() { ScheduleRoutes.register(scheduler) } }
+  private def app(scheduler: Scheduler): Application = httpApp { ScheduleRoutes.register(scheduler) }
   private def request(path: String, json: Option[String] = None): Request[IO] =
     val request = Request[IO](if json.isDefined then Method.POST else Method.GET, Uri.unsafeFromString(path))
     json.fold(request)(body => request.withEntity(body).putHeaders(Header.Raw(CIString("Content-Type"), "application/json")))

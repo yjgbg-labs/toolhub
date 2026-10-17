@@ -33,7 +33,7 @@ class SocketSuite extends CatsEffectSuite:
       val path = dir.resolve("http.sock")
       val app = httpApp {
         server { socket(path.toString) }
-        commands() { command[String]("health") { handle { IO.pure("healthy") } } }
+        command[String]("health") { handle { IO.pure("healthy") } }
       }
       val serve = app.resource.use { _ =>
         for
@@ -53,7 +53,7 @@ class SocketSuite extends CatsEffectSuite:
   test("binding does not replace or delete an existing file") {
     temporary.use { dir =>
       val path = dir.resolve("http.sock")
-      val app = httpApp { server { socket(path.toString) }; commands() { command[String]("health") { handle { IO.pure("ok") } } } }
+      val app = httpApp { server { socket(path.toString) }; command[String]("health") { handle { IO.pure("ok") } } }
       for
         _ <- IO.blocking(Files.writeString(path, "existing"))
         result <- app.resource.use(_ => IO.unit).attempt

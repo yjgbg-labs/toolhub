@@ -4,6 +4,11 @@
 `sprout.rpcDsl` builds on it to describe commands. Both use Scala 3 context
 functions and compile into the same HTTP contracts and OpenAPI document.
 
+Each DSL has its own `httpApp` entry point. `httpDsl.httpApp` accepts
+`AppScope ?=> Unit`; `rpcDsl.httpApp` wraps it and accepts
+`(AppScope, CommandsScope) ?=> Unit`. Importing `sprout.rpcDsl.*` selects the RPC
+entry point. The HTTP layer does not depend on RPC scope types.
+
 ## HTTP
 
 ```scala
@@ -39,27 +44,28 @@ case class User(id: Long, name: String) derives JsonModel
 case class CreateUser(name: String) derives JsonModel
 
 val app = httpApp {
-  commands() {
-    commands("users") {
-      description("User management")
+  commands("users") {
+    description("User management")
 
-      command[User]("get") {
-        val id = param[Long]("id", "User ID") { minimum(1L) }
-        handle { IO.pure(User(id.value, "Ada")) }
-      }
+    command[User]("get") {
+      val id = param[Long]("id", "User ID") { minimum(1L) }
+      handle { IO.pure(User(id.value, "Ada")) }
+    }
 
-      command[User]("create") {
-        val id = param[Long]("id", "User ID") { minimum(1L) }
-        val input = body[CreateUser]("User payload") {
-          constraint[CreateUser]("Name must not be blank")(_.name.trim.nonEmpty)
-        }
-        handle { IO.pure(User(id.value, input.value.name)) }
+    command[User]("create") {
+      val id = param[Long]("id", "User ID") { minimum(1L) }
+      val input = body[CreateUser]("User payload") {
+        constraint[CreateUser]("Name must not be blank")(_.name.trim.nonEmpty)
       }
+      handle { IO.pure(User(id.value, input.value.name)) }
     }
   }
 }
 ```
 
+- `rpcDsl.httpApp` provides both `AppScope` and the root `CommandsScope`.
+  Declare commands, shared inputs and middleware directly in its body, alongside
+  server and OpenAPI configuration.
 - `commands("users")` creates a namespace and path prefix. Nested namespaces
   produce IDs such as `users.admin.list` and paths such as `/users/admin/list`.
 - `command[A]` declares the HTTP 200 result type. Its handler returns `IO[A]`.
@@ -88,8 +94,9 @@ in-process requests and `app.openApiJson` for the generated contract.
 ## Migration
 
 Replace `sprout.dsl.*` with the relevant DSL import. HTTP routes retain their
-explicit method and path APIs. RPC `routes/group/operation` become
-`commands/commands/command`, and input locations become `param` and `body`.
+explicit method and path APIs. For RPC, remove the outer `routes` or `commands()`
+container; `httpApp` supplies the root command context. Rename `group/operation`
+to `commands/command`, and use `param` and `body` for inputs.
 
 Scheduled job names now use `?name=...` instead of a path segment. Consequently,
 CLI calls use `sprout schedule log --name example`, and Code Mode/client inputs
