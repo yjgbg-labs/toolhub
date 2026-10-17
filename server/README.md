@@ -112,6 +112,12 @@ val app = httpApp {
   server and OpenAPI configuration.
 - `commands("users")` creates a namespace and path prefix. Nested namespaces
   produce IDs such as `users.admin.list` and paths such as `/users/admin/list`.
+- Both `commands` and `command` take one name matching `[A-Za-z][A-Za-z0-9_-]*`.
+  The nesting determines the path and operationId; names cannot contain dots
+  or slashes. For example, `commands("users") { command[String]("get") { ... } }`
+  produces `/users/get` and `users.get`. A root `command[String]("health")`
+  produces `/health` and `health`. Commands are leaves and cannot contain groups
+  or other commands.
 - `command[A]` declares the HTTP 200 result type. Its handler returns `IO[A]`.
   `String` produces text, `Unit` an empty body, and other `JsonModel` types JSON.
 - `param[A]("name", "description") { ... }` declares a query parameter.
@@ -191,6 +197,8 @@ Replace legacy `sprout` DSL imports with `framework.httpDsl.*` or
 retain their explicit method and path APIs. For RPC, remove the outer `routes`
 or `commands()` container; `httpApp` supplies the root command context. Rename
 `group/operation` to `commands/command`, and use `param` and `body` for inputs.
+Replace dotted shorthand such as `command[A]("users.get")` with
+`commands("users") { command[A]("get") { ... } }`.
 
 Scheduled job names now use `?name=...` instead of a path segment. Consequently,
 CLI calls use `sprout schedule log --name example`, and Code Mode/client inputs

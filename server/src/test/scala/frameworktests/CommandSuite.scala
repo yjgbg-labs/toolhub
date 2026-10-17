@@ -19,13 +19,15 @@ class CommandSuite extends CatsEffectSuite:
 
   test("commands without a body use GET and described, typed query parameters") {
     val app = httpApp {
-      command[List[String]]("admin.users.get") {
-        val id = param[Long]("id", "User ID") { minimum(1L) }
-        val detail = param[Boolean]("detail", "Include details") { default(false) }
-        val filter = param[Option[String]]("filter", "Optional filter")
-        val labels = param[List[String]]("label", "Labels")
-        handle { IO.pure(List(id.value.toString, detail.value.toString, filter.value.getOrElse("none")) ++ labels.value) }
-      }
+      commands("admin") { commands("users") {
+        command[List[String]]("get") {
+          val id = param[Long]("id", "User ID") { minimum(1L) }
+          val detail = param[Boolean]("detail", "Include details") { default(false) }
+          val filter = param[Option[String]]("filter", "Optional filter")
+          val labels = param[List[String]]("label", "Labels")
+          handle { IO.pure(List(id.value.toString, detail.value.toString, filter.value.getOrElse("none")) ++ labels.value) }
+        }
+      } }
     }
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
     val path = doc.hcursor.downField("paths").downField("/admin/users/get")
@@ -138,20 +140,43 @@ class CommandSuite extends CatsEffectSuite:
   }
 
   test("invalid names, conflicting metadata and duplicate command identities fail at startup") {
-    List("", ".users", "users.", "users..list", "users/list").foreach { name =>
-      intercept[IllegalArgumentException] { httpApp { command[String](name) {} } }
-    }
-    List("", "/users", "users.admin", "bad name").foreach { name =>
-      intercept[IllegalArgumentException] { httpApp { commands(name) {} } }
+    List("", ".users", "users.", "users..list", "users.get", "admin.users.get", "/users", "users/list", "bad name").foreach { name =>
+      val commandError = intercept[IllegalArgumentException] { httpApp {
+        command[String](name) { handle { IO.pure("ok") } }
+      } }
+      assert(commandError.getMessage.contains(s"Invalid command name: $name"), commandError.getMessage)
+      val groupError = intercept[IllegalArgumentException] { httpApp {
+        commands(name) { command[String]("get") { handle { IO.pure("ok") } } }
+      } }
+      assert(groupError.getMessage.contains(s"Invalid commands name: $name"), groupError.getMessage)
     }
     intercept[IllegalArgumentException] { httpApp {
       commands("users") { description("First") }
       commands("users") { description("Second") }
     } }
-    intercept[IllegalArgumentException] { httpApp {
-      command[String]("users.get") { handle { IO.pure("one") } }
+    val duplicate = intercept[IllegalArgumentException] { httpApp {
+      commands("users") { command[String]("get") { handle { IO.pure("one") } } }
       commands("users") { command[String]("get") { body[Int]("Payload"); handle { IO.pure("two") } } }
     } }
+    assert(duplicate.getMessage.contains("Duplicate operationId"), duplicate.getMessage)
+  }
+
+  test("commands are leaves and cannot contain groups or other commands") {
+    val nestedCommand = intercept[IllegalArgumentException] { httpApp {
+      command[String]("parent") {
+        command[String]("child") { handle { IO.pure("child") } }
+        handle { IO.pure("parent") }
+      }
+    } }
+    val nestedGroup = intercept[IllegalArgumentException] { httpApp {
+      command[String]("parent") {
+        commands("children") { command[String]("get") { handle { IO.pure("child") } } }
+        handle { IO.pure("parent") }
+      }
+    } }
+    List(nestedCommand, nestedGroup).foreach { error =>
+      assertEquals(error.getMessage, "Declare commands inside httpApp or a commands block")
+    }
   }
 
   test("HTTP and RPC declarations share the application and detect cross-DSL conflicts") {
@@ -215,6 +240,7 @@ class CommandSuite extends CatsEffectSuite:
       assertEquals(wrongMethod.status, Status.MethodNotAllowed)
       List("/read", "/nested/read").foreach { path =>
         val operation = doc.hcursor.downField("paths").downField(path).downField("post")
+        assertEquals(operation.get[String]("operationId"), Right(if path == "/read" then "read" else "nested.read"))
         assertEquals(operation.downField("requestBody").get[String]("description"), Right("Optional root payload"))
         assert(operation.downField("responses").downField("403").succeeded)
       }
