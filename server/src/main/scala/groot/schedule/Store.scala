@@ -3,7 +3,7 @@ package groot.schedule
 import cats.effect.{IO, Resource}
 import cats.syntax.all.*
 import io.circe.parser.parse
-import sprout.JsonModel
+import framework.model.JsonModel
 import java.nio.channels.FileChannel
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path, StandardCopyOption, StandardOpenOption}

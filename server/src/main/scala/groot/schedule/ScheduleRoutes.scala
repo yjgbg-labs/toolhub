@@ -1,7 +1,8 @@
 package groot.schedule
 
-import sprout.{ErrorBody, CommandsScope}
-import sprout.rpcDsl.*
+import framework.http.ErrorBody
+import framework.rpc.CommandsScope
+import framework.rpcDsl.*
 
 object ScheduleRoutes:
   def register(scheduler: Scheduler)(using CommandsScope): Unit = commands("schedule") {

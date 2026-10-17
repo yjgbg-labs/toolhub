@@ -1,19 +1,60 @@
-# Sprout DSL
+# Framework DSL
 
-`sprout.httpDsl` describes HTTP methods, paths, input locations and responses.
-`sprout.rpcDsl` builds on it to describe commands. Both use Scala 3 context
+`framework.httpDsl` describes HTTP methods, paths, input locations and responses.
+`framework.rpcDsl` builds on it to describe commands. Both use Scala 3 context
 functions and compile into the same HTTP contracts and OpenAPI document.
 
 Each DSL has its own `httpApp` entry point. `httpDsl.httpApp` accepts
 `AppScope ?=> Unit`; `rpcDsl.httpApp` wraps it and accepts
-`(AppScope, CommandsScope) ?=> Unit`. Importing `sprout.rpcDsl.*` selects the RPC
+`(AppScope, CommandsScope) ?=> Unit`. Importing `framework.rpcDsl.*` selects the RPC
 entry point. The HTTP layer does not depend on RPC scope types.
+
+## Package structure
+
+```text
+framework/
+├── httpDsl.scala
+├── rpcDsl.scala
+├── model/
+│   ├── JsonModel.scala
+│   ├── Schema.scala
+│   └── ModelMacros.scala
+├── http/
+│   ├── Scopes.scala
+│   ├── Declarations.scala
+│   ├── Contract.scala
+│   ├── Exchange.scala
+│   ├── Compiler.scala
+│   ├── ParamCodec.scala
+│   └── OpenApi.scala
+├── rpc/
+│   ├── Scopes.scala
+│   └── SuccessResponse.scala
+└── runtime/
+    ├── Application.scala
+    └── UnixListener.scala
+```
+
+- `model` owns JSON codecs, schema definitions and derivation, independently of
+  HTTP, RPC and the runtime.
+- `http` owns configuration scopes, frozen declarations, endpoint contracts,
+  parameter validation, middleware binding and OpenAPI generation.
+  `Exchange.scala` contains the public input/output and handler types, including
+  `ErrorBody` and `FieldError`; settings live in `Declarations.scala`.
+- `rpc` contains command scopes and HTTP 200 result conventions, using the HTTP
+  and model packages.
+- `runtime` executes HTTP contracts and manages TCP/Unix listeners. It depends
+  on `http` and `model`, rather than the DSL entry points.
+
+The two root DSL objects compose these packages. For explicit type imports use
+`framework.model.JsonModel`, `framework.http.ErrorBody`,
+`framework.rpc.CommandsScope` and `framework.runtime.Application`.
 
 ## HTTP
 
 ```scala
 import cats.effect.IO
-import sprout.httpDsl.*
+import framework.httpDsl.*
 
 val app = httpApp {
   server { port(8080) }
@@ -39,7 +80,7 @@ methods. `group` adds a path prefix. Inputs use `path`, `query`, `header`,
 
 ```scala
 import cats.effect.IO
-import sprout.rpcDsl.*
+import framework.rpcDsl.*
 
 case class User(id: Long, name: String) derives JsonModel
 case class CreateUser(name: String) derives JsonModel
@@ -110,8 +151,8 @@ output's `raise` method to return that response from a typed command:
 
 ```scala
 import cats.effect.IO
-import sprout.ErrorBody
-import sprout.rpcDsl.*
+import framework.http.ErrorBody
+import framework.rpcDsl.*
 
 val app = httpApp {
   commands("users") {
@@ -145,10 +186,11 @@ in-process requests and `app.openApiJson` for the generated contract.
 
 ## Migration
 
-Replace `sprout.dsl.*` with the relevant DSL import. HTTP routes retain their
-explicit method and path APIs. For RPC, remove the outer `routes` or `commands()`
-container; `httpApp` supplies the root command context. Rename `group/operation`
-to `commands/command`, and use `param` and `body` for inputs.
+Replace legacy `sprout` DSL imports with `framework.httpDsl.*` or
+`framework.rpcDsl.*`, and import types from the packages above. HTTP routes
+retain their explicit method and path APIs. For RPC, remove the outer `routes`
+or `commands()` container; `httpApp` supplies the root command context. Rename
+`group/operation` to `commands/command`, and use `param` and `body` for inputs.
 
 Scheduled job names now use `?name=...` instead of a path segment. Consequently,
 CLI calls use `sprout schedule log --name example`, and Code Mode/client inputs

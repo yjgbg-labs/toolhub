@@ -1,7 +1,7 @@
 package groot.schedule
 
 import io.circe.{Decoder, DecodingFailure}
-import sprout.JsonModel
+import framework.model.JsonModel
 import java.time.Instant
 import scala.util.Try
 

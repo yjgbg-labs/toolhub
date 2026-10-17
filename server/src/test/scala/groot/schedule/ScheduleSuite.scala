@@ -7,8 +7,8 @@ import munit.CatsEffectSuite
 import org.http4s.{Header, Method, Request, Status, Uri}
 import org.http4s.circe.*
 import org.typelevel.ci.CIString
-import sprout.{Application, JsonModel}
-import sprout.rpcDsl.*
+import framework.runtime.Application
+import framework.rpcDsl.*
 import java.nio.file.{Files, Path}
 import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
