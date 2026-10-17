@@ -20,7 +20,6 @@ export interface DeploymentConfig {
   socket: string;
   startupTimeout: number;
   baseUrl: string;
-  namespace: string;
   jdk: string;
   bun: string;
   groot: string;
@@ -44,12 +43,10 @@ export function configFromEnv(env = process.env): DeploymentConfig {
   const socket = directory("SERVER_SOCKET");
   const startupTimeout = Number(required("SERVER_START_TIMEOUT_MS"));
   const jdk = required("JDK_MAJOR");
-  const namespace = required("PLUGIN_NAMESPACE");
   if (!/^[a-zA-Z0-9_-]+\.tar\.gz$/.test(artifact) || !/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Invalid artifact identity");
   if (!/^groot-[a-zA-Z0-9_.-]+\.service$/.test(service)) throw new Error("SERVER_SERVICE must be a groot-*.service unit");
   if (!Number.isSafeInteger(startupTimeout) || startupTimeout <= 0) throw new Error("Invalid SERVER_START_TIMEOUT_MS");
   if (!/^\d+$/.test(jdk)) throw new Error("Invalid JDK_MAJOR");
-  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(namespace)) throw new Error("Invalid PLUGIN_NAMESPACE");
   const downloadBase = required("DEPLOY_DOWNLOAD_BASE").replace(/\/$/, "");
   const baseUrl = required("CLIENT_BASE_URL").replace(/\/$/, "");
   const url = new URL(downloadBase);
@@ -60,7 +57,7 @@ export function configFromEnv(env = process.env): DeploymentConfig {
   return {
     root: directory("DEPLOY_ROOT"), binDir: directory("CLI_BIN_DIR"), unitDir: directory("SYSTEMD_UNIT_DIR"),
     pluginDir: directory("OPENCODE_PLUGIN_DIR"), artifact, sha256, service, socket, startupTimeout, jdk,
-    downloadBase, baseUrl, namespace, bun: process.execPath, groot, home: directory("SPROUT_HOME"),
+    downloadBase, baseUrl, bun: process.execPath, groot, home: directory("SPROUT_HOME"),
   };
 }
 
@@ -235,7 +232,7 @@ exec ${shellQuote(config.bun)} ${shellQuote(join(current, "dist/sprout.js"))} "$
   } else {
     const directory = join(release, "plugin");
     const entry = pathToFileURL(join(directory, "dist/index.js")).href;
-    const defaults = JSON.stringify({ baseUrl: config.baseUrl, namespace: config.namespace });
+    const defaults = JSON.stringify({ baseUrl: config.baseUrl });
     await installFile(target, `// ${marker}
 import plugin from ${JSON.stringify(entry)};
 export default {

@@ -98,7 +98,7 @@ try {
   const { default: plugin } = await import(pathToFileURL(`${home}/plugin/index.js`).href);
   interface Tool {
     name: string;
-    options: { namespace: string; codemode: boolean };
+    options: { namespace?: string; codemode: boolean };
     input: Schema;
     execute(input: unknown, context: unknown): Promise<{ output: ApiResult }>;
   }
@@ -112,18 +112,18 @@ try {
       return { dispose: async () => { disposed = true; } };
     } },
   });
-  const tool = tools.find(tool => tool.options.namespace === "sprout" && tool.name === "health")!;
+  const tool = tools.find(tool => tool.options.namespace === undefined && tool.name === "health")!;
   assert.equal(tool.options.codemode, true);
   assert.equal((await tool.execute({}, {})).output.body, "ok");
   assert.equal(tools.length, 8);
-  assert.equal(tools.filter(tool => tool.options.namespace.startsWith("sprout_schedule")).length, 7);
-  assert.equal(namespaces.get("sprout_schedule"), "Manage scheduled jobs");
-  assert.equal(namespaces.get("sprout_schedule_config"), "Manage scheduler configuration");
+  assert.deepEqual(tools.map(tool => [tool.options.namespace, tool.name].filter(Boolean).join(".")), ["health", ...scheduleOperations]);
+  assert.equal(namespaces.get("schedule"), "Manage scheduled jobs");
+  assert.equal(namespaces.get("schedule.config"), "Manage scheduler configuration");
   const configuration = { resources: { cpu: 1 }, tickMs: 20, jobs: {} };
   const write = await cliWithInput(["schedule", "config", "write", "--body", "-"], JSON.stringify(configuration));
   assert.equal(write.code, 0, write.stderr);
   assert.deepEqual(JSON.parse(write.stdout), configuration);
-  const configTool = tools.find(tool => tool.options.namespace === "sprout_schedule_config" && tool.name === "write")!;
+  const configTool = tools.find(tool => tool.options.namespace === "schedule.config" && tool.name === "write")!;
   await assert.rejects(configTool.execute({ body: { ...configuration, tickMs: 0 } }, {}), (error: any) =>
     error.response?.status === 400 && error.response.body.code === "invalid_schedule");
   assert.deepEqual((await client.call("schedule.config.read")).body, configuration);
@@ -137,7 +137,7 @@ try {
     every: "1h", resource: { cpu: 1 }, command: ["/bin/echo", "literal --help --url value $HOME && *"],
   }));
   assert.equal(schedule.code, 0, schedule.stderr);
-  const listTool = tools.find(tool => tool.options.namespace === "sprout_schedule" && tool.name === "list")!;
+  const listTool = tools.find(tool => tool.options.namespace === "schedule" && tool.name === "list")!;
   const deadline = Date.now() + 5000;
   let jobs: any[] = [];
   while (Date.now() < deadline) {
@@ -153,7 +153,7 @@ try {
   const staticConfig = (await client.call("schedule.config.read")).body;
   staticConfig.jobs["integration/a +空"].enabled = false;
   await client.call("schedule.config.write", { body: staticConfig });
-  const resetTool = tools.find(tool => tool.options.namespace === "sprout_schedule" && tool.name === "reset")!;
+  const resetTool = tools.find(tool => tool.options.namespace === "schedule" && tool.name === "reset")!;
   assert.deepEqual((await resetTool.execute({ query: { name: "integration/a +空" } }, {})).output.body, { lastRunAt: null, lastExitCode: null });
   const invalid = await cli("schedule", "new", "--name", "integration/a +空", "--body", JSON.stringify({ every: "1.5h", command: ["/bin/true"] }));
   assert.equal(invalid.code, 1);
