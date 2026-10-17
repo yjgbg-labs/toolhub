@@ -44,6 +44,7 @@ abstract class DeclarationScope private[sprout] (
   private val inputFactories = ArrayBuffer.empty[() => InputSpec[?]]
   private val outputFactories = ArrayBuffer.empty[() => ResponseSpec]
   private[sprout] val middlewareValue = ArrayBuffer.empty[Handler => Handler]
+  private[sprout] var hasBody: Boolean = false
 
   private[sprout] def freezeDeclarations(): ScopeDecl =
     ScopeDecl(inputFactories.map(_()).toVector, outputFactories.map(_()).toVector, middlewareValue.toVector, tags.toVector)
@@ -72,6 +73,7 @@ abstract class DeclarationScope private[sprout] (
 
   private[sprout] def jsonBody[A](using model: JsonModel[A]): Input[A] =
     gate.check()
+    hasBody = true
     val config = new InputScope[A](gate)
     val handle = new Input[A](new InputKey[A], config)
     inputFactories += (() =>
@@ -103,31 +105,29 @@ abstract class DeclarationScope private[sprout] (
       config.descriptionValue.getOrElse(org.http4s.Status.fromInt(status).toOption.get.reason), mediaType, schema))
     result
 
-final class RoutesScope private[sprout] (gate: ConfigurationGate, name: String) extends DeclarationScope(gate):
+final class RoutesScope private[sprout] (gate: ConfigurationGate, path: String) extends DeclarationScope(gate):
   private[sprout] val children = ArrayBuffer.empty[() => RouteDecl]
+  private[sprout] var documentedTag: Option[String] = None
 
   private[sprout] def freeze(): GroupDecl =
-    GroupDecl(name, descriptionValue, freezeDeclarations(), children.map(_()).toVector)
+    GroupDecl(path, documentedTag.map(ApiTag(_, descriptionValue)), freezeDeclarations(), children.map(_()).toVector)
 
-final class EndpointScope[A] private[sprout] (
+final class EndpointScope private[sprout] (
     gate: ConfigurationGate,
-    method: String,
-    path: String,
-    declareResult: EndpointScope[A] => (A => EndpointResult),
-    operation: Option[String] = None
+    method: EndpointScope => String,
+    path: String
 ) extends DeclarationScope(gate):
   private var handler: Option[RequestContext => IO[EndpointResult]] = None
   private[sprout] var operationIdValue: Option[String] = None
   private[sprout] var summaryValue: Option[String] = None
-  private val encodeResult = declareResult(this)
 
-  private[sprout] def setHandler(logic: RequestContext => IO[A]): Unit =
+  private[sprout] def setHandler(logic: RequestContext => IO[EndpointResult]): Unit =
     gate.check()
-    require(handler.isEmpty, s"Duplicate handler: $method $path")
-    handler = Some(context => logic(context).map(encodeResult))
+    require(handler.isEmpty, s"Duplicate handler: ${method(this)} $path")
+    handler = Some(logic)
 
   private[sprout] def freeze(): EndpointDecl =
-    EndpointDecl(method, path, operation, operationIdValue, summaryValue, descriptionValue, freezeDeclarations(), handler)
+    EndpointDecl(method(this), path, operationIdValue, summaryValue, descriptionValue, freezeDeclarations(), handler)
 
 final class AppScope private[sprout] () extends ConfigScope:
   private[sprout] val gate = new ConfigurationGate

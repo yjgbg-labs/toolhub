@@ -12,8 +12,8 @@ private[sprout] final case class ScopeDecl(
 private[sprout] sealed trait RouteDecl
 
 private[sprout] final case class GroupDecl(
-    name: String,
-    description: Option[String],
+    path: String,
+    tag: Option[ApiTag],
     scope: ScopeDecl,
     children: Vector[RouteDecl]
 ) extends RouteDecl
@@ -21,7 +21,6 @@ private[sprout] final case class GroupDecl(
 private[sprout] final case class EndpointDecl(
     method: String,
     path: String,
-    operation: Option[String],
     operationId: Option[String],
     summary: Option[String],
     description: Option[String],
@@ -45,5 +44,5 @@ private[sprout] final case class ResolvedApi(
     server: ServerSettings,
     openApi: OpenApiSettings,
     endpoints: Vector[ResolvedEndpoint],
-    groups: Vector[OperationGroup]
+    tags: Vector[ApiTag]
 )

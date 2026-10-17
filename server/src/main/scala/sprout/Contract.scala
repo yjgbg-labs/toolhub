@@ -104,7 +104,7 @@ private[sprout] final case class BoundEndpoint(spec: EndpointSpec, run: RequestC
   val inputSlots: Map[InputKey[?], Int] = spec.inputs.zipWithIndex.map((input, slot) => input.key -> slot).toMap
   val outputs: Map[ResponseKey[?], ResponseSpec] = spec.outputs.map(output => output.key -> output).toMap
 
-private[sprout] final case class OperationGroup(name: String, description: Option[String])
+private[sprout] final case class ApiTag(name: String, description: Option[String])
 
 final case class FieldError(location: String, name: String, message: String) derives JsonModel
 final case class ErrorBody(code: String, message: String, errors: List[FieldError] = Nil) derives JsonModel

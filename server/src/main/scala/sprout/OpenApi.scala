@@ -78,7 +78,7 @@ private[sprout] object OpenApi:
           case other => throw new IllegalArgumentException(s"Unknown constraint: $other")
       }
 
-  def generate(endpoints: Vector[EndpointSpec], config: OpenApiSettings, groups: Vector[OperationGroup]): OpenAPI =
+  def generate(endpoints: Vector[EndpointSpec], config: OpenApiSettings, tags: Vector[ApiTag]): OpenAPI =
     val schemas = new Schemas
 
     def operation(endpoint: EndpointSpec): Operation =
@@ -122,5 +122,5 @@ private[sprout] object OpenApi:
       paths.addPathItem(endpoint.path.value, item)
     }
     OpenAPI(openapi = "3.1.2", info = Info(config.title, config.version, description = config.description),
-      tags = groups.map(group => Tag(group.name, description = group.description)).toList,
+      tags = tags.map(tag => Tag(tag.name, description = tag.description)).toList,
       paths = paths, components = Some(Components(schemas = ListMap.from(schemas.components.toVector.sortBy(_._1)))))

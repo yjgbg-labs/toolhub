@@ -10,63 +10,64 @@ import org.http4s.circe.{middleware as _, *}
 import org.typelevel.ci.CIString
 import scala.collection.mutable.ArrayBuffer
 import scala.compiletime.testing.typeCheckErrors
-import sprout.{Application, RoutesScope}
-import sprout.dsl.*
+import sprout.{Application, CommandsScope}
+import sprout.rpcDsl.*
 
 class GroupMiddlewareSuite extends CatsEffectSuite:
-  private def request(path: String, method: Method = Method.POST): Request[IO] =
+  private def request(path: String, method: Method = Method.GET): Request[IO] =
     Request[IO](method, Uri.unsafeFromString(path))
 
-  private def operationDoc(app: Application, path: String) =
-    io.circe.parser.parse(app.openApiJson).toOption.get.hcursor.downField("paths").downField(path).downField("post")
+  private def operationDoc(app: Application, path: String, method: String = "get") =
+    io.circe.parser.parse(app.openApiJson).toOption.get.hcursor.downField("paths").downField(path).downField(method)
 
-  test("nested group parameters inherit locations, defaults, constraints and request-local values") {
-    val app = httpApp { routes { group("/api/{tenant}") {
-      val tenant = path[String]("tenant") { minLength(1) }
-      group("users") {
-        val limit = query[Int]("limit") { default(20); minimum(1) }
-        val token = header[String]("X-Token") { description("Shared token") }
-        val session = cookie[Option[String]]("session")
-        operation[List[String]]("get") {
-          val id = path[Long]("id")
+  test("nested commands inherit parameters, defaults, constraints and request-local values") {
+    val app = httpApp { commands() { commands("api") {
+      val tenant = param[String]("tenant", "Tenant") { minLength(1) }
+      commands("users") {
+        val limit = param[Int]("limit", "Limit") { default(20); minimum(1) }
+        val token = param[String]("token", "Shared token")
+        val session = param[Option[String]]("session", "Session")
+        command[List[String]]("get") {
+          val id = param[Long]("id", "User ID")
           handle { IO.cede.as(List(tenant.value, id.value.toString, limit.value.toString, token.value, session.value.getOrElse("none"))) }
         }
-        group("admin") {
-          operation[String]("read") { handle { IO.cede *> IO(s"${tenant.value}:${token.value}:${limit.value}") } }
+        commands("admin") {
+          command[String]("read") { handle { IO.cede *> IO(s"${tenant.value}:${token.value}:${limit.value}") } }
         }
       }
     } } }
-    val parameters = operationDoc(app, "/api/{tenant}/users/get/{id}").get[List[Json]]("parameters").toOption.get
-    assertEquals(parameters.map(p => p.hcursor.get[String]("name").toOption.get), List("tenant", "limit", "X-Token", "session", "id"))
-    assertEquals(parameters.map(p => p.hcursor.get[String]("in").toOption.get), List("path", "query", "header", "cookie", "path"))
+    val parameters = operationDoc(app, "/api/users/get").get[List[Json]]("parameters").toOption.get
+    assertEquals(parameters.map(p => p.hcursor.get[String]("name").toOption.get), List("tenant", "limit", "token", "session", "id"))
+    assertEquals(parameters.map(p => p.hcursor.get[String]("in").toOption.get), List.fill(5)("query"))
     assertEquals(parameters(1).hcursor.downField("schema").get[Int]("default"), Right(20))
     assertEquals(parameters(1).hcursor.downField("schema").get[Int]("minimum"), Right(1))
     assertEquals(parameters(2).hcursor.get[String]("description"), Right("Shared token"))
     for
-      first <- app.httpApp(request("/api/acme/users/get/7").putHeaders(
-        Header.Raw(CIString("X-Token"), "secret"), Header.Raw(CIString("Cookie"), "session=abc"))).flatMap(_.as[Json])
+      first <- app.httpApp(request("/api/users/get?tenant=acme&id=7&token=secret&session=abc")).flatMap(_.as[Json])
       _ = assertEquals(first, Json.fromValues(List("acme", "7", "20", "secret", "abc").map(Json.fromString)))
       _ <- (1 to 50).toList.parTraverse_ { n =>
-        app.httpApp(request(s"/api/t$n/users/admin/read?limit=$n").putHeaders(Header.Raw(CIString("X-Token"), s"key$n")))
+        app.httpApp(request(s"/api/users/admin/read?tenant=t$n&limit=$n&token=key$n"))
           .flatMap(_.as[String]).map(value => assertEquals(value, s"t$n:key$n:$n"))
       }
-      invalid <- app.httpApp(request("/api/acme/users/get/7?limit=0").putHeaders(Header.Raw(CIString("X-Token"), "secret")))
+      invalid <- app.httpApp(request("/api/users/get?tenant=acme&id=7&limit=0&token=secret"))
     yield assertEquals(invalid.status, Status.BadRequest)
   }
 
-  test("inherited path parameters extend generated operation URLs in ancestor declaration order") {
-    val app = httpApp { routes { group("tenants") {
-      val tenant = path[String]("tenant")
-      group("users") {
-        val section = path[String]("section")
-        operation[String]("get") {
-          val id = path[Int]("id")
+  test("inherited parameters retain ancestor declaration order without changing command paths") {
+    val app = httpApp { commands() { commands("tenants") {
+      val tenant = param[String]("tenant", "Tenant")
+      commands("users") {
+        val section = param[String]("section", "Section")
+        command[String]("get") {
+          val id = param[Int]("id", "User ID")
           handle { IO.pure(s"${tenant.value}:${section.value}:${id.value}") }
         }
       }
     } } }
-    assertEquals(operationDoc(app, "/tenants/users/get/{tenant}/{section}/{id}").get[String]("operationId"), Right("tenants.users.get"))
-    app.httpApp(request("/tenants/users/get/acme/admin/7")).flatMap(_.as[String])
+    val op = operationDoc(app, "/tenants/users/get")
+    assertEquals(op.get[String]("operationId"), Right("tenants.users.get"))
+    assertEquals(op.get[List[Json]]("parameters").toOption.get.map(_.hcursor.get[String]("name").toOption.get), List("tenant", "section", "id"))
+    app.httpApp(request("/tenants/users/get?tenant=acme&section=admin&id=7")).flatMap(_.as[String])
       .map(value => assertEquals(value, "acme:admin:7"))
   }
 
@@ -82,19 +83,19 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
         decoded.incrementAndGet()
         original.decoder(cursor)
       }
-    val app = httpApp { routes { group("users") {
-      val input = body.json[CreateUser](using counted, summon[RoutesScope])
+    val app = httpApp { commands() { commands("users") {
+      val input = body[CreateUser](using counted, summon[CommandsScope])("User payload")
       middleware { next =>
         IO { assert(input.value.active); seen.incrementAndGet() } *> next
       }
-      operation[String]("name") { handle { IO.pure(input.value.name) } }
-      group("copy") {
-        operation[CreateUser]("read") { handle { IO.pure(input.value) } }
+      command[String]("name") { handle { IO.pure(input.value.name) } }
+      commands("copy") {
+        command[CreateUser]("read") { handle { IO.pure(input.value) } }
       }
     } } }
-    assert(operationDoc(app, "/users/copy/read").downField("requestBody").succeeded)
-    assert(operationDoc(app, "/users/copy/read").downField("responses").downField("415").succeeded)
-    def req(path: String) = request(path).withEntity("""{"name":"Ada"}""")
+    assert(operationDoc(app, "/users/copy/read", "post").downField("requestBody").succeeded)
+    assert(operationDoc(app, "/users/copy/read", "post").downField("responses").downField("415").succeeded)
+    def req(path: String) = request(path, Method.POST).withEntity("""{"name":"Ada"}""")
       .putHeaders(Header.Raw(CIString("Content-Type"), "application/json"))
     for
       name <- app.httpApp(req("/users/name")).flatMap(_.as[String])
@@ -110,11 +111,11 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
     val events = ArrayBuffer.empty[String]
     def trace(name: String): Handler => Handler = next =>
       IO { events += s"+$name" } *> next.guarantee(IO { events += s"-$name" })
-    val app = httpApp { routes {
-      group("outer") {
+    val app = httpApp { commands() {
+      commands("outer") {
         middleware(trace("first"))
-        group("inner") {
-          operation[String]("run") {
+        commands("inner") {
+          command[String]("run") {
             handle { events += "handle"; IO.pure("ok") }
             middleware(trace("operation"))
           }
@@ -134,22 +135,22 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
   }
 
   test("group recovery handles synchronous, asynchronous, IO construction and encoding failures") {
-    val app = httpApp { routes { group("recover") {
-      val label = header[String]("X-Label") { default("shared") }
+    val app = httpApp { commands() { commands("recover") {
+      val label = param[String]("label", "Label") { default("shared") }
       val rejected = response.text(422) { description("Recovered failure") }
       middleware { next => next.recover {
         case error: IllegalStateException => rejected(s"${label.value}:${error.getMessage}")
         case error: IllegalArgumentException => rejected(s"${label.value}:${error.getMessage}")
       } }
-      operation[String]("pure") { handle { throw new IllegalStateException("pure") } }
-      operation[Int]("effect") { handle { IO.raiseError[Int](new IllegalStateException("effect")) } }
-      operation[Unit]("construct") {
+      command[String]("pure") { handle { throw new IllegalStateException("pure") } }
+      command[Int]("effect") { handle { IO.raiseError[Int](new IllegalStateException("effect")) } }
+      command[Unit]("construct") {
         def action: IO[Unit] = throw new IllegalStateException("construct")
         handle { action }
       }
-      group("nested") {
-        operation[Double]("encode") { handle { IO.pure(Double.PositiveInfinity) } }
-        operation[Int]("error-encode") {
+      commands("nested") {
+        command[Double]("encode") { handle { IO.pure(Double.PositiveInfinity) } }
+        command[Int]("error-encode") {
           val invalid = response.json[Double](409) {}
           val failed = invalid.raise(Double.PositiveInfinity)
           handle { failed }
@@ -172,7 +173,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
     val continued = new AtomicInteger()
     val finalized = new AtomicInteger()
     val recovered = new AtomicInteger()
-    val app = httpApp { routes { group("errors") {
+    val app = httpApp { commands() { commands("errors") {
       val denied = response.text(403) {}
       val unexpected = response.text(502) {}
       val reject = denied.raise("denied")
@@ -180,12 +181,12 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
         recovered.incrementAndGet()
         unexpected("unexpected")
       } }
-      operation[Int]("handler") {
+      command[Int]("handler") {
         handle { (reject *> IO(continued.incrementAndGet())).guarantee(IO { finalized.incrementAndGet(); () }) }
       }
-      group("child") {
+      commands("child") {
         middleware { _ => reject }
-        operation[Int]("middleware") { handle { IO(continued.incrementAndGet()) } }
+        command[Int]("middleware") { handle { IO(continued.incrementAndGet()) } }
       }
     } } }
     assertEquals(continued.get(), 0)
@@ -205,18 +206,18 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
   }
 
   test("inner recovery wins and errors thrown by middleware or recovery reach outer middleware") {
-    val app = httpApp { routes { group("outer") {
+    val app = httpApp { commands() { commands("outer") {
       val outer = response.text(502) {}
       middleware { next => next.recover { case e: IllegalArgumentException => outer(e.getMessage) } }
-      group("inner") {
+      commands("inner") {
         val inner = response.text(409) {}
         middleware { next => next.recoverWith { case _: IllegalStateException => IO.pure(inner("inner")) } }
-        operation[String]("handled") { handle { IO.raiseError[String](new IllegalStateException("failure")) } }
-        operation[String]("rethrow") {
+        command[String]("handled") { handle { IO.raiseError[String](new IllegalStateException("failure")) } }
+        command[String]("rethrow") {
           middleware { next => next.recover { case _: IllegalStateException => throw new IllegalArgumentException("recovery") } }
           handle { throw new IllegalStateException("failure") }
         }
-        operation[String]("middleware") {
+        command[String]("middleware") {
           middleware { _ => throw new IllegalArgumentException("middleware") }
           handle { IO.pure("unused") }
         }
@@ -241,10 +242,10 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
   test("late group contracts apply to earlier children and validation precedes short-circuit middleware") {
     val handled = new AtomicInteger()
     val wrapped = new AtomicInteger()
-    val app = httpApp { routes { group("late") {
-      operation[Int]("count") { handle { IO.pure(handled.incrementAndGet()) } }
-      group("child") { operation[Unit]("empty") { handle { handled.incrementAndGet(); IO.unit } } }
-      val enabled = query[Boolean]("enabled")
+    val app = httpApp { commands() { commands("late") {
+      command[Int]("count") { handle { IO.pure(handled.incrementAndGet()) } }
+      commands("child") { command[Unit]("empty") { handle { handled.incrementAndGet(); IO.unit } } }
+      val enabled = param[Boolean]("enabled", "Enabled")
       val denied = response.text(403) {}
       middleware { next =>
         wrapped.incrementAndGet()
@@ -270,44 +271,52 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
       assertEquals(wrapped.get(), 2)
   }
 
-  test("inherited explicit responses work directly in manual routes and typed operations") {
+  test("HTTP groups retain inherited locations, responses and middleware") {
+    import sprout.httpDsl.*
     val app = httpApp { routes { group("/api/{id}") {
       val id = path[Int]("id")
+      val token = header[String]("X-Token")
+      val session = cookie[Option[String]]("session")
       val missing = response.json[sprout.ErrorBody](404) {}
-      get("/manual") {
+      middleware { next =>
+        if token.value == "secret" && session.value.contains("abc") then next
+        else missing.raise(sprout.ErrorBody("not_found", "missing"))
+      }
+      group("/child") { get("/manual") {
         val ok = response.text(200) {}
         handle { IO.pure(if id.value == 1 then ok("manual") else missing(sprout.ErrorBody("not_found", "missing"))) }
-      }
-      operation[String]("typed") {
-        handle { if id.value == 1 then IO.pure("typed") else missing.raise(sprout.ErrorBody("not_found", "missing")) }
-      }
+      } }
     } } }
-    List(request("/api/2/manual", Method.GET), request("/api/2/typed")).traverse_ { req =>
-      for
-        response <- app.httpApp(req)
-        body <- response.as[Json]
-      yield
-        assertEquals(response.status, Status.NotFound)
-        assertEquals(body.hcursor.get[String]("code"), Right("not_found"))
-    }
+    def req(id: Int) = request(s"/api/$id/child/manual").putHeaders(
+      Header.Raw(CIString("X-Token"), "secret"), Header.Raw(CIString("Cookie"), "session=abc"))
+    for
+      success <- app.httpApp(req(1)).flatMap(_.as[String])
+      missing <- app.httpApp(req(2))
+      invalid <- app.httpApp(request("/api/1/child/manual"))
+      denied <- app.httpApp(request("/api/1/child/manual").putHeaders(Header.Raw(CIString("X-Token"), "wrong")))
+    yield
+      assertEquals(success, "manual")
+      assertEquals(missing.status, Status.NotFound)
+      assertEquals(invalid.status, Status.BadRequest)
+      assertEquals(denied.status, Status.NotFound)
   }
 
   test("same-named groups keep independent contracts and reject foreign inherited handles") {
     var input: Option[Input[Int]] = None
     var output: Option[Output[String]] = None
-    val app = httpApp { routes {
-      group("users") {
-        val n = query[Int]("n")
+    val app = httpApp { commands() {
+      commands("users") {
+        val n = param[Int]("n", "Number")
         val denied = response.text(403) {}
         input = Some(n)
         output = Some(denied)
         middleware { _ => IO.pure(denied(n.value.toString)) }
-        operation[Int]("first") { handle { IO.pure(n.value) } }
+        command[Int]("first") { handle { IO.pure(n.value) } }
       }
-      group("users") {
-        operation[String]("second") { handle { IO.pure("independent") } }
-        operation[Int]("input") { handle { IO.pure(input.get.value) } }
-        operation[String]("output") { handle { output.get.raise("foreign") } }
+      commands("users") {
+        command[String]("second") { handle { IO.pure("independent") } }
+        command[Int]("input") { handle { IO.pure(input.get.value) } }
+        command[String]("output") { handle { output.get.raise("foreign") } }
       }
     } }
     val doc = operationDoc(app, "/users/second")
@@ -326,54 +335,57 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
   }
 
   test("inherited contracts reject duplicate parameters, bodies, statuses and HEAD bodies") {
-    def invalid(init: RoutesScope ?=> Unit): Unit =
-      intercept[IllegalArgumentException] { httpApp { routes(init) } }
+    def invalid(init: CommandsScope ?=> Unit): Unit =
+      intercept[IllegalArgumentException] { httpApp { commands()(init) } }
     invalid {
-      query[Int]("n")
-      operation[Int]("read") { query[Int]("n"); handle { IO.pure(1) } }
+      param[Int]("n", "Number")
+      command[Int]("read") { param[Int]("n", "Duplicate"); handle { IO.pure(1) } }
     }
-    invalid { group("one") {
-      header[String]("X-Token")
-      group("two") { header[String]("x-token"); operation[Int]("read") { handle { IO.pure(1) } } }
+    invalid { commands("one") {
+      param[String]("token", "Token")
+      commands("two") { param[String]("token", "Duplicate"); command[Int]("read") { handle { IO.pure(1) } } }
     } }
     invalid {
-      body.json[Int]
-      operation[Int]("read") { body.json[String]; handle { IO.pure(1) } }
+      body[Int]("Input")
+      command[Int]("read") { body[String]("Duplicate"); handle { IO.pure(1) } }
     }
     invalid {
       response.text(404) {}
-      operation[Int]("read") { response.json[Int](404) {}; handle { IO.pure(1) } }
+      command[Int]("read") { response.json[Int](404) {}; handle { IO.pure(1) } }
     }
     invalid {
       response.text(200) {}
-      operation[Int]("read") { handle { IO.pure(1) } }
+      command[Int]("read") { handle { IO.pure(1) } }
     }
-    invalid {
-      response.text(404) {}
-      head("/head") { val ok = response.empty(200) {}; handle { IO.pure(ok(())) } }
+    intercept[IllegalArgumentException] {
+      import sprout.httpDsl.*
+      httpApp { routes {
+        response.text(404) {}
+        head("/head") { val ok = response.empty(200) {}; handle { IO.pure(ok(())) } }
+      } }
     }
   }
 
   test("group declarations and middleware retain compile-time parameter and response types") {
     val value = typeCheckErrors("""
-      import sprout.dsl.*
-      httpApp { routes { group("users") { val n = query[Int]("n"); val invalid = n.value } } }
+      import sprout.rpcDsl.*
+      httpApp { commands() { commands("users") { val n = param[Int]("n", "Number"); val invalid = n.value } } }
     """)
     val defaultErrors = typeCheckErrors("""
-      import sprout.dsl.*
-      httpApp { routes { group("users") { query[Int]("n") { default("wrong") } } } }
+      import sprout.rpcDsl.*
+      httpApp { commands() { commands("users") { param[Int]("n", "Number") { default("wrong") } } } }
     """)
     val responseErrors = typeCheckErrors("""
-      import sprout.dsl.*
-      httpApp { routes { group("users") {
+      import sprout.rpcDsl.*
+      httpApp { commands() { commands("users") {
         val bad = response.json[Int](400) {}
         middleware { next => next.recover { case _: RuntimeException => bad("wrong") } }
       } } }
     """)
     val middlewareResult = typeCheckErrors("""
       import cats.effect.IO
-      import sprout.dsl.*
-      httpApp { routes { middleware { _ => IO.pure("wrong") } } }
+      import sprout.rpcDsl.*
+      httpApp { commands() { middleware { _ => IO.pure("wrong") } } }
     """)
     assert(value.exists(_.message.contains("RequestContext")))
     assert(defaultErrors.nonEmpty)

@@ -190,7 +190,7 @@ async function waitForServer(config: DeploymentConfig, run: Run) {
   const deadline = Date.now() + config.startupTimeout;
   while (Date.now() < deadline) {
     try {
-      const response = await connection.fetch(url, { method: "POST", signal: AbortSignal.timeout(Math.min(2000, deadline - Date.now())) });
+      const response = await connection.fetch(url, { method: "GET", signal: AbortSignal.timeout(Math.min(2000, deadline - Date.now())) });
       if (response.ok && await response.text() === "ok") {
         await run(["systemctl", "--user", "is-active", "--quiet", config.service]);
         return;

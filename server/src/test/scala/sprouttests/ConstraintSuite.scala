@@ -8,7 +8,7 @@ import org.http4s.{Header, Method, Request, Status, Uri}
 import org.http4s.circe.*
 import org.typelevel.ci.CIString
 import sprout.{Application, ErrorBody, FieldError}
-import sprout.dsl.*
+import sprout.httpDsl.*
 
 class ConstraintSuite extends CatsEffectSuite:
   private def request(path: String, method: Method = Method.GET): Request[IO] =

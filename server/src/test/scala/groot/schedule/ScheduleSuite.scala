@@ -8,7 +8,7 @@ import org.http4s.{Header, Method, Request, Status, Uri}
 import org.http4s.circe.*
 import org.typelevel.ci.CIString
 import sprout.{Application, JsonModel}
-import sprout.dsl.*
+import sprout.rpcDsl.*
 import java.nio.file.{Files, Path}
 import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
@@ -28,9 +28,9 @@ class ScheduleSuite extends CatsEffectSuite:
   private def job(command: String, cpu: Double = 0): ScheduleJob =
     ScheduleJob("1h", List(command), if cpu == 0 then Map.empty else Map("cpu" -> cpu))
 
-  private def app(scheduler: Scheduler): Application = httpApp { routes { ScheduleRoutes.register(scheduler) } }
+  private def app(scheduler: Scheduler): Application = httpApp { commands() { ScheduleRoutes.register(scheduler) } }
   private def request(path: String, json: Option[String] = None): Request[IO] =
-    val request = Request[IO](Method.POST, Uri.unsafeFromString(path))
+    val request = Request[IO](if json.isDefined then Method.POST else Method.GET, Uri.unsafeFromString(path))
     json.fold(request)(body => request.withEntity(body).putHeaders(Header.Raw(CIString("Content-Type"), "application/json")))
 
   test("duration syntax, numeric capacities and commands are validated") {
@@ -49,10 +49,10 @@ class ScheduleSuite extends CatsEffectSuite:
     temporary.use { home => Scheduler.resource(home, startLoop = false).use { scheduler =>
       val http = app(scheduler)
       for
-        created <- http.httpApp(request("/schedule/new/sample", Some("""{"every":"1h","command":["/bin/true"]}""")))
+        created <- http.httpApp(request("/schedule/new?name=sample", Some("""{"every":"1h","command":["/bin/true"]}""")))
         _ = assertEquals(created.status, Status.Ok)
         _ <- new Store(home).writeState("sample", JobState(Some("2026-09-19T00:00:00Z"), Some(7)))
-        invalid <- http.httpApp(request("/schedule/new/sample", Some("""{"every":"1h","command":["/bin/true"],"resource":{"cpu":1}}""")))
+        invalid <- http.httpApp(request("/schedule/new?name=sample", Some("""{"every":"1h","command":["/bin/true"],"resource":{"cpu":1}}""")))
         _ = assertEquals(invalid.status, Status.BadRequest)
         persisted <- scheduler.list
         _ = assertEquals(persisted.head.lastExitCode, Some(7))
@@ -60,18 +60,18 @@ class ScheduleSuite extends CatsEffectSuite:
         _ = assertEquals(partial.status, Status.BadRequest)
         badRuntime <- http.httpApp(request("/schedule/config/write", Some("""{"resources":{},"tickMs":1000,"jobs":{"sample":{"every":"1h","command":["true"],"lastExitCode":0}}}""")))
         _ = assertEquals(badRuntime.status, Status.BadRequest)
-        badLines <- http.httpApp(request("/schedule/log/sample?lines=0"))
+        badLines <- http.httpApp(request("/schedule/log?name=sample&lines=0"))
         _ = assertEquals(badLines.status, Status.BadRequest)
-        missing <- http.httpApp(request("/schedule/reset/missing"))
+        missing <- http.httpApp(request("/schedule/reset?name=missing"))
         _ = assertEquals(missing.status, Status.NotFound)
-        reset <- http.httpApp(request("/schedule/reset/sample"))
+        reset <- http.httpApp(request("/schedule/reset?name=sample"))
         resetJson <- reset.as[Json]
         _ = assertEquals(resetJson, Json.obj("lastRunAt" -> Json.Null, "lastExitCode" -> Json.Null))
-        deleted <- http.httpApp(request("/schedule/delete/sample"))
+        deleted <- http.httpApp(request("/schedule/delete?name=sample"))
         _ = assertEquals(deleted.status, Status.Ok)
         deletedBody <- deleted.as[String]
         _ = assertEquals(deletedBody, "")
-        duplicate <- http.httpApp(request("/schedule/delete/sample"))
+        duplicate <- http.httpApp(request("/schedule/delete?name=sample"))
         _ = assertEquals(duplicate.status, Status.Ok)
         openapi <- http.httpApp(Request[IO](uri = Uri.unsafeFromString("/openapi.json"))).flatMap(_.as[Json])
       yield assertEquals(openapi.hcursor.downField("paths").focus.get.asObject.get.size, 7)
