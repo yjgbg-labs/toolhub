@@ -91,9 +91,9 @@ Use `description("...")` consistently for documentation text, including named
 It maps directly to the corresponding OpenAPI `description` field.
 `param` and `body` accept their description directly as an argument.
 
-The `summary` API remains available for commands and HTTP endpoints and still
-sets the separate OpenAPI Operation `summary` field. Business declarations and
-examples use `description` only.
+The RPC DSL exposes neither `summary` nor `tag`; named `commands` groups generate
+OpenAPI tags automatically. The HTTP DSL retains both methods for explicit HTTP
+metadata. Business declarations and examples use `description` only.
 
 ## Middleware and errors
 
@@ -101,6 +101,44 @@ Both DSLs retain `middleware(Handler => Handler)`, shared declarations and
 `Output.raise`. Inputs are decoded and validated before middleware. Middleware
 nests from root to endpoint, with the first declaration outermost. A declared
 response can short-circuit a typed command using `response.raise(payload)`.
+
+### Non-200 responses
+
+Declare additional responses with `response.json[A](status)`,
+`response.text(status)` or `response.empty(status)`, then use the returned
+output's `raise` method to return that response from a typed command:
+
+```scala
+import cats.effect.IO
+import sprout.ErrorBody
+import sprout.rpcDsl.*
+
+val app = httpApp {
+  commands("users") {
+    val missing = response.json[ErrorBody](404) {
+      description("User not found")
+    }
+
+    command[String]("name") {
+      val id = param[Int]("id", "User ID")
+      handle {
+        if id.value == 1 then IO.pure("Ada")
+        else missing.raise(ErrorBody("not_found", "User not found"))
+      }
+    }
+  }
+}
+```
+
+`command[String]` still defines only the HTTP 200 result. `missing.raise(...)`
+short-circuits it with HTTP 404 and the declared JSON payload. Its return type
+is `IO[Nothing]`, so it fits any command result type. For a text response use
+`output.raise("message")`; for an empty response use `output.raise(())`.
+The same mechanism supports other statuses, including 201 and 204.
+
+Responses declared in `commands` are inherited by its child commands and can
+also be used in middleware. Each declared response appears in OpenAPI with its
+status, description and body schema where applicable.
 
 Use `app.serve` to run, `app.resource` to manage the listener, `app.httpApp` for
 in-process requests and `app.openApiJson` for the generated contract.

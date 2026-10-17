@@ -72,12 +72,6 @@ object rpcDsl:
     case commands: CommandsScope => httpDsl.description(value)(using commands.http)
     case description: DescriptionScope => httpDsl.description(value)(using description)
 
-  def summary(value: String)(using scope: CommandScope[?]): Unit =
-    httpDsl.summary(value)(using scope.http)
-
-  def tag(value: String)(using scope: CommandsScope): Unit =
-    httpDsl.tag(value)(using scope.http)
-
   object response:
     def json[A](status: Int)(init: ResponseScope ?=> Unit)(using model: JsonModel[A], scope: CommandsScope): Output[A] =
       httpDsl.response.json[A](status)(init)(using model, scope.http)

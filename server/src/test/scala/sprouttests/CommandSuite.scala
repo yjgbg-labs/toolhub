@@ -108,7 +108,6 @@ class CommandSuite extends CatsEffectSuite:
       commands("daily") {
         description("Daily reports")
         command[String]("get") {
-          summary("Get a report")
           description("Report details")
           val id = param[Int]("id", "Report ID")
           handle { IO.pure(id.value.toString) }
