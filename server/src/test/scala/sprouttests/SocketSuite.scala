@@ -8,7 +8,7 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
 import java.nio.file.attribute.PosixFilePermissions
 import munit.CatsEffectSuite
-import sprout.dsl.*
+import sprout.rpcDsl.*
 
 class SocketSuite extends CatsEffectSuite:
   private def temporary = Resource.make(IO.blocking {
@@ -23,7 +23,7 @@ class SocketSuite extends CatsEffectSuite:
     val channel = SocketChannel.open(StandardProtocolFamily.UNIX)
     try
       channel.connect(UnixDomainSocketAddress.of(path))
-      Channels.newOutputStream(channel).write(s"POST $route HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".getBytes(UTF_8))
+      Channels.newOutputStream(channel).write(s"GET $route HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".getBytes(UTF_8))
       new String(Channels.newInputStream(channel).readAllBytes(), UTF_8)
     finally channel.close()
   }
@@ -33,7 +33,7 @@ class SocketSuite extends CatsEffectSuite:
       val path = dir.resolve("http.sock")
       val app = httpApp {
         server { socket(path.toString) }
-        routes { operation[String]("health") { handle { IO.pure("healthy") } } }
+        command[String]("health") { handle { IO.pure("healthy") } }
       }
       val serve = app.resource.use { _ =>
         for
@@ -53,7 +53,7 @@ class SocketSuite extends CatsEffectSuite:
   test("binding does not replace or delete an existing file") {
     temporary.use { dir =>
       val path = dir.resolve("http.sock")
-      val app = httpApp { server { socket(path.toString) }; routes { operation[String]("health") { handle { IO.pure("ok") } } } }
+      val app = httpApp { server { socket(path.toString) }; command[String]("health") { handle { IO.pure("ok") } } }
       for
         _ <- IO.blocking(Files.writeString(path, "existing"))
         result <- app.resource.use(_ => IO.unit).attempt

@@ -135,4 +135,4 @@ final class Application private[sprout] (
 private[sprout] object Application:
   def build(api: ResolvedApi): Application =
     new Application(api.endpoints.map(Compiler.bind), api.server, api.openApi,
-      OpenApi.generate(api.endpoints.map(_.spec), api.openApi, api.groups))
+      OpenApi.generate(api.endpoints.map(_.spec), api.openApi, api.tags))

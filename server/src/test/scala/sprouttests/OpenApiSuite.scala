@@ -3,7 +3,7 @@ package sprouttests
 import cats.effect.IO
 import io.circe.{Json, JsonObject}
 import munit.FunSuite
-import sprout.dsl.*
+import sprout.httpDsl.*
 
 class OpenApiSuite extends FunSuite:
   private def parse(app: sprout.Application): Json = io.circe.parser.parse(app.openApiJson).toOption.get
@@ -152,15 +152,16 @@ class OpenApiSuite extends FunSuite:
 
   test("Swagger's independent OpenAPI 3.1 parser accepts the generated document") {
     import scala.jdk.CollectionConverters.*
-    val app = httpApp {
-      routes {
-        group("reports") {
-          description("Manage reports")
-          group("daily") {
-            description("Daily reports")
-            operation[String]("read") { handle { IO.pure("report") } }
-          }
+    val app = sprout.rpcDsl.httpApp {
+      sprout.rpcDsl.commands("reports") {
+        import sprout.rpcDsl.*
+        description("Manage reports")
+        commands("daily") {
+          description("Daily reports")
+          command[String]("read") { handle { IO.pure("report") } }
         }
+      }
+      routes {
         get("/trees/{id}") {
           val id = path[Long]("id") { minimum(1L) }
           val color = query[Option[String]]("color")

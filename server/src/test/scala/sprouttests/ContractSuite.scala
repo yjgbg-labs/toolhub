@@ -2,7 +2,7 @@ package sprouttests
 
 import cats.effect.IO
 import munit.FunSuite
-import sprout.dsl.*
+import sprout.httpDsl.*
 import scala.compiletime.testing.typeCheckErrors
 
 class ContractSuite extends FunSuite:
@@ -78,7 +78,7 @@ class ContractSuite extends FunSuite:
 
   test("value access requires a request context at compile time") {
     val errors = typeCheckErrors("""
-      import sprout.dsl.*
+      import sprout.httpDsl.*
       httpApp {
         routes {
           get("/{id}") {
@@ -105,7 +105,7 @@ class ContractSuite extends FunSuite:
 
   test("parameter defaults and response values remain statically typed") {
     val defaultErrors = typeCheckErrors("""
-      import sprout.dsl.*
+      import sprout.httpDsl.*
       httpApp { routes { get("/") {
         val n = query[Int]("n") { default("wrong") }
         val ok = response.json[Int](200) {}
@@ -113,14 +113,14 @@ class ContractSuite extends FunSuite:
       } } }
     """)
     val responseErrors = typeCheckErrors("""
-      import sprout.dsl.*
+      import sprout.httpDsl.*
       httpApp { routes { get("/") {
         val ok = response.json[Int](200) {}
         handle { IO.pure(ok("wrong")) }
       } } }
     """)
     val constraintErrors = typeCheckErrors("""
-      import sprout.dsl.*
+      import sprout.httpDsl.*
       httpApp { routes { get() {
         val n = query[Int]("n") {
           constraint[String]("Must not be empty")(_.nonEmpty)

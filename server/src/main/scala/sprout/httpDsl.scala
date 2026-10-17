@@ -4,7 +4,7 @@ import cats.effect.IO
 import io.circe.Json
 import scala.util.matching.Regex
 
-object dsl:
+object httpDsl:
   export sprout.{JsonModel, ParamCodec, RequestContext, EndpointResult, Handler, Input, Output}
 
   def httpApp(init: AppScope ?=> Unit): Application =
@@ -67,9 +67,10 @@ object dsl:
     init(using scope)
     app.routes += scope
 
-  def group(name: String)(init: RoutesScope ?=> Unit)(using scope: RoutesScope): Unit =
+  def group(path: String)(init: RoutesScope ?=> Unit)(using scope: RoutesScope): Unit =
     scope.gate.check()
-    val child = new RoutesScope(scope.gate, name)
+    PathPattern.join("", path)
+    val child = new RoutesScope(scope.gate, path)
     init(using child)
     scope.children += (() => child.freeze())
 
@@ -77,31 +78,25 @@ object dsl:
     scope.gate.check()
     scope.tags += value
 
-  private def register(method: String, path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using scope: RoutesScope): Unit =
+  private[sprout] def register(method: EndpointScope => String, path: String)(init: EndpointScope ?=> Unit)(using scope: RoutesScope): Unit =
     scope.gate.check()
-    val endpoint = new EndpointScope[EndpointResult](scope.gate, method, path, _ => identity)
+    val endpoint = new EndpointScope(scope.gate, method, path)
     init(using endpoint)
     scope.children += (() => endpoint.freeze())
 
-  def operation[A](id: String)(init: EndpointScope[A] ?=> Unit)(using scope: RoutesScope, success: SuccessResponse[A]): Unit =
-    scope.gate.check()
-    val endpoint = new EndpointScope[A](scope.gate, "POST", "", endpoint => success.declare(endpoint).apply, Some(id))
-    init(using endpoint)
-    scope.children += (() => endpoint.freeze())
+  def get(path: String = "")(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register(_ => "GET", path)(init)
+  def post(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register(_ => "POST", path)(init)
+  def put(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register(_ => "PUT", path)(init)
+  def patch(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register(_ => "PATCH", path)(init)
+  def delete(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register(_ => "DELETE", path)(init)
+  def head(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register(_ => "HEAD", path)(init)
+  def options(path: String)(init: EndpointScope ?=> Unit)(using RoutesScope): Unit = register(_ => "OPTIONS", path)(init)
 
-  def get(path: String = "")(init: EndpointScope[EndpointResult] ?=> Unit)(using RoutesScope): Unit = register("GET", path)(init)
-  def post(path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using RoutesScope): Unit = register("POST", path)(init)
-  def put(path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using RoutesScope): Unit = register("PUT", path)(init)
-  def patch(path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using RoutesScope): Unit = register("PATCH", path)(init)
-  def delete(path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using RoutesScope): Unit = register("DELETE", path)(init)
-  def head(path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using RoutesScope): Unit = register("HEAD", path)(init)
-  def options(path: String)(init: EndpointScope[EndpointResult] ?=> Unit)(using RoutesScope): Unit = register("OPTIONS", path)(init)
-
-  def operationId(value: String)(using scope: EndpointScope[?]): Unit =
+  def operationId(value: String)(using scope: EndpointScope): Unit =
     scope.gate.check()
     scope.operationIdValue = Some(value)
 
-  def summary(value: String)(using scope: EndpointScope[?]): Unit =
+  def summary(value: String)(using scope: EndpointScope): Unit =
     scope.gate.check()
     scope.summaryValue = Some(value)
 
@@ -167,5 +162,5 @@ object dsl:
     scope.gate.check()
     scope.middlewareValue += wrap
 
-  def handle[A](using scope: EndpointScope[A])(logic: RequestContext ?=> IO[A]): Unit =
+  def handle(using scope: EndpointScope)(logic: RequestContext ?=> IO[EndpointResult]): Unit =
     scope.setHandler(context => logic(using context))

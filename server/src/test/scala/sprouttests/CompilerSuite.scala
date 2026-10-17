@@ -4,27 +4,29 @@ import cats.effect.IO
 import java.util.concurrent.atomic.AtomicInteger
 import munit.CatsEffectSuite
 import org.http4s.{Method, Request, Uri}
-import sprout.dsl.*
+import sprout.rpcDsl.*
 
 class CompilerSuite extends CatsEffectSuite:
   test("a frozen declaration tree can be resolved and compiled repeatedly without running handlers") {
     val calls = new AtomicInteger()
-    val builder = new AppScope
+    var builder = Option.empty[AppScope]
     var configure: () => Unit = () => ()
-    routes {
-      group("users") {
-        val tenant = header[String]("X-Tenant") { default("default") }
+    httpApp {
+      builder = Some(summon[AppScope])
+      commands("users") {
+        val tenant = param[String]("tenant", "Tenant") { default("default") }
         configure = () => tenant { default("changed") }
-        operation[String]("get") { handle { calls.incrementAndGet(); IO.pure(tenant.value) } }
-        group("admin") { operation[String]("get") { handle { IO.pure(tenant.value) } } }
+        command[String]("get") { handle { calls.incrementAndGet(); IO.pure(tenant.value) } }
+        commands("admin") { command[String]("get") { handle { IO.pure(tenant.value) } } }
         val failed = response.text(503) {}
         middleware { next => next.recover { case _: IllegalStateException => failed("unavailable") } }
       }
-    }(using builder)
-    val declaration = builder.freeze()
+    }
+    val declaration = builder.get.freeze()
     intercept[IllegalArgumentException](configure())
     val groupDecl = declaration.routes.head.children.head.asInstanceOf[GroupDecl]
-    assertEquals(groupDecl.name, "users")
+    assertEquals(groupDecl.path, "/users")
+    assertEquals(groupDecl.tag.map(_.name), Some("users"))
     assertEquals(groupDecl.scope.inputs.size, 1)
     assertEquals(groupDecl.children.head.asInstanceOf[EndpointDecl].scope.inputs.size, 0)
     val resolved = Compiler.resolve(declaration)
@@ -36,8 +38,8 @@ class CompilerSuite extends CatsEffectSuite:
     assertEquals(first.openApiJson, second.openApiJson)
     assertEquals(calls.get(), 0)
     for
-      a <- first.httpApp(Request[IO](Method.POST, Uri.unsafeFromString("/users/get"))).flatMap(_.as[String])
-      b <- second.httpApp(Request[IO](Method.POST, Uri.unsafeFromString("/users/get"))).flatMap(_.as[String])
+      a <- first.httpApp(Request[IO](Method.GET, Uri.unsafeFromString("/users/get"))).flatMap(_.as[String])
+      b <- second.httpApp(Request[IO](Method.GET, Uri.unsafeFromString("/users/get"))).flatMap(_.as[String])
     yield
       assertEquals(a, "default")
       assertEquals(b, "default")

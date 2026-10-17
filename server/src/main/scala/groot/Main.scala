@@ -1,7 +1,7 @@
 package groot
 
 import cats.effect.{IO, IOApp}
-import sprout.dsl.*
+import sprout.rpcDsl.*
 import groot.schedule.{Scheduler, ScheduleRoutes}
 import java.nio.file.Path
 
@@ -25,11 +25,9 @@ object Main extends IOApp.Simple:
         }
       }
 
-      routes {
-        ScheduleRoutes.register(scheduler)
-        operation[String]("health") {
-          handle { IO.pure("ok") }
-        }
+      ScheduleRoutes.register(scheduler)
+      command[String]("health") {
+        handle { IO.pure("ok") }
       }
     }
     app.serve

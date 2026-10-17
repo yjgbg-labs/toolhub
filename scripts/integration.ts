@@ -42,14 +42,19 @@ try {
   const connection = transport(baseUrl);
   const openapi = await connection.fetch(`${connection.baseUrl}/openapi.json`).then(response => response.json());
   for (const item of Object.values(openapi.paths) as any[]) {
-    assert.deepEqual(Object.keys(item.post.responses).filter(status => /^2\d\d$/.test(status)), ["200"]);
+    const operation = item.get ?? item.post;
+    assert.ok(operation);
+    assert.deepEqual(Object.keys(operation.responses).filter(status => /^2\d\d$/.test(status)), ["200"]);
+    assert.equal(Boolean(item.post), Boolean(operation.requestBody));
   }
   const scheduleOperations = ["schedule.config.read", "schedule.config.write", "schedule.delete", "schedule.list", "schedule.log", "schedule.new", "schedule.reset"];
   assert.deepEqual(client.catalog.operations.map(op => op.id), ["health", ...scheduleOperations]);
   for (const item of Object.values(openapi.paths) as any[]) {
-    if (item.post.operationId.startsWith("schedule.")) {
-      assert.ok(item.post.responses["400"]);
-      assert.equal(item.post.responses["404"].description, "Job not found");
+    const operation = item.get ?? item.post;
+    if (operation.operationId.startsWith("schedule.")) {
+      assert.ok(operation.responses["400"]);
+      assert.equal(operation.responses["404"].description, "Job not found");
+      assert.ok((operation.parameters ?? []).every((parameter: any) => parameter.in === "query"));
     }
   }
   assert.equal((await client.call("health")).body, "ok");
@@ -76,9 +81,9 @@ try {
   const missingName = await cli("schedule", "log");
   assert.equal(missingName.code, 1);
   assert.equal(missingName.stdout, "");
-  assert.match(missingName.stderr, /Missing required argument: <name>/);
-  assert.match(missingName.stderr, /Usage: sprout schedule log <name> \[options\]/);
-  const missing = await cli("schedule", "log", "missing-job");
+  assert.match(missingName.stderr, /Missing required argument: --name/);
+  assert.match(missingName.stderr, /Usage: sprout schedule log \[options\]/);
+  const missing = await cli("schedule", "log", "--name", "missing-job");
   assert.equal(missing.code, 1);
   assert.match(missing.stderr, /HTTP 404/);
 
@@ -122,7 +127,7 @@ try {
   assert.match(configHelp.stdout, /read/);
   assert.match(configHelp.stdout, /write/);
   assert.doesNotMatch(configHelp.stdout, /edit/);
-  const schedule = await cli("schedule", "new", "integration/a +空", "--body", JSON.stringify({
+  const schedule = await cli("schedule", "new", "--name", "integration/a +空", "--body", JSON.stringify({
     every: "1h", resource: { cpu: 1 }, command: ["/bin/echo", "literal --help --url value $HOME && *"],
   }));
   assert.equal(schedule.code, 0, schedule.stderr);
@@ -136,22 +141,22 @@ try {
   }
   assert.equal(jobs[0]?.lastExitCode, 0, JSON.stringify(jobs));
   assert.equal(jobs[0].status, "waiting");
-  const tail = await cli("schedule", "log", "integration/a +空", "--lines", "2");
+  const tail = await cli("schedule", "log", "--name", "integration/a +空", "--lines", "2");
   assert.equal(tail.code, 0, tail.stderr);
   assert.match(tail.stdout, /literal --help --url value \$HOME && \*/);
   const staticConfig = (await client.call("schedule.config.read")).body;
   staticConfig.jobs["integration/a +空"].enabled = false;
   await client.call("schedule.config.write", { body: staticConfig });
   const resetTool = tools.find(tool => tool.options.namespace === "sprout_schedule" && tool.name === "reset")!;
-  assert.deepEqual((await resetTool.execute({ path: { name: "integration/a +空" } }, {})).output.body, { lastRunAt: null, lastExitCode: null });
-  const invalid = await cli("schedule", "new", "integration/a +空", "--body", JSON.stringify({ every: "1.5h", command: ["/bin/true"] }));
+  assert.deepEqual((await resetTool.execute({ query: { name: "integration/a +空" } }, {})).output.body, { lastRunAt: null, lastExitCode: null });
+  const invalid = await cli("schedule", "new", "--name", "integration/a +空", "--body", JSON.stringify({ every: "1.5h", command: ["/bin/true"] }));
   assert.equal(invalid.code, 1);
   assert.match(invalid.stderr, /Invalid duration/);
   const configFile = JSON.parse(await Bun.file(`${home}/schedule.json`).text());
   assert.equal(configFile.jobs["integration/a +空"].enabled, false);
   assert.equal(Object.hasOwn(configFile.jobs["integration/a +空"], "lastRunAt"), false);
-  assert.equal((await cli("schedule", "delete", "integration/a +空")).code, 0);
-  const deleted = await client.call("schedule.delete", { path: { name: "integration/a +空" } });
+  assert.equal((await cli("schedule", "delete", "--name", "integration/a +空")).code, 0);
+  const deleted = await client.call("schedule.delete", { query: { name: "integration/a +空" } });
   assert.equal(deleted.status, 200);
   assert.equal(deleted.body, null);
   assert.deepEqual((await listTool.execute({}, {})).output.body, []);
@@ -167,7 +172,7 @@ try {
   assert.deepEqual((await client.call("schedule.config.read")).body, updated);
   await cleanup();
   assert.equal(disposed, true);
-  await assert.rejects(client.call("schedule.new", { path: { name: "invalid" }, body: { every: "bad", command: ["/bin/true"] } }),
+  await assert.rejects(client.call("schedule.new", { query: { name: "invalid" }, body: { every: "bad", command: ["/bin/true"] } }),
     (error: unknown) => error instanceof ApiError && error.response.status === 400);
   console.log("Integration passed: Scala/JDK 25 → OpenAPI → bundled CLI and V2 plugin; real scheduled commands, state, logs, configuration, validation and HTTP errors.");
 } finally {

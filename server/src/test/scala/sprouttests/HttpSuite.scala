@@ -9,7 +9,7 @@ import org.http4s.circe.*
 import org.http4s.ember.client.EmberClientBuilder
 import org.typelevel.ci.CIString
 import sprout.{Application, ErrorBody, JsonModel, Schema}
-import sprout.dsl.*
+import sprout.httpDsl.*
 import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.duration.*
 
@@ -103,7 +103,7 @@ class HttpSuite extends CatsEffectSuite:
     val app = httpApp {
       routes {
         post("/users") {
-          val input = body.json[CreateUser](using counted, summon[sprout.EndpointScope[EndpointResult]])
+          val input = body.json[CreateUser](using counted, summon[sprout.EndpointScope])
           val created = response.json[User](201) {}
           handle { IO.pure(created(User(1L, input.value.name, input.value.nickname))) }
         }

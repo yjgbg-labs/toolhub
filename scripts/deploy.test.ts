@@ -34,7 +34,7 @@ async function fixture(name: string) {
   let started = false;
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
     const url = new URL(request.url);
-    if (url.pathname === "/health") return new Response(started && request.method === "POST" ? "ok" : "starting", { status: started ? 200 : 503 });
+    if (url.pathname === "/health") return new Response(started && request.method === "GET" ? "ok" : "starting", { status: started ? 200 : 503 });
     const entry = [first, second].find(entry => url.pathname.endsWith(entry.artifact) || url.pathname.endsWith(`${entry.artifact}.sha256`));
     if (!entry) return new Response("Not found", { status: 404 });
     if (url.pathname.endsWith(".sha256")) return new Response(`${entry.sha256}  ${entry.artifact}\n`);
@@ -43,7 +43,7 @@ async function fixture(name: string) {
   } });
   const baseUrl = server.url.href.replace(/\/$/, "");
   const local = Bun.serve({ unix: socket, fetch(request) {
-    return new Response(started && request.method === "POST" && new URL(request.url).pathname === "/health" ? "ok" : "starting", { status: started ? 200 : 503 });
+    return new Response(started && request.method === "GET" && new URL(request.url).pathname === "/health" ? "ok" : "starting", { status: started ? 200 : 503 });
   } });
   const config: DeploymentConfig = {
     root: join(directory, "data '$ 100%"), binDir: join(directory, "bin"), unitDir: join(directory, "units"), pluginDir: join(directory, "plugins"),
