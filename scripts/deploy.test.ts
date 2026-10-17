@@ -49,7 +49,7 @@ async function fixture(name: string) {
     root: join(directory, "data '$ 100%"), binDir: join(directory, "bin"), unitDir: join(directory, "units"), pluginDir: join(directory, "plugins"),
     downloadBase: `${baseUrl}/public/sprout-http`, artifact: first.artifact, sha256: first.sha256,
     service: "groot-sprout-http.service", socket, startupTimeout: 3000,
-    baseUrl: socketUrl(socket), namespace: "sprout_test", jdk: "25", bun: process.execPath, groot: Bun.which("groot")!, home: join(directory, "config"),
+    baseUrl: socketUrl(socket), jdk: "25", bun: process.execPath, groot: Bun.which("groot")!, home: join(directory, "config"),
   };
   return {
     config, stop: () => { server.stop(true); local.stop(true); }, downloads: () => downloads,
@@ -125,8 +125,8 @@ test("plugin deploy loads the self-contained bundle without installing dependenc
     await deploy("plugin", api.config, run);
     const { default: plugin } = await import(pathToFileURL(join(api.config.pluginDir, "sprout.ts")).href);
     expect(plugin.id).toBe("sprout");
-    expect(plugin.setup({ options: {} })).toEqual({ baseUrl: api.config.baseUrl, namespace: "sprout_test" });
-    expect(plugin.setup({ options: { namespace: "custom" } }).namespace).toBe("custom");
+    expect(plugin.setup({ options: {} })).toEqual({ baseUrl: api.config.baseUrl });
+    expect(plugin.setup({ options: { baseUrl: "http://localhost:9000" } }).baseUrl).toBe("http://localhost:9000");
   } finally { api.stop(); }
 });
 

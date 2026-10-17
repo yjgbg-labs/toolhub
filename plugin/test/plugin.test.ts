@@ -14,7 +14,7 @@ test("V2 plugin setup registers all operations for Code Mode with typed inputs, 
   const namespaces = new Map<string, string | undefined>();
   let disposed = false;
   const cleanup = await plugin.setup({
-    options: { baseUrl: api.baseUrl, namespace: "test" },
+    options: { baseUrl: api.baseUrl },
     tool: { transform: async (callback: (editor: ToolEditor) => void) => {
       callback({
         add: (tool: Info) => { tools.push(tool); },
@@ -25,10 +25,16 @@ test("V2 plugin setup registers all operations for Code Mode with typed inputs, 
     } },
   } as unknown as Plugin.Context);
   expect(tools).toHaveLength(5);
-  expect(namespaces.get("test_admin_users")).toBe("Administer users");
-  expect(namespaces.get("test_users")).toBe("Manage users");
-  expect(namespaces.get("test")).toBe("Client contract tests — test");
-  const create = tools.find(tool => tool.options?.namespace === "test_users" && tool.name === "create")!;
+  expect(namespaces.get("admin")).toBe("Administration\nAdministrative operations");
+  expect(namespaces.get("admin.users")).toBe("Administer users");
+  expect(namespaces.get("users")).toBe("Manage users");
+  expect(tools.map(tool => [tool.options?.namespace, tool.name].filter(Boolean).join("."))).toEqual([
+    "admin.users.get", "health", "users.clear", "users.create", "users.fail",
+  ]);
+  const health = tools.find(tool => tool.name === "health")!;
+  expect(health.options?.namespace).toBeUndefined();
+  expect((await health.execute({}, {} as ToolContext)).output).toMatchObject({ status: 200, body: "ok" });
+  const create = tools.find(tool => tool.options?.namespace === "users" && tool.name === "create")!;
   expect(create.options?.codemode).toBe(true);
   expect(create.input).toHaveProperty("properties.body.$ref", "#/$defs/Tree");
   expect(create.output).toHaveProperty("properties.status.type", "integer");

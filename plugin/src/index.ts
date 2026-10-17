@@ -24,13 +24,13 @@ export default Plugin.define({
       headers: { ...rawHeaders as Record<string, string>, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       timeoutMs,
     });
-    const tools = operationTools(client, stringOption("namespace", "sprout"));
+    const tools = operationTools(client);
     const registration = await ctx.tool.transform(editor => {
-      const namespaces = new Map(tools.map((tool, index) => {
-        const name = tool.options!.namespace!;
-        const group = client.catalog.operations[index]!.segments.slice(0, -1).join(".");
-        return [name, client.catalog.groupDescriptions.get(group) ?? `${client.catalog.title} — ${name}`];
-      }));
+      const namespaces = new Map(client.catalog.groupDescriptions);
+      for (const tool of tools) {
+        const name = tool.options?.namespace;
+        if (name && !namespaces.has(name)) namespaces.set(name, `${client.catalog.title} — ${name}`);
+      }
       for (const [name, description] of namespaces) editor.namespace({ name, description });
       for (const tool of tools) editor.add(tool);
     });

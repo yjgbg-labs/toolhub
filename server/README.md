@@ -181,6 +181,11 @@ the groups in that hierarchy:
   only supplies group documentation; it contains no command-to-operation mapping.
 - Without `x-rpc`, commands remain available with no group descriptions.
 
+Code Mode tools use the command path directly: `schedule.config.read` becomes
+`tools.schedule.config.read()`, and a root command such as `health` becomes
+`tools.health()`. The plugin preserves dotted namespaces and their descriptions,
+with no additional prefix or namespace override.
+
 ## Middleware and errors
 
 Both DSLs retain `middleware(Handler => Handler)`, shared declarations and

@@ -1,13 +1,13 @@
 import type { Info } from "@opencode/plugin/promise/tool";
 import type { ApiClient } from "@sprout/cli/api";
 
-export function operationTools(client: ApiClient, prefix = "sprout"): Info[] {
-  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(prefix)) throw new Error("namespace must contain only letters, digits and underscores");
+export function operationTools(client: ApiClient): Info[] {
   const names = new Set<string>();
   return client.catalog.operations.map(operation => {
-    const namespace = [prefix, ...operation.segments.slice(0, -1)].join("_").replace(/[^A-Za-z0-9_]/g, "_");
+    const namespace = operation.segments.slice(0, -1).join(".") || undefined;
     const name = operation.segments.at(-1)!;
-    const effective = `${namespace}_${name}`;
+    // OpenCode's registry flattens namespace dots even though Code Mode preserves them.
+    const effective = namespace === undefined ? name : `${namespace.replaceAll(".", "_")}_${name}`;
     if (names.has(effective)) throw new Error(`Code Mode name collision: ${effective}`);
     names.add(effective);
     return {
