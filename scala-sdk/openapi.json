@@ -1,0 +1,737 @@
+{
+  "components": {
+    "schemas": {
+      "framework.http.ErrorBody_a021c61acda87fac": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "errors": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/framework.http.FieldError_663c7d06fd1aaaad"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "framework.http.FieldError_663c7d06fd1aaaad": {
+        "properties": {
+          "location": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "location",
+          "name",
+          "message"
+        ],
+        "type": "object"
+      },
+      "groot.schedule.JobState_168f1f34d4054842": {
+        "properties": {
+          "lastExitCode": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lastRunAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "groot.schedule.ScheduleConfig_090451f815f2a9c8": {
+        "properties": {
+          "jobs": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/groot.schedule.ScheduleJob_034e2e3ca4ed1018"
+            },
+            "type": "object"
+          },
+          "resources": {
+            "additionalProperties": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "tickMs": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "resources",
+          "tickMs",
+          "jobs"
+        ],
+        "type": "object"
+      },
+      "groot.schedule.ScheduleEntry_cefbecb6d2f77ef1": {
+        "properties": {
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "every": {
+            "type": "string"
+          },
+          "lastExitCode": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lastRunAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "nextRunAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resource": {
+            "additionalProperties": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "every",
+          "resource",
+          "command",
+          "enabled",
+          "status"
+        ],
+        "type": "object"
+      },
+      "groot.schedule.ScheduleJob_034e2e3ca4ed1018": {
+        "properties": {
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          },
+          "every": {
+            "type": "string"
+          },
+          "resource": {
+            "additionalProperties": {
+              "format": "double",
+              "type": "number"
+            },
+            "default": {},
+            "type": "object"
+          }
+        },
+        "required": [
+          "every",
+          "command"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Sprout",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.2",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/schedule/config/read": {
+      "get": {
+        "description": "Read the scheduler's static configuration",
+        "operationId": "schedule.config.read",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/groot.schedule.ScheduleConfig_090451f815f2a9c8"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Invalid schedule configuration"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Job not found"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/schedule/config/write": {
+      "post": {
+        "description": "Validate and atomically replace the full scheduler configuration; changes apply on the next tick",
+        "operationId": "schedule.config.write",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/groot.schedule.ScheduleConfig_090451f815f2a9c8"
+              }
+            }
+          },
+          "description": "Complete scheduler configuration",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/groot.schedule.ScheduleConfig_090451f815f2a9c8"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                    },
+                    {
+                      "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Invalid schedule configuration; Invalid request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Job not found"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Expected application/json"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/schedule/delete": {
+      "get": {
+        "description": "Delete a job; existing execution may finish and historical logs are retained",
+        "operationId": "schedule.delete",
+        "parameters": [
+          {
+            "description": "Job name",
+            "explode": true,
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "style": "form"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                    },
+                    {
+                      "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Invalid schedule configuration; Invalid request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Job not found"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/schedule/list": {
+      "get": {
+        "description": "List scheduled jobs, their runtime state and queue status",
+        "operationId": "schedule.list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/groot.schedule.ScheduleEntry_cefbecb6d2f77ef1"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Invalid schedule configuration"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Job not found"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/schedule/log": {
+      "get": {
+        "description": "Read the last lines of a scheduled job's combined stdout/stderr log",
+        "operationId": "schedule.log",
+        "parameters": [
+          {
+            "description": "Job name",
+            "explode": true,
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "style": "form"
+          },
+          {
+            "description": "Number of log lines",
+            "explode": true,
+            "in": "query",
+            "name": "lines",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "format": "int32",
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "style": "form"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                    },
+                    {
+                      "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Invalid schedule configuration; Invalid request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Job not found"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/schedule/new": {
+      "post": {
+        "description": "Create or replace a scheduled command and clear its runtime state",
+        "operationId": "schedule.new",
+        "parameters": [
+          {
+            "description": "Job name",
+            "explode": true,
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "style": "form"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/groot.schedule.ScheduleJob_034e2e3ca4ed1018"
+              }
+            }
+          },
+          "description": "Scheduled command and interval",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/groot.schedule.ScheduleJob_034e2e3ca4ed1018"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                    },
+                    {
+                      "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Invalid schedule configuration; Invalid request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Job not found"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Expected application/json"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/schedule/reset": {
+      "get": {
+        "description": "Clear runtime state so an enabled job becomes due without overlapping an active run",
+        "operationId": "schedule.reset",
+        "parameters": [
+          {
+            "description": "Job name",
+            "explode": true,
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "style": "form"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/groot.schedule.JobState_168f1f34d4054842"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                    },
+                    {
+                      "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Invalid schedule configuration; Invalid request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Job not found"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/framework.http.ErrorBody_a021c61acda87fac"
+                }
+              }
+            },
+            "description": "Internal server error"
+          }
+        }
+      }
+    }
+  },
+  "x-rpc": {
+    "commands": [
+      {
+        "description": "Manage scheduled jobs",
+        "name": "schedule"
+      },
+      {
+        "description": "Manage scheduler configuration",
+        "name": "schedule.config"
+      }
+    ]
+  }
+}
