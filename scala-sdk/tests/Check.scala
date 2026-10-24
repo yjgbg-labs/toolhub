@@ -1,0 +1,60 @@
+package sprout.sdk.tests
+
+import _root_.cats.effect.{IO, IOApp}
+import _root_.zio.{ZIO, Runtime, Unsafe}
+import io.circe.Json
+import sprout.sdk.*
+import sprout.sdk.cats.CatsExecutor
+import sprout.sdk.zio.ZioExecutor
+import sprout.generated.{Calls, Client, ScheduleJob}
+import sprout.fixture.*
+
+/** The identical executable suite is compiled and run on JVM, JS and Native. */
+object Check extends IOApp.Simple:
+  private def response(status: Int, body: String, media: String = "application/json") =
+    HttpResponse(status, Vector("Content-Type" -> s"$media; charset=utf-8"), body)
+
+  def run: IO[Unit] = for
+    _ <- IO {
+      val json = io.circe.jawn.parse("""{"id":9223372036854775807,"value":null,"mode":"fast","optional":null,"child":{"id":1,"value":"leaf","mode":"slow-mode"}}""").toOption.get
+      val tree = Tree.codec.read(json).toOption.get
+      assert(tree.id == Long.MaxValue)
+      assert(tree.value == None)
+      assert(tree.optional == Optional.Present(None))
+      assert(tree.labels == Optional.Missing)
+      assert(Tree.codec.write(tree) == json)
+      assert(Tree.codec.read(json.mapObject(_.remove("value"))).isLeft)
+      assert(Tree.codec.read(json.mapObject(_.add("id", Json.fromString("1")))).isLeft)
+      assert(Event.codec.read(io.circe.jawn.parse("""{"type":"removed","value":12}""").toOption.get).isRight)
+      assert(Event.codec.read(io.circe.jawn.parse("""{"type":"removed","value":"wrong"}""").toOption.get).isLeft)
+      assert(NumberOrText.codec.read(Json.fromBigInt(BigInt("999999999999999999999999999"))).isRight)
+
+      val call = sprout.fixture.Calls.tree.update(
+        id = "a /空+", tag = Optional.Present(Vector("x y", "z&")),
+        joined = Optional.Present(Vector("a", "b")), `X-Token` = "token",
+        session = Optional.Present("a;b"), body = tree
+      )
+      assert(call.request.url("http://localhost").startsWith("http://localhost/tree/a%20%2F%E7%A9%BA%2B?tag=x%20y&tag=z%26&joined=a%2Cb"))
+      assert(call.request.headers.contains("X-Token" -> "token"))
+      assert(call.request.headers.contains("Cookie" -> "session=a%3Bb"))
+      assert(call.request.body.flatMap(body => io.circe.jawn.parse(body).toOption).contains(json))
+      assert(call.decode(response(200, json.noSpaces)).isRight)
+      assert(call.decode(response(202, "queued", "text/plain")) == Right(TreeUpdateResult.Status202TextPlain("queued")))
+      assert(call.decode(HttpResponse(204, Vector.empty, "")) == Right(TreeUpdateResult.Status204(())))
+      assert(call.decode(response(200, "not-json")).left.toOption.get.isInstanceOf[ClientError.Decode])
+      assert(call.decode(response(400, "error")).left.toOption.get == ClientError.Http(response(400, "error")))
+      assert(call.decode(response(200, json.noSpaces, "text/plain")).isLeft)
+      assert(Calls.schedule.delete("test").request.method == "GET")
+      assert(Calls.schedule.`new`("test", ScheduleJob(command = Vector("echo", "hello"), every = "1h")).request.method == "POST")
+      assert(Calls.health().withResponse.decode(response(200, "ok", "text/plain")).map(_._2) == Right("ok"))
+    }
+    catsClient = new Client[IO](new CatsExecutor[IO](_ => IO.pure(response(200, "[]"))))
+    entries <- catsClient.schedule.list()
+    _ <- IO(assert(entries.isEmpty))
+    error <- new CatsExecutor[IO](_ => IO.raiseError(new Exception("offline"))).execute(Calls.health()).attempt
+    _ <- IO(assert(error.left.toOption.get.isInstanceOf[ClientError.Transport]))
+    zioClient = new Client[[A] =>> ZIO[Any, ClientError, A]](new ZioExecutor[Any](_ => ZIO.succeed(response(200, "ok", "text/plain"))))
+    value <- IO.fromFuture(IO(Unsafe.unsafe { implicit unsafe => Runtime.default.unsafe.runToFuture(zioClient.health()) }))
+    _ <- IO(assert(value == "ok"))
+    _ <- IO.println("Scala SDK checks passed: recursive models, int64 precision, presence/null, unions, requests, responses, Cats and ZIO")
+  yield ()

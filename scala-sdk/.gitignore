@@ -1,0 +1,5 @@
+.cache/
+generated/
+dist/
+.scala-build/
+.bsp/
