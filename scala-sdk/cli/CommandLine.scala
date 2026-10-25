@@ -32,6 +32,7 @@ object CommandLine:
 
     val response = successful(send(HttpRequest("GET", "/openapi.json")))
     val catalog = new Catalog(Catalog.parse(response.body))
+    val program = commandName(catalog.title)
     val root = new Node
     catalog.operations.foreach { operation =>
       var node = root
@@ -50,19 +51,19 @@ object CommandLine:
     while offset < remaining.size && !remaining(offset).startsWith("--") &&
         (node.operation.isEmpty || node.children.contains(remaining(offset))) do
       val segment = remaining(offset)
-      val next = node.children.getOrElse(segment, throw new IllegalArgumentException(s"Unknown command: ${(path :+ segment).mkString(" ")}\n${help(node, path)}"))
+      val next = node.children.getOrElse(segment, throw new IllegalArgumentException(s"Unknown command: ${(path :+ segment).mkString(" ")}\n${help(node, path, program)}"))
       node = next
       path :+= segment
       offset += 1
     if showHelp || node.operation.isEmpty then
       require(showHelp || remaining.size == offset, "Choose an operation before passing parameters")
-      help(node, path)
+      help(node, path, program)
     else
       val operation = node.operation.get
       val request = try catalog.request(operation, input(catalog, operation, remaining.drop(offset), readJson))
       catch
         case error: IllegalArgumentException =>
-          throw new IllegalArgumentException(s"${error.getMessage}\n${usage(node, path)}\nRun 'sprout-native ${path.mkString(" ")} --help' for details.")
+          throw new IllegalArgumentException(s"${error.getMessage}\n${usage(node, path, program)}\nRun '$program ${path.mkString(" ")} --help' for details.")
       render(successful(send(request)))
 
   private def successful(response: HttpResponse): HttpResponse =
@@ -80,13 +81,20 @@ object CommandLine:
     if reserved(param.name) || operation.parameters.count(_.name == param.name) > 1 then s"${param.location}.${param.name}"
     else param.name
 
-  private def usage(node: Node, path: Vector[String]): String =
+  private def commandName(title: String): String =
+    val name = title.replaceAll("([A-Z]+)([A-Z][a-z])", "$1-$2")
+      .replaceAll("([a-z0-9])([A-Z])", "$1-$2")
+      .replaceAll("[^\\p{L}\\p{N}]+", "-")
+      .stripPrefix("-").stripSuffix("-").map(_.toLower)
+    if name.isEmpty then "api" else name
+
+  private def usage(node: Node, path: Vector[String], program: String): String =
     val positional = node.operation.toVector.flatMap(_.parameters.filter(_.location == "path").map(p => s"<${p.name}>"))
     val suffix = if node.children.nonEmpty then Vector("<command>") else positional
-    s"Usage: sprout-native ${(path ++ suffix).mkString(" ")} [options]"
+    s"Usage: ${(Vector(program) ++ path ++ suffix).mkString(" ")} [options]"
 
-  private def help(node: Node, path: Vector[String]): String =
-    val lines = mutable.ArrayBuffer(usage(node, path))
+  private def help(node: Node, path: Vector[String], program: String): String =
+    val lines = mutable.ArrayBuffer(usage(node, path, program))
     if node.description.nonEmpty then lines ++= Vector("", node.description)
     node.operation.foreach { operation =>
       lines ++= Vector("", operation.description, s"${operation.method} ${operation.path}", "", "Parameters (location-qualified flags are always available):")
@@ -104,7 +112,7 @@ object CommandLine:
         val description = if child.description.nonEmpty then child.description else child.operation.fold("")(_.description)
         lines += s"  $name  ${description.takeWhile(_ != '\n')}".stripTrailing()
       }
-    lines ++= Vector("", "Environment: SPROUT_BASE_URL (default: local Unix socket)", "  --help, -h  Show help")
+    lines ++= Vector("", "  --help, -h  Show help")
     lines.mkString("\n")
 
   private def takeOption(args: Vector[String], index: Int): (String, String, Int) =

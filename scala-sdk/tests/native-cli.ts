@@ -159,7 +159,7 @@ try {
     assert.equal(failure.code, 1);
     assert.match(failure.stderr, /HTTP 404.*fixture missing/);
 
-    served = { ...document, paths: { "/new-endpoint": { put: { operationId: "fresh.deep.command", responses } } } };
+    served = { ...document, info: { title: "Fresh HTTP API", version: "2" }, paths: { "/new-endpoint": { put: { operationId: "fresh.deep.command", responses } } } };
     const refreshed = await ok(["--help"]);
     assert.match(refreshed, /fresh/);
     assert.doesNotMatch(refreshed, /inventory|greeting/);
