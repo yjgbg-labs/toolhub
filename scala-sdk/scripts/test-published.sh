@@ -32,12 +32,11 @@ for platform in jvm js native; do
   esac
 done
 
-# The existing native CLI also compiles from dependencies alone, including the
-# Unix socket adapter; no SDK or generated source directory is on the classpath.
-cp "$sdk/examples/NativeCli.scala" "$consumer/NativeCli.scala"
-sh "$sdk/scripts/native.sh" --power package "$consumer/NativeCli.scala" --scala 3.9.0 \
-  --repository "$repository_uri" --main-class sprout.sdk.examples.NativeCli --suppress-outdated-dependency-warning \
-  --dep "$SDK_ORGANIZATION:sprout-client_native0.5_3:$SDK_VERSION" \
+# The generic native CLI uses only published runtime/transport dependencies.
+# Its build has no generated business client or SDK source directories.
+cp -R "$sdk/cli" "$consumer/cli"
+sh "$sdk/scripts/native.sh" --power package "$consumer/cli" --scala 3.9.0 \
+  --repository "$repository_uri" --main-class sprout.sdk.cli.NativeCli --suppress-outdated-dependency-warning \
   --dep "$SDK_ORGANIZATION:sprout-sdk-native-unix_native0.5_3:$SDK_VERSION" \
   -o "$consumer/sprout-native"
-"$consumer/sprout-native" --help
+bun "$sdk/tests/native-cli.ts" "$consumer/sprout-native"

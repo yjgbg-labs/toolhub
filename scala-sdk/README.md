@@ -45,7 +45,7 @@ adapters/zio/       ZIO executor, preserving R and typed ClientError
 adapters/sttp/      HTTP transport for any sttp 4 Backend[F]
 adapters/native/    HTTP-over-Unix-Socket backend for Native
 generator/          Independent Bun/TypeScript generator and its tests
-examples/           Native CLI example
+cli/                Business-independent Native CLI with runtime OpenAPI discovery
 tests/              Same checks executed on JVM, JS and Native; HTTP integration
 ```
 
@@ -291,17 +291,50 @@ groot jobs scala-sdk-test-jvm         # individual target
 groot jobs scala-sdk-test-js          # links JS, executes with Bun
 groot jobs scala-sdk-test-native      # links and executes a native binary
 groot jobs scala-sdk-native-cli       # builds dist/sprout-native
+groot jobs scala-sdk-native-cli-test  # live schema discovery + generic API fixture
 groot jobs scala-sdk-integration-test # actual JVM/JS/Native HTTP backends + socket
 
 scala-sdk/dist/sprout-native health
 scala-sdk/dist/sprout-native schedule list
-scala-sdk/dist/sprout-native schedule log example
+scala-sdk/dist/sprout-native --help
+scala-sdk/dist/sprout-native schedule log --name example
+scala-sdk/dist/sprout-native schedule new --name example --body '{"command":["echo","hi"],"every":"1h"}'
 ```
 
 The native CLI defaults to the same Unix socket as Sprout. `SPROUT_BASE_URL`
-can be an `http(s)://...` URL or `unix:///absolute/path`. It demonstrates native
-startup, JSON models, nested commands, typed calls and Unix transport, providing
-a starting point for a full CLI rewrite.
+can be an `http(s)://...` URL or `unix:///absolute/path`. Every invocation,
+including help, fetches `/openapi.json` from that server. A running server is
+therefore required. Commands come from dot-separated `operationId` values
+(for example, `inventory.parts.revise` becomes `inventory parts revise`), while
+methods, paths, parameters and help come from the contract. Optional `x-rpc`
+command descriptions are used for group help. New server operations are available
+on the next invocation without regenerating sources or recompiling the CLI.
+
+The entry point is `cli/NativeCli.scala`; `cli/CommandLine.scala` handles discovery,
+help and arguments, and `cli/Catalog.scala` interprets OpenAPI and constructs
+generic SDK HTTP requests. The build uses only the core and HTTP transports;
+it does not depend on `sprout.generated`, the checked-in schema or the generator.
+
+Invocation follows the TypeScript CLI conventions:
+
+- Path parameters are positional or `--path.name value`.
+- Query/header/cookie parameters use `--name value` or `--location.name value`.
+  Use qualified flags for duplicate names or reserved `body`, `input`, `help`.
+- Use `--name=value` for values beginning with `--`. Boolean values are explicit
+  (`--enabled false`); primitive query arrays accept repeated flags or JSON arrays.
+- `--body` accepts inline JSON, `@file`, or `-` for stdin. `--input` accepts the
+  complete `{path, query, header, cookie, body}` JSON object and must be used alone.
+- Defaults remain omitted so the server applies them. JSON numbers preserve their
+  precision. Required values, primitive types, enums and common schema constraints
+  are checked locally; the server remains responsible for full schema validation.
+- JSON responses are pretty-printed, strings/text are printed directly, empty/null
+  responses produce no output, and HTTP errors print the status/body and exit 1.
+
+The dynamic catalog supports OpenAPI 3.1 local references, JSON request bodies,
+primitive path/query/header/cookie parameters and primitive query arrays with
+`form`/`simple` serialization. It rejects unsupported parameter serialization,
+external references and non-JSON request bodies rather than guessing a request.
+It is not a complete OpenAPI/JSON Schema implementation.
 
 Native compilation needs Clang, libcurl/OpenSSL development files and the usual
 Scala Native platform prerequisites. On this Ubuntu development host,

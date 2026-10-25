@@ -5,9 +5,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 const directory = await mkdtemp("/tmp/opencode/scala-sdk-http-");
 const socket = `${directory}/http.sock`;
 const requests: string[] = [];
+const openapi = await Bun.file(new URL("../openapi.json", import.meta.url)).json();
 const handler = async (request: Request) => {
   const url = new URL(request.url);
   requests.push(`${request.method} ${url.pathname}`);
+  if (url.pathname === "/openapi.json") return Response.json(openapi);
   if (url.pathname === "/health") return new Response("ok", { headers: { "Content-Type": "text/plain" } });
   if (url.pathname === "/schedule/list") return Response.json([]);
   if (url.pathname === "/schedule/new") {
@@ -34,10 +36,10 @@ try {
     assert.deepEqual(await run("health"), { stdout: "ok\n", stderr: "", code: 0 });
     assert.deepEqual(JSON.parse((await run("schedule", "list")).stdout), []);
     const job = { command: ["echo", "hi"], every: "1h", cwd: null };
-    const created = await run("schedule", "new", "a /空+", JSON.stringify(job));
+    const created = await run("schedule", "new", "--name", "a /空+", "--body", JSON.stringify(job));
     assert.equal(created.code, 0, created.stderr);
     assert.deepEqual(JSON.parse(created.stdout), job);
-    const error = await run("schedule", "log", "a /空+");
+    const error = await run("schedule", "log", "--name", "a /空+");
     assert.equal(error.code, 1);
     assert.match(error.stderr, /HTTP 404/);
   }
@@ -50,7 +52,8 @@ try {
     assert.equal(code, 0, `${command.join(" ")}\n${stdout}\n${stderr}`);
     assert.match(stdout, /HTTP integration passed/);
   }
-  assert.equal(requests.length, 16);
+  assert.equal(requests.filter(request => request === "GET /openapi.json").length, 8);
+  assert.equal(requests.length, 24);
   console.log("SDK HTTP integration passed: JVM HttpClient, JS Fetch, Native Curl + Unix Socket; JSON POST, UTF-8 and HTTP errors");
 } finally {
   await unix.stop(true);

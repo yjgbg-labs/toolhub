@@ -87,10 +87,13 @@ jobs:
       sh scala-sdk/scripts/native.sh --power package scala-sdk/project.scala scala-sdk/core scala-sdk/adapters/cats scala-sdk/adapters/zio scala-sdk/adapters/sttp scala-sdk/generated scala-sdk/tests/Check.scala --main-class sprout.sdk.tests.Check -o scala-sdk/dist/check-native --force
       scala-sdk/dist/check-native
   - name: scala-sdk-native-cli
-    needs: [scala-sdk-generate, scala-sdk-native-tools]
+    needs: [scala-sdk-native-tools]
     run: |
       mkdir -p scala-sdk/dist
-      sh scala-sdk/scripts/native.sh --power package scala-sdk/project.scala scala-sdk/core scala-sdk/adapters/sttp scala-sdk/adapters/native scala-sdk/generated/sprout scala-sdk/examples/NativeCli.scala --main-class sprout.sdk.examples.NativeCli -o scala-sdk/dist/sprout-native --force
+      sh scala-sdk/scripts/native.sh --power package scala-sdk/project.scala scala-sdk/core scala-sdk/adapters/sttp scala-sdk/adapters/native scala-sdk/cli --main-class sprout.sdk.cli.NativeCli -o scala-sdk/dist/sprout-native --force
+  - name: scala-sdk-native-cli-test
+    needs: [scala-sdk-native-cli]
+    run: bun scala-sdk/tests/native-cli.ts
   - name: scala-sdk-http-jvm
     needs: [scala-sdk-generate]
     run: |
@@ -105,7 +108,7 @@ jobs:
     needs: [scala-sdk-native-cli, scala-sdk-http-jvm, scala-sdk-http-js]
     run: bun scala-sdk/tests/integration.ts
   - name: scala-sdk-test
-    needs: [scala-sdk-test-jvm, scala-sdk-test-js, scala-sdk-test-native, scala-sdk-integration-test]
+    needs: [scala-sdk-test-jvm, scala-sdk-test-js, scala-sdk-test-native, scala-sdk-integration-test, scala-sdk-native-cli-test]
     run: ':'
   - name: scala-sdk-publish-local-jvm
     needs: [scala-sdk-generate]
