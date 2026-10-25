@@ -12,7 +12,7 @@ object CommandLine:
     var operation: Option[Operation] = None
     var description: String = ""
 
-  def run(args: Vector[String], send: HttpRequest => HttpResponse, readJson: String => Json): String =
+  def run(program: String, args: Vector[String], send: HttpRequest => HttpResponse, readJson: String => Json): String =
     // Consume option values before recognizing help: --name -h is a literal value.
     val rest = Vector.newBuilder[String]
     var showHelp = false
@@ -32,7 +32,6 @@ object CommandLine:
 
     val response = successful(send(HttpRequest("GET", "/openapi.json")))
     val catalog = new Catalog(Catalog.parse(response.body))
-    val program = commandName(catalog.title)
     val root = new Node
     catalog.operations.foreach { operation =>
       var node = root
@@ -80,13 +79,6 @@ object CommandLine:
   private def flagName(operation: Operation, param: Parameter): String =
     if reserved(param.name) || operation.parameters.count(_.name == param.name) > 1 then s"${param.location}.${param.name}"
     else param.name
-
-  private def commandName(title: String): String =
-    val name = title.replaceAll("([A-Z]+)([A-Z][a-z])", "$1-$2")
-      .replaceAll("([a-z0-9])([A-Z])", "$1-$2")
-      .replaceAll("[^\\p{L}\\p{N}]+", "-")
-      .stripPrefix("-").stripSuffix("-").map(_.toLower)
-    if name.isEmpty then "api" else name
 
   private def usage(node: Node, path: Vector[String], program: String): String =
     val positional = node.operation.toVector.flatMap(_.parameters.filter(_.location == "path").map(p => s"<${p.name}>"))

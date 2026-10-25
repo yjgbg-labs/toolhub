@@ -21,7 +21,6 @@ object Catalog:
 final class Catalog(document: Json):
   import Catalog.*
   require(text(document, "openapi").startsWith("3.1."), "Expected OpenAPI 3.1")
-  val title: String = document.hcursor.downField("info").get[String]("title").getOrElse("API")
   private val operationPattern = "[A-Za-z][A-Za-z0-9_-]*(\\.[A-Za-z][A-Za-z0-9_-]*)*"
   private val methods = Set("get", "post", "put", "patch", "delete", "head", "options")
   private val locations = Set("path", "query", "header", "cookie")

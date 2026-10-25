@@ -309,8 +309,8 @@ therefore required. Commands come from dot-separated `operationId` values
 methods, paths, parameters and help come from the contract. Optional `x-rpc`
 command descriptions are used for group help. New server operations are available
 on the next invocation without regenerating sources or recompiling the CLI.
-Help and usage messages derive the command name from `info.title` in kebab-case
-(for example, `Sprout HTTP` becomes `sprout-http`).
+Help and usage messages use the basename of the invocation path (`argv[0]`),
+preserving the name of a renamed executable or the symlink used to invoke it.
 
 The entry point is `cli/NativeCli.scala`; `cli/CommandLine.scala` handles discovery,
 help and arguments, and `cli/Catalog.scala` interprets OpenAPI and constructs

@@ -14,7 +14,9 @@ object NativeCli:
       val backend: SyncBackend = if base.startsWith("unix://") then new UnixSocketBackend(base.stripPrefix("unix://")) else DefaultSyncBackend()
       try
         val transport = new SttpTransport[Identity](backend, if base.startsWith("unix://") then "http://localhost" else base)
-        val result = CommandLine.run(args.toVector, transport, readJsonArgument)
+        // Scala Native preserves argv[0], including the name of an invoked symlink.
+        val program = new java.io.File(scala.scalanative.runtime.filename).getName
+        val result = CommandLine.run(program, args.toVector, transport, readJsonArgument)
         if result.nonEmpty then println(result)
         0
       finally backend.close()
