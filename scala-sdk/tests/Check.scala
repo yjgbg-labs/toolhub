@@ -16,6 +16,30 @@ object Check extends IOApp.Simple:
 
   def run: IO[Unit] = for
     _ <- IO {
+      val document = Catalog.parse("""{
+        "openapi":"3.1.0", "info":{"title":"Unrelated API","version":"2"},
+        "components":{"schemas":{"Node":{
+          "type":"object", "required":["id"],
+          "properties":{"id":{"type":"integer","format":"int64"},"child":{"$ref":"#/components/schemas/Node"}}
+        }}},
+        "paths":{"/items/{id}":{"patch":{
+          "operationId":"items.edit",
+          "parameters":[{"name":"id","in":"path","schema":{"type":"string"}}],
+          "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Node"}}}},
+          "responses":{"200":{"description":"OK","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Node"}}}}}
+        }}}
+      }""")
+      val discovery = Catalog.discover()
+      assert(discovery.request == HttpRequest("GET", "/openapi.json"))
+      val catalog = discovery.decode(response(200, document.noSpaces)).toOption.get
+      val dynamic = catalog.call("items.edit", Catalog.parse("""{"path":{"id":"a /空+"},"body":{"id":9223372036854775807,"child":{"id":2}}}"""))
+      assert(dynamic.request.method == "PATCH" && dynamic.request.path == "/items/a%20%2F%E7%A9%BA%2B")
+      assert(dynamic.request.body.get.contains("9223372036854775807"))
+      assert(dynamic.decode(response(404, "missing")).isLeft)
+      val schema = catalog.inputSchema(catalog.byId("items.edit"))
+      assert(schema.noSpaces.contains("#/$defs/ref0") && schema.hcursor.downField("$defs").downField("ref0").succeeded)
+      assert(catalog.outputSchema(catalog.byId("items.edit")).hcursor.downField("$defs").succeeded)
+      assert(scala.util.Try(catalog.call("items.edit", Json.obj())).isFailure)
       val json = io.circe.jawn.parse("""{"id":9223372036854775807,"value":null,"mode":"fast","optional":null,"child":{"id":1,"value":"leaf","mode":"slow-mode"}}""").toOption.get
       val tree = Tree.codec.read(json).toOption.get
       assert(tree.id == Long.MaxValue)

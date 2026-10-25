@@ -2,7 +2,7 @@ package sprout.sdk.cli
 
 import sprout.sdk.*
 import sprout.sdk.native.UnixSocketBackend
-import sprout.sdk.sttp.SttpTransport
+import sprout.sdk.sttp.{SttpExecutor, SttpTransport}
 import _root_.sttp.client4.{DefaultSyncBackend, SyncBackend}
 import _root_.sttp.shared.Identity
 
@@ -16,7 +16,7 @@ object NativeCli:
         val transport = new SttpTransport[Identity](backend, if base.startsWith("unix://") then "http://localhost" else base)
         // Scala Native preserves argv[0], including the name of an invoked symlink.
         val program = new java.io.File(scala.scalanative.runtime.filename).getName
-        val result = CommandLine.run(program, args.toVector, transport, readJsonArgument)
+        val result = CommandLine.run(program, args.toVector, new SttpExecutor(backend, transport), readJsonArgument)
         if result.nonEmpty then println(result)
         0
       finally backend.close()

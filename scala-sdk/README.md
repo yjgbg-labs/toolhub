@@ -1,137 +1,147 @@
 # Scala SDK
 
-A standalone OpenAPI 3.1 → Scala client generator and cross-platform runtime.
-Nothing in this directory imports `server/`, `cli/` or `plugin/`. Bun runs the
-generator; generated Scala has no Bun or JavaScript runtime dependency on JVM or
-Native. The checked-in `openapi.json` is a reproducible snapshot of Sprout's
-contract, not a dependency on a running daemon.
-
-## Generate
-
-From the repository root:
-
-```sh
-groot jobs scala-sdk-generate
-```
-
-This writes `scala-sdk/generated/sprout/{Models,Calls,Client}.scala` using package
-`sprout.generated`. To refresh the snapshot from the local daemon, explicitly run
-`groot jobs scala-sdk-schema` first. Set `SPROUT_OPENAPI_URL` for a TCP server, or
-`SPROUT_SOCKET` for another Unix socket. `SDK_SCHEMA` overrides the generation
-job's input file/URL.
-
-The generator also works independently, without installing dependencies:
-
-```sh
-bun scala-sdk/generator/main.ts \
-  --schema ./openapi.json \
-  --package example.client \
-  --output ./src/main/scala/example/client
-```
-
-`--schema` accepts a local file or HTTP(S) URL; `--unix-socket /absolute/path`
-can accompany an HTTP URL. Output is deterministic, no server is contacted for a
-local file, and handwritten destination files are never overwritten. Generated
-files are build outputs and ignored by Git.
-
-## Structure
+Three independent layers, with no dependency on server business code:
 
 ```text
-project.scala       Scala and Circe dependencies, shared by all targets
-config.env          Maven organization, version and local repository
-core/               Call[A], Executor[F], HTTP values, errors, JSON codecs
-adapters/cats/      Cats Effect executor, preserving transport cancellation
-adapters/zio/       ZIO executor, preserving R and typed ClientError
-adapters/sttp/      HTTP transport for any sttp 4 Backend[F]
-adapters/native/    HTTP-over-Unix-Socket backend for Native
-generator/          Independent Bun/TypeScript generator and its tests
-cli/                Business-independent Native CLI with runtime OpenAPI discovery
-tests/              Same checks executed on JVM, JS and Native; HTTP integration
+sdk-core (JVM / JS / Native) ← sdk-generator (JVM / JS / Native)
+          ↑                              │ produces source
+    cli (Native)                 generated typesafe SDK → sdk-core
 ```
 
-The SDK uses Scala **3.9.0** (required by sttp **4.1.0**), Scala Native **0.5.12**,
-and Circe **0.14.16**. `core/` and generated sources are shared across all three
-targets. Select only the adapters you use; the native-only directory must not be
-included in a JVM or JS build. With Scala CLI, include `project.scala`, `core/`,
-your generated sources and your selected adapter directories. With sbt, put the
-shared files in a crossProject and use `%%%` for dependencies; JVM sttp backends
-require a recent JDK (the development jobs use JDK 25).
+`sdk-core` owns OpenAPI discovery, metadata, local references, input validation,
+JSON Schema export, dynamic request construction, HTTP values, codecs and the
+effect-independent `Call[A]` / `Executor[F]` interfaces. `sdk-generator` is a pure
+Scala library taking a `Catalog` or JSON document and returning Scala source files.
+The CLI handles command-line parsing, help, input files/stdin and output; all API
+discovery and calls go through core. It does not import the generator or generated
+business clients.
 
-## Supported versions and local Maven publishing
+## Layout and versions
 
-The supported/tested Scala version is **3.9.0** on all targets. Published JARs
-contain Scala 3.9 TASTy, so **Scala 3.3–3.8 cannot consume them**, despite the
-`_3` binary suffix. Scala 2 is not supported. Newer Scala 3 compilers should
-follow Scala's backwards TASTy compatibility, but are not yet tested here.
-The platform versions used for publishing and consumption checks are Scala.js
-**1.22.0** and Scala Native **0.5.12**. JVM artifacts target **Java 17** bytecode;
-the development/build launcher uses JDK 25.
+```text
+sdk-core/            Shared protocol/runtime library (sprout.sdk)
+sdk-generator/       Shared Scala generator (sprout.sdk.generator)
+cli/                 Native CLI (sprout.sdk.cli)
+adapters/            Optional Cats, ZIO, sttp and Native Unix Socket adapters
+tools/               JVM/Native generator launcher and Scala.js export bridge
+generator/           Thin Bun host I/O bridge and generator test fixtures
+generated/           Ignored generated business SDK sources
+scripts/             Build, publication, release and verification helpers
+```
 
-Publish all three platforms into the standard Maven local repository:
+Supported/tested: **Scala 3.9.0**, Scala.js **1.22.0**, Scala Native **0.5.12**,
+Circe **0.14.16**, sttp **4.1.0**. JVM artifacts target Java 17 bytecode; development
+jobs use JDK 25. Scala 2 and older Scala 3 compilers cannot consume these 3.9 TASTy
+artifacts. The cross-platform libraries have no host filesystem or HTTP backend
+dependency; callers select an adapter. The Native transport uses libcurl.
+
+## Independent release lifecycles
+
+`config.env` separates protocol/tooling version `SDK_VERSION=0.2.0` from business
+client version `SDK_CLIENT_VERSION=0.2.0-SNAPSHOT`. Business schema changes require
+only new generated sources and a new business SDK release. They do not republish
+core, the generator, adapters or CLI. Compatible new server commands are discovered
+at runtime by the existing CLI binary.
+
+Publish protocol/tooling libraries **once per protocol/tooling release**:
 
 ```sh
 groot jobs scala-sdk-publish-local
 ```
 
-Default destination: `~/.m2/repository/lab/yjgbg/`. Default version:
-`0.1.0-SNAPSHOT`. Each module has a binary JAR, source JAR, dependency POM and
-SHA-256 checksums. Dependent modules are compiled against the published core
-JAR; they do not bundle duplicate core classes.
+This publishes 16 artifacts to `~/.m2/repository/lab/yjgbg/`. Existing non-SNAPSHOT
+versions are checksum-verified and skipped, never overwritten. Change `SDK_VERSION`
+for a new protocol/tooling release. Individual platform jobs end in `-jvm`, `-js`,
+or `-native`. `SDK_MAVEN_REPOSITORY` overrides the destination.
 
-| Module | Contents | Platforms |
+| Artifact base name | Platforms | Dependencies |
 | --- | --- | --- |
-| `sprout-client` | Generated Sprout models, calls and `Client[F]` | JVM / JS / Native |
-| `sprout-sdk-core` | Effect-independent runtime and JSON codecs | JVM / JS / Native |
-| `sprout-sdk-cats` | Cats Effect executor | JVM / JS / Native |
-| `sprout-sdk-zio` | ZIO executor | JVM / JS / Native |
-| `sprout-sdk-sttp` | sttp transport and executor | JVM / JS / Native |
-| `sprout-sdk-native-unix` | Native Unix Socket backend | Native |
+| `sprout-sdk-core` | JVM / JS / Native | Scala + Circe, no business SDK |
+| `sprout-sdk-generator` | JVM / JS / Native | core |
+| `sprout-sdk-cats` | JVM / JS / Native | core + Cats Effect |
+| `sprout-sdk-zio` | JVM / JS / Native | core + ZIO |
+| `sprout-sdk-sttp` | JVM / JS / Native | core + sttp |
+| `sprout-sdk-native-unix` | Native | core + sttp adapter |
+| `sprout-client` | JVM / JS / Native | core; independently generated/versioned |
 
-The artifact suffix is `_3` for JVM, `_sjs1_3` for JS, or `_native0.5_3` for
-Native. For example:
+Suffixes: `_3` (JVM), `_sjs1_3` (JS), `_native0.5_3` (Native). Each publication has
+a binary JAR, source JAR, dependency POM and SHA-256. Modules compile against the
+published core rather than bundling duplicate runtime classes.
 
-```text
-lab.yjgbg:sprout-client_3:0.1.0-SNAPSHOT
-lab.yjgbg:sprout-client_sjs1_3:0.1.0-SNAPSHOT
-lab.yjgbg:sprout-client_native0.5_3:0.1.0-SNAPSHOT
-```
+### Business SDK generation and publication
 
-The generated client transitively brings the core runtime and codecs. Add the
-executor/transport modules you use. A custom generated SDK can depend directly
-on `sprout-sdk-core`, without depending on Sprout's generated client.
-
-Publish a single platform with `scala-sdk-publish-local-jvm`,
-`scala-sdk-publish-local-js` or `scala-sdk-publish-local-native`. Settings live in
-`scala-sdk/config.env`; per-command overrides are supported:
+After the protocol libraries have been installed:
 
 ```sh
-SDK_VERSION=0.2.0-SNAPSHOT groot jobs scala-sdk-publish-local
-SDK_MAVEN_REPOSITORY=/absolute/custom/repository groot jobs scala-sdk-publish-local
+# Reproducible checked-in schema by default; live discovery is explicit.
+groot jobs scala-sdk-schema
+SDK_CLIENT_VERSION=0.3.0 groot jobs scala-sdk-publish-client-local
+
+# Another business API, still using the same protocol libraries:
+SDK_SCHEMA=/absolute/inventory.json \
+SDK_CLIENT_PACKAGE=inventory.generated \
+SDK_CLIENT_SOURCES=scala-sdk/generated/inventory \
+SDK_CLIENT_MODULE=inventory-client \
+SDK_CLIENT_VERSION=1.0.0 \
+groot jobs scala-sdk-publish-client-local
 ```
 
-With a custom repository, configure consumers to use that path instead of their
-default Maven local directory. To verify the published dependency graph in an
-isolated consumer, run `groot jobs scala-sdk-published-test`: it compiles and runs
-JVM/JS/Native consumers and links a Native CLI using only Maven dependencies.
-Use `groot jobs scala-sdk-test-installed` to run those consumption checks against
-the already installed artifacts without publishing again.
+`scala-sdk-publish-client-local` never invokes protocol publication or a CLI build.
+`scala-sdk-generate` only generates sources. `scala-sdk-schema` uses
+`SPROUT_OPENAPI_URL` or `SPROUT_SOCKET` to refresh `openapi.json`.
+
+The generator can be called as a library on all three platforms:
+
+```scala
+import sprout.sdk.Catalog
+import sprout.sdk.generator.Generator
+
+val catalog = new Catalog(Catalog.parse(openApiText))
+val files: Map[String, String] = Generator.generate(catalog, "inventory.generated")
+// Models.scala, Calls.scala, Client.scala; caller owns I/O and compilation.
+```
+
+Runnable launchers are available through `scala-sdk-generator-jvm`,
+`scala-sdk-generator-native` and `scala-sdk-generator-js`. Build a launcher once,
+then run it against changed schemas without recompiling it:
+
+```sh
+scala-sdk/dist/generator-native openapi.json inventory.generated output/directory
+groot use-jdk 25 -- java -jar scala-sdk/dist/generator.jar openapi.json inventory.generated output/directory
+
+# JS export accepts JSON text and returns a JSON object of source filenames/text.
+bun -e 'import {generate} from "./scala-sdk/dist/generator.mjs"; console.log(generate(await Bun.file("openapi.json").text(), "inventory.generated"))'
+
+# Bun host wrapper additionally supports HTTP(S), Unix Socket and safe file writes:
+bun scala-sdk/generator/main.ts --schema ./openapi.json --package inventory.generated --output ./output
+```
+
+The Bun wrapper contains no generation rules. The same Scala generator executes
+on JVM, JS and Native, and parity tests compare their complete generated output.
+Handwritten destination files are rejected before writing. JSON is parsed with
+Circe Jawn on every target, preserving integer/decimal precision.
+
+## Maven / Gradle / sbt / Scala CLI
+
+The following examples consume the generated client. To consume dynamic discovery
+instead, select `sprout-sdk-core:0.2.0`; for generation select
+`sprout-sdk-generator:0.2.0`. Add only the transport/effect adapters you use.
 
 ### Maven (`pom.xml`, JVM)
 
-Maven uses `~/.m2/repository` by default. In a Scala 3 project configured to use
-Scala 3.9.0, add:
+Configure Scala 3.9.0 and add these dependencies. Maven uses `~/.m2/repository`:
 
 ```xml
 <dependencies>
   <dependency>
     <groupId>lab.yjgbg</groupId>
     <artifactId>sprout-client_3</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.2.0-SNAPSHOT</version>
   </dependency>
   <dependency>
     <groupId>lab.yjgbg</groupId>
     <artifactId>sprout-sdk-sttp_3</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.2.0</version>
   </dependency>
 </dependencies>
 ```
@@ -140,16 +150,11 @@ Scala 3.9.0, add:
 
 ```groovy
 plugins { id 'scala' }
-
-repositories {
-    mavenLocal()
-    mavenCentral()
-}
-
+repositories { mavenLocal(); mavenCentral() }
 dependencies {
     implementation 'org.scala-lang:scala3-library_3:3.9.0'
-    implementation 'lab.yjgbg:sprout-client_3:0.1.0-SNAPSHOT'
-    implementation 'lab.yjgbg:sprout-sdk-sttp_3:0.1.0-SNAPSHOT'
+    implementation 'lab.yjgbg:sprout-client_3:0.2.0-SNAPSHOT'
+    implementation 'lab.yjgbg:sprout-sdk-sttp_3:0.2.0'
 }
 ```
 
@@ -159,187 +164,123 @@ dependencies {
 scalaVersion := "3.9.0"
 resolvers += Resolver.mavenLocal
 libraryDependencies ++= Seq(
-  "lab.yjgbg" %% "sprout-client" % "0.1.0-SNAPSHOT",
-  "lab.yjgbg" %% "sprout-sdk-sttp" % "0.1.0-SNAPSHOT"
+  "lab.yjgbg" %% "sprout-client" % "0.2.0-SNAPSHOT",
+  "lab.yjgbg" %% "sprout-sdk-sttp" % "0.2.0"
 )
 ```
 
-For a project with the Scala.js/Scala Native plugin enabled, use `%%%` instead
-of `%%` to select the matching platform artifacts. Use Scala.js 1.22.0 or Scala
-Native 0.5.12 as appropriate.
+For Scala.js/Native projects use `%%%` with the appropriate plugin.
 
 ### Scala CLI (`project.scala`)
 
 ```scala
 //> using scala 3.9.0
 //> using repository m2Local
-//> using dep lab.yjgbg::sprout-client::0.1.0-SNAPSHOT
-//> using dep lab.yjgbg::sprout-sdk-sttp::0.1.0-SNAPSHOT
+//> using dep lab.yjgbg::sprout-client::0.2.0-SNAPSHOT
+//> using dep lab.yjgbg::sprout-sdk-sttp::0.2.0
 ```
 
-The double colon before the version enables platform-aware artifact selection.
-For JS add `//> using platform js` and `//> using jsVersion 1.22.0`. For Native:
+The double colon before the version enables platform-aware selection. Add
+`//> using platform js` / `//> using jsVersion 1.22.0` for JS, or
+`//> using platform native` / `//> using nativeVersion 0.5.12` for Native.
+
+## Dynamic and typesafe calls
+
+Core requires no Monad, Functor, Cats Effect or ZIO. `Call` is an immutable request
+plus decoder; `Executor[F]` decides how it is run. Circe brings Cats Core
+transitively but does not choose an effect runtime.
 
 ```scala
-//> using platform native
-//> using nativeVersion 0.5.12
-//> using dep lab.yjgbg::sprout-sdk-native-unix::0.1.0-SNAPSHOT
-```
-
-Add `lab.yjgbg::sprout-sdk-cats::0.1.0-SNAPSHOT` or
-`lab.yjgbg::sprout-sdk-zio::0.1.0-SNAPSHOT` when using those executors.
-
-## Effect-independent API
-
-```scala
-trait Executor[F[_]]:
-  def execute[A](call: Call[A]): F[A]
-
-val request: Call[Vector[ScheduleEntry]] = Calls.schedule.list()
-// Calls are immutable, inspectable and composable without any effect type class.
-val withMetadata = request.withResponse // Call[(HttpResponse, Vector[ScheduleEntry])]
-```
-
-Generated methods delegate to an executor without requiring a `Monad`,
-`Functor`, Cats Effect or ZIO. Circe brings Cats Core transitively, but does not
-select an effect runtime. `Call.map` maps the pure decoder, not an effect.
-
-### Cats Effect
-
-```scala
-import cats.effect.IO
+import sprout.sdk.*
 import sprout.sdk.cats.CatsExecutor
-import sprout.generated.Client
+import cats.effect.IO
 
-// send: HttpRequest => IO[HttpResponse], e.g. a SttpTransport[IO]
-val client = new Client[IO](new CatsExecutor[IO](send))
-val program: IO[Vector[ScheduleEntry]] = client.schedule.list()
+// send: HttpRequest => IO[HttpResponse], owned by the application
+val executor = new CatsExecutor[IO](send)
+val dynamic = for
+  catalog <- executor.execute(Catalog.discover())
+  client = new DynamicClient[IO](catalog, executor)
+  response <- client.call("inventory.list")
+yield response
+
+// JSON Schema exports for dynamic tool integrations:
+val input = catalog.inputSchema(catalog.byId("inventory.list"))
+val output = catalog.outputSchema(catalog.byId("inventory.list"))
 ```
 
-Keep the underlying HTTP client's `Resource` around the program. Any HTTP client
-can supply `send`; the adapter does not turn asynchronous I/O into blocking I/O
-or alter cancellation. Choose an sttp Cats backend for your target if using sttp.
+Discovery can use another endpoint via `Catalog.discover(path)`. A custom executor
+can supply headers, base URL, cancellation and any HTTP backend. The sttp adapter
+supports JVM HttpClient, JS Fetch and Native Curl; Native Unix Socket support is
+an optional adapter. The caller owns backend cleanup. The supplied sttp transport
+defaults to a 30-second timeout and does not follow redirects.
 
-### ZIO
+Generated `Client[F]` methods use the same executor, with typed parameters/results:
 
 ```scala
-import zio.ZIO
-import sprout.sdk.{ClientError, HttpRequest, HttpResponse}
-import sprout.sdk.zio.ZioExecutor
-import sprout.generated.Client
-
-// send: HttpRequest => ZIO[R, Throwable, HttpResponse]
-val client = new Client[[A] =>> ZIO[R, ClientError, A]](new ZioExecutor[R](send))
+val client = new sprout.generated.Client[IO](executor)
+val jobs = client.schedule.list()
+val description = sprout.generated.Calls.schedule.list() // Call[Vector[ScheduleEntry]]
+val withMetadata = description.withResponse
 ```
 
-The caller retains ownership of the HTTP client's `Scope`. Transport errors,
-unexpected HTTP statuses and decoding failures use the typed `ClientError`
-channel. HTTP errors retain the complete status, headers and raw response body.
+`Optional.Missing`, `Optional.Present(value)` and explicit JSON null remain distinct.
+Optional defaults are not silently inserted; the server applies its defaults.
+Recursive objects, string enums, unions, dictionaries, int64/BigInt/BigDecimal and
+multiple response variants are generated with codecs. HTTP failures retain the
+status, headers and raw body in `ClientError.Http`. ZIO uses a typed `ClientError`
+channel; Cats/ZIO adapters retain the transport's cancellation behavior.
 
-### JVM / JS / Native HTTP
+This is the supported OpenAPI 3.1 JSON API subset, not all of OpenAPI/JSON Schema:
+local references, primitive path/query/header/cookie values, primitive query arrays
+and JSON request bodies. The dynamic validator checks common constraints, required
+fields and union membership; the server remains responsible for full validation.
+The generator rejects unsupported constructs (such as multipart, external schema
+references, `allOf`, mixed fixed/dictionary objects and success status ranges).
 
-`SttpTransport[F]` converts SDK HTTP values to sttp requests. Use a platform
-backend, then either the Cats/ZIO adapter or `SttpExecutor[F]`:
-
-| Target | Example backend | Effect |
-| --- | --- | --- |
-| JVM | `DefaultSyncBackend()` | `Identity` |
-| JS (browser or Bun) | `DefaultFutureBackend()` | `Future` |
-| Native | `DefaultSyncBackend()` (libcurl) | `Identity` |
-| Native local Sprout | `new UnixSocketBackend(path)` | `Identity` |
-
-Use `http://localhost` as the base URL with `UnixSocketBackend`; the backend
-directs the connection to the socket. This small adapter uses sttp's native curl
-extension API and is pinned/tested against 4.1.0. The caller closes the backend.
-Requests have a configurable 30-second timeout and do not follow redirects.
-
-## Missing fields, null, defaults and errors
-
-* Required non-null field: `A`.
-* Required nullable field: `Option[A]`, where `None` emits JSON null.
-* Optional non-null field: `Optional[A]`.
-* Optional nullable field: `Optional[Option[A]]` — `Missing`, `Present(None)`
-  and `Present(Some(value))` remain distinct.
-
-Optional parameters/fields default to `Optional.Missing`, so the server applies
-its defaults. OpenAPI defaults are annotations and are not silently inserted
-into requests or responses. To set a value, use `Optional.Present(value)`.
-
-`Int`, `Long`, `BigInt` and `BigDecimal` retain their Scala precision, including
-in Scala.js: all targets use Circe Jawn, avoiding JavaScript `JSON.parse`'s
-conversion of numbers to doubles. String enums and `oneOf`/`anyOf` generate ADTs and codecs. Multiple
-success statuses/media types produce a response ADT; one success response gives
-its body directly. JSON/text/empty bodies are supported. `withResponse` exposes
-status and headers even for single-success endpoints. Declared HTTP failures
-are represented by `ClientError.Http`, with their raw body, rather than thrown
-away or converted to a success value.
-
-This generator targets Sprout's JSON API subset of OpenAPI 3.1: local component
-references, recursive objects, primitive values, arrays, dictionaries, unions,
-path/query/header/cookie primitives and primitive query arrays. It uses the
-contract's HTTP method, never a method inferred from an operation name. Schema
-constraints such as minimum/pattern are enforced by the server, while JSON
-shape, primitive type, required fields and union membership are checked locally.
-Unsupported constructs such as multipart, external references, `allOf`, mixed
-fixed/dictionary objects and response status ranges fail generation explicitly.
-
-## Checks and native CLI
+## Native CLI and deployment
 
 ```sh
-groot jobs scala-sdk-test             # generator + JVM + JS + Native + socket/TCP
-groot jobs scala-sdk-test-jvm         # individual target
-groot jobs scala-sdk-test-js          # links JS, executes with Bun
-groot jobs scala-sdk-test-native      # links and executes a native binary
-groot jobs scala-sdk-native-cli       # builds dist/sprout-native
-groot jobs scala-sdk-native-cli-test  # live schema discovery + generic API fixture
-groot jobs scala-sdk-integration-test # actual JVM/JS/Native HTTP backends + socket
-
-scala-sdk/dist/sprout-native health
-scala-sdk/dist/sprout-native schedule list
-scala-sdk/dist/sprout-native --help
-scala-sdk/dist/sprout-native schedule log --name example
-scala-sdk/dist/sprout-native schedule new --name example --body '{"command":["echo","hi"],"every":"1h"}'
+groot jobs scala-sdk-native-cli-test
+groot jobs scala-sdk-native-cli-install  # build/test → S3 upload → download/check → install
+groot jobs cli-deploy                   # install the pinned CLI release; no build
+sprout --help
+sprout schedule log --name example
 ```
 
-The native CLI defaults to the same Unix socket as Sprout. `SPROUT_BASE_URL`
-can be an `http(s)://...` URL or `unix:///absolute/path`. Every invocation,
-including help, fetches `/openapi.json` from that server. A running server is
-therefore required. Commands come from dot-separated `operationId` values
-(for example, `inventory.parts.revise` becomes `inventory parts revise`), while
-methods, paths, parameters and help come from the contract. Optional `x-rpc`
-command descriptions are used for group help. New server operations are available
-on the next invocation without regenerating sources or recompiling the CLI.
-Help and usage messages use the basename of the invocation path (`argv[0]`),
-preserving the name of a renamed executable or the symlink used to invoke it.
+The installation provides `sprout` and `sprout-native`. Release artifacts are
+content-addressed on S3 and SHA-256 verified before activation. The CLI's pinned
+hash lives in `scala-sdk/config.env`, independently of the server's release hash.
+Business server deployments reuse that same CLI release. The TypeScript source
+remains available for the existing plugin's API adapter and comparison.
 
-The entry point is `cli/NativeCli.scala`; `cli/CommandLine.scala` handles discovery,
-help and arguments, and `cli/Catalog.scala` interprets OpenAPI and constructs
-generic SDK HTTP requests. The build uses only the core and HTTP transports;
-it does not depend on `sprout.generated`, the checked-in schema or the generator.
+Every CLI invocation, including help, fetches `/openapi.json`; a reachable server
+is required. `SPROUT_BASE_URL` selects HTTP(S) or `unix:///absolute/socket`; default
+is the local Sprout socket. Help uses the invoked filename (`argv[0]`), including
+renamed binaries and symlinks. Commands come from dot-separated `operationId`s;
+group descriptions come from optional `x-rpc` metadata.
 
-Invocation follows the TypeScript CLI conventions:
+- Path arguments are positional or `--path.name`; other parameters use `--name`
+  or `--location.name`. Qualify ambiguous/reserved names (`body`, `input`, `help`).
+- Use `--name=value` for values beginning with `--`; booleans require explicit
+  values. Query arrays accept repeated flags or JSON arrays.
+- `--body` accepts JSON, `@file` or stdin `-`; `--input` takes the complete
+  `{path, query, header, cookie, body}` document and must be used alone.
+- JSON responses are pretty-printed; text is printed directly; empty/null responses
+  are silent. Errors print to stderr and exit 1.
 
-- Path parameters are positional or `--path.name value`.
-- Query/header/cookie parameters use `--name value` or `--location.name value`.
-  Use qualified flags for duplicate names or reserved `body`, `input`, `help`.
-- Use `--name=value` for values beginning with `--`. Boolean values are explicit
-  (`--enabled false`); primitive query arrays accept repeated flags or JSON arrays.
-- `--body` accepts inline JSON, `@file`, or `-` for stdin. `--input` accepts the
-  complete `{path, query, header, cookie, body}` JSON object and must be used alone.
-- Defaults remain omitted so the server applies them. JSON numbers preserve their
-  precision. Required values, primitive types, enums and common schema constraints
-  are checked locally; the server remains responsible for full schema validation.
-- JSON responses are pretty-printed, strings/text are printed directly, empty/null
-  responses produce no output, and HTTP errors print the status/body and exit 1.
+Native builds need Clang and libcurl/OpenSSL development files. The Ubuntu helper
+can extract missing toolchain packages into `scala-sdk/.cache/native` without sudo.
+Runtime requires the corresponding platform's libcurl/system libraries.
 
-The dynamic catalog supports OpenAPI 3.1 local references, JSON request bodies,
-primitive path/query/header/cookie parameters and primitive query arrays with
-`form`/`simple` serialization. It rejects unsupported parameter serialization,
-external references and non-JSON request bodies rather than guessing a request.
-It is not a complete OpenAPI/JSON Schema implementation.
+## Verification and comparison
 
-Native compilation needs Clang, libcurl/OpenSSL development files and the usual
-Scala Native platform prerequisites. On this Ubuntu development host,
-`scala-sdk-native-tools` can extract missing development packages into
-`scala-sdk/.cache/native` without sudo. Other platforms should provide their
-normal toolchain. Program execution requires libcurl and its runtime libraries.
+```sh
+groot jobs scala-sdk-test                    # core + generated SDK + generator on 3 targets, HTTP + CLI
+groot jobs scala-sdk-generator-platform-test # identical output from JVM/JS/Native generator
+groot jobs scala-sdk-published-test          # initial protocol/client publication + isolated consumers
+groot jobs scala-sdk-test-installed          # only existing Maven artifacts, including generator and CLI
+groot jobs scala-sdk-cli-benchmark           # Native vs TS/Bun fresh-process help benchmark
+```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for Native/TypeScript CLI and
+Scala.js/TypeScript Code Mode plugin trade-offs.

@@ -1,14 +1,20 @@
-package sprout.sdk.cli
+package sprout.sdk
 
 import io.circe.{Json, JsonObject}
-import sprout.sdk.*
 
 final case class Parameter(name: String, location: String, required: Boolean, schema: Json, explode: Boolean, description: String)
 final case class Body(schema: Json, required: Boolean)
-final case class Operation(id: String, method: String, path: String, description: String, parameters: Vector[Parameter], body: Option[Body]):
+final case class ResponseBody(mediaType: Option[String], schema: Json)
+final case class ResponseCase(status: String, bodies: Vector[ResponseBody])
+final case class Operation(id: String, method: String, path: String, description: String, parameters: Vector[Parameter], body: Option[Body], responses: Vector[ResponseCase]):
   val segments: Vector[String] = id.split('.').toVector
 
 object Catalog:
+  /** A pure discovery call; any SDK executor can load the same metadata. */
+  def discover(path: String = "/openapi.json"): Call[Catalog] = Call(HttpRequest("GET", path), response =>
+    if response.status < 200 || response.status >= 300 then Left(ClientError.Http(response))
+    else scala.util.Try(new Catalog(parse(response.body))).toEither.left.map(error => ClientError.Decode(error.getMessage, response)))
+
   def parse(text: String): Json = io.circe.jawn.parse(text).fold(error => throw new IllegalArgumentException(error.message), identity)
   def obj(value: Json, name: String): JsonObject = value.asObject.getOrElse(throw new IllegalArgumentException(s"Expected $name object"))
   def text(value: Json, name: String): String = value.hcursor.get[String](name).getOrElse(throw new IllegalArgumentException(s"Missing string: $name"))
@@ -18,9 +24,10 @@ object Catalog:
   def array(value: Json, name: String): Vector[Json] = field(value, name).fold(Vector.empty[Json])(_.asArray.getOrElse(throw new IllegalArgumentException(s"Expected $name array")))
   def types(schema: Json): Vector[String] = field(schema, "type").toVector.flatMap(value => value.asString.toVector ++ value.asArray.toVector.flatten.flatMap(_.asString))
 
-final class Catalog(document: Json):
+final class Catalog(val document: Json):
   import Catalog.*
   require(text(document, "openapi").startsWith("3.1."), "Expected OpenAPI 3.1")
+  val title: String = document.hcursor.downField("info").get[String]("title").getOrElse("API")
   private val operationPattern = "[A-Za-z][A-Za-z0-9_-]*(\\.[A-Za-z][A-Za-z0-9_-]*)*"
   private val methods = Set("get", "post", "put", "patch", "delete", "head", "options")
   private val locations = Set("path", "query", "header", "cookie")
@@ -75,10 +82,64 @@ final class Catalog(document: Json):
           .getOrElse(throw new IllegalArgumentException(s"$id: only JSON request bodies are supported"))
         Body(schema, bool(request, "required"))
       }
-      Operation(id, method.toUpperCase, path, Vector(optionalText(declaration, "summary"), optionalText(declaration, "description")).filter(_.nonEmpty).mkString("\n"), parameters, body)
+      val responses = obj(field(declaration, "responses").getOrElse(Json.obj()), s"$id.responses").toVector.sortBy(_._1).map { (status, raw) =>
+        val response = resolve(raw)
+        val content = if method == "head" then Vector.empty else obj(field(response, "content").getOrElse(Json.obj()), "content").toVector
+        val bodies = if content.isEmpty then Vector(ResponseBody(None, Json.obj("type" -> Json.fromString("null"))))
+          else content.map((media, entry) => ResponseBody(Some(media), field(entry, "schema").getOrElse(Json.obj())))
+        ResponseCase(status, bodies)
+      }
+      Operation(id, method.toUpperCase, path, Vector(optionalText(declaration, "summary"), optionalText(declaration, "description")).filter(_.nonEmpty).mkString("\n"), parameters, body, responses)
     }
   }.sortBy(_.id)
   require(operations.map(_.id).distinct.size == operations.size, "Duplicate operationId")
+  val byId: Map[String, Operation] = operations.map(operation => operation.id -> operation).toMap
+
+  /** Dynamic calls share the same effect-independent Call/Executor API as generated clients. */
+  def call(operationId: String, input: Json = Json.obj()): Call[HttpResponse] =
+    val operation = byId.getOrElse(operationId, throw new IllegalArgumentException(s"Unknown operation: $operationId"))
+    Call(request(operation, input), response =>
+      if response.status >= 200 && response.status < 300 then Right(response) else Left(ClientError.Http(response)))
+
+  /** Self-contained JSON Schema suitable for a Code Mode tool or another dynamic consumer. */
+  def inputSchema(operation: Operation): Json =
+    def record(properties: Vector[(String, Json)], required: Vector[String]): Json = Json.obj(
+      "type" -> Json.fromString("object"), "properties" -> Json.fromFields(properties),
+      "required" -> Json.fromValues(required.map(Json.fromString)), "additionalProperties" -> Json.False)
+    val groups = Vector("path", "query", "header", "cookie").flatMap { location =>
+      val parameters = operation.parameters.filter(_.location == location)
+      Option.when(parameters.nonEmpty)(location -> record(parameters.map(p => p.name -> p.schema), parameters.filter(_.required).map(_.name)))
+    }
+    val required = groups.map(_._1).filter(location => operation.parameters.exists(p => p.location == location && p.required)) ++
+      operation.body.filter(_.required).map(_ => "body")
+    standalone(record(groups ++ operation.body.map(body => "body" -> body.schema), required))
+
+  def outputSchema(operation: Operation): Json =
+    val bodies = operation.responses.filter(_.status.startsWith("2")).flatMap(_.bodies).map { body =>
+      if body.mediaType.exists(media => media != "application/json" && !media.endsWith("+json")) then Json.obj("type" -> Json.fromString("string")) else body.schema
+    }
+    standalone(Json.obj("type" -> Json.fromString("object"), "properties" -> Json.obj(
+      "status" -> Json.obj("type" -> Json.fromString("integer")),
+      "headers" -> Json.obj("type" -> Json.fromString("object"), "additionalProperties" -> Json.obj("type" -> Json.fromString("string"))),
+      "body" -> (if bodies.isEmpty then Json.obj() else Json.obj("anyOf" -> Json.fromValues(bodies)))),
+      "required" -> Json.arr(Json.fromString("status"), Json.fromString("headers"), Json.fromString("body"))))
+
+  def standalone(schema: Json): Json =
+    val definitions = scala.collection.mutable.LinkedHashMap.empty[String, Json]
+    def rewrite(value: Json): Json = value.arrayOrObject(value, items => Json.fromValues(items.map(rewrite)), fields =>
+      Json.fromFields(fields.toVector.map { (key, item) =>
+        if key != "$ref" then key -> rewrite(item)
+        else
+          val ref = item.asString.getOrElse(throw new IllegalArgumentException("Expected string $ref"))
+          val index = if definitions.contains(ref) then definitions.keysIterator.indexOf(ref) else
+            val next = definitions.size
+            definitions(ref) = Json.Null
+            definitions(ref) = rewrite(resolve(Json.obj("$ref" -> item)))
+            next
+          key -> Json.fromString(s"#/$$defs/ref$index")
+      }))
+    val result = rewrite(schema)
+    if definitions.isEmpty then result else result.mapObject(_.add("$defs", Json.fromFields(definitions.values.zipWithIndex.map((value, index) => s"ref$index" -> value))))
 
   def validate(raw: Json, value: Json, path: String, depth: Int = 0): Unit =
     require(depth < 256, s"$path: schema nesting is too deep")

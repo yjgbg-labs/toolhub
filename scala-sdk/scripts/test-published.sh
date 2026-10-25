@@ -16,7 +16,8 @@ for platform in jvm js native; do
     native) suffix=_native0.5_3 ;;
   esac
   set -- "$consumer/Main.scala" --scala 3.9.0 --repository "$repository_uri" --main-class consumer.PublishedCheck --suppress-outdated-dependency-warning
-  for module in sprout-client sprout-sdk-cats sprout-sdk-zio sprout-sdk-sttp; do
+  set -- "$@" --dep "$SDK_ORGANIZATION:$SDK_CLIENT_MODULE$suffix:$SDK_CLIENT_VERSION"
+  for module in sprout-sdk-generator sprout-sdk-cats sprout-sdk-zio sprout-sdk-sttp; do
     set -- "$@" --dep "$SDK_ORGANIZATION:$module$suffix:$SDK_VERSION"
   done
   case "$platform" in

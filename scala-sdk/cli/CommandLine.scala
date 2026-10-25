@@ -1,7 +1,7 @@
 package sprout.sdk.cli
 
 import io.circe.{Json, JsonObject}
-import sprout.sdk.{ClientError, HttpRequest, HttpResponse}
+import sprout.sdk.*
 import scala.collection.mutable
 
 /** Command discovery and invocation depend only on the live OpenAPI contract. */
@@ -12,7 +12,7 @@ object CommandLine:
     var operation: Option[Operation] = None
     var description: String = ""
 
-  def run(program: String, args: Vector[String], send: HttpRequest => HttpResponse, readJson: String => Json): String =
+  def run(program: String, args: Vector[String], executor: Executor[[A] =>> A], readJson: String => Json): String =
     // Consume option values before recognizing help: --name -h is a literal value.
     val rest = Vector.newBuilder[String]
     var showHelp = false
@@ -30,8 +30,7 @@ object CommandLine:
         rest += arg
         index += 1
 
-    val response = successful(send(HttpRequest("GET", "/openapi.json")))
-    val catalog = new Catalog(Catalog.parse(response.body))
+    val catalog = executor.execute(Catalog.discover())
     val root = new Node
     catalog.operations.foreach { operation =>
       var node = root
@@ -59,15 +58,11 @@ object CommandLine:
       help(node, path, program)
     else
       val operation = node.operation.get
-      val request = try catalog.request(operation, input(catalog, operation, remaining.drop(offset), readJson))
+      val call = try catalog.call(operation.id, input(catalog, operation, remaining.drop(offset), readJson))
       catch
         case error: IllegalArgumentException =>
           throw new IllegalArgumentException(s"${error.getMessage}\n${usage(node, path, program)}\nRun '$program ${path.mkString(" ")} --help' for details.")
-      render(successful(send(request)))
-
-  private def successful(response: HttpResponse): HttpResponse =
-    if response.status < 200 || response.status >= 300 then throw ClientError.Http(response)
-    response
+      render(executor.execute(call))
 
   private def render(response: HttpResponse): String =
     if response.body.isEmpty then ""

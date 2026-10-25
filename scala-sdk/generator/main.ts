@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { generate, generatedHeader } from "./generate";
+import { generateText, generatedHeader } from "./generate";
 
 export async function main(args: string[]): Promise<void> {
   const options = new Map<string, string>();
@@ -16,7 +16,7 @@ export async function main(args: string[]): Promise<void> {
     if (!response.ok) throw new Error(`OpenAPI fetch: HTTP ${response.status}`);
     return response.text();
   })() : await readFile(source, "utf8");
-  const files = generate(JSON.parse(text), options.get("--package")!);
+  const files = generateText(text, options.get("--package")!);
   const output = options.get("--output")!;
   // Validate ownership of every destination before touching any generated file.
   for (const name of Object.keys(files)) {

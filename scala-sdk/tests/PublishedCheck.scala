@@ -4,6 +4,7 @@ import cats.effect.{IO, IOApp}
 import zio.{Runtime, Unsafe, ZIO}
 import sprout.generated.{Calls, Client}
 import sprout.sdk.*
+import sprout.sdk.generator.Generator
 import sprout.sdk.cats.CatsExecutor
 import sprout.sdk.zio.ZioExecutor
 import sprout.sdk.sttp.{SttpExecutor, SttpTransport}
@@ -22,6 +23,11 @@ object PublishedCheck extends IOApp.Simple:
       catsResult <- catsClient.health()
       zioResult <- IO.fromFuture(IO(Unsafe.unsafe { implicit unsafe => Runtime.default.unsafe.runToFuture(zioClient.health()) }))
       _ <- IO {
+        val schema = Catalog.parse("""{"openapi":"3.1.0","info":{"title":"Independent","version":"1"},"paths":{"/probe":{"get":{"operationId":"probe","responses":{"204":{"description":"empty"}}}}}}""")
+        val catalog = new Catalog(schema)
+        assert(catalog.call("probe").request == HttpRequest("GET", "/probe"))
+        val generated = Generator.generate(catalog, "independent.client")
+        assert(generated("Client.scala").contains("def `probe`()"))
         assert(catsResult == "published" && zioResult == "published")
         sttpClient.schedule.delete("stub-only")
         assert(Calls.schedule.list().request.path == "/schedule/list")

@@ -61,63 +61,90 @@ jobs:
   - name: scala-sdk-install
     run: bun install --cwd scala-sdk --frozen-lockfile
   - name: scala-sdk-generate
-    run: bun scala-sdk/generator/main.ts --schema "${SDK_SCHEMA:-scala-sdk/openapi.json}" --package sprout.generated --output scala-sdk/generated/sprout
+    needs: [scala-sdk-generator-js]
+    run: |
+      . ./scala-sdk/config.env
+      bun scala-sdk/generator/main.ts --schema "${SDK_SCHEMA:-scala-sdk/openapi.json}" --package "$SDK_CLIENT_PACKAGE" --output "$SDK_CLIENT_SOURCES"
   - name: scala-sdk-fixtures
+    needs: [scala-sdk-generator-js]
     run: bun scala-sdk/generator/fixtures.ts
   - name: scala-sdk-generator-test
-    needs: [scala-sdk-install]
+    needs: [scala-sdk-install, scala-sdk-generator-js]
     run: |
       bun run --cwd scala-sdk check
       bun test scala-sdk/generator
+  - name: scala-sdk-generator-js
+    run: |
+      mkdir -p scala-sdk/dist
+      sh scala-sdk/scripts/scala.sh --power package scala-sdk/project.scala scala-sdk/sdk-core scala-sdk/sdk-generator scala-sdk/tools/GeneratorJs.scala --js --js-version 1.22.0 --js-module-kind es -o scala-sdk/dist/generator.mjs --force
+  - name: scala-sdk-generator-jvm
+    run: |
+      mkdir -p scala-sdk/dist
+      sh scala-sdk/scripts/scala.sh --power package scala-sdk/project.scala scala-sdk/sdk-core scala-sdk/sdk-generator scala-sdk/tools/GeneratorMain.scala --assembly --preamble=false --main-class sprout.sdk.tools.GeneratorMain -o scala-sdk/dist/generator.jar --force
+  - name: scala-sdk-generator-native
+    needs: [scala-sdk-native-tools]
+    run: |
+      mkdir -p scala-sdk/dist
+      sh scala-sdk/scripts/native.sh --power package scala-sdk/project.scala scala-sdk/sdk-core scala-sdk/sdk-generator scala-sdk/tools/GeneratorMain.scala --main-class sprout.sdk.tools.GeneratorMain -o scala-sdk/dist/generator-native --force
+  - name: scala-sdk-generator-platform-test
+    needs: [scala-sdk-generator-js, scala-sdk-generator-jvm, scala-sdk-generator-native]
+    run: bun scala-sdk/tests/generator-platforms.ts
   - name: scala-sdk-native-tools
     run: sh scala-sdk/scripts/native.sh --setup
   - name: scala-sdk-test-jvm
     needs: [scala-sdk-generate, scala-sdk-fixtures, scala-sdk-generator-test]
-    run: sh scala-sdk/scripts/scala.sh run scala-sdk/project.scala scala-sdk/core scala-sdk/adapters/cats scala-sdk/adapters/zio scala-sdk/adapters/sttp scala-sdk/generated scala-sdk/tests/Check.scala --main-class sprout.sdk.tests.Check
+    run: sh scala-sdk/scripts/scala.sh run scala-sdk/project.scala scala-sdk/sdk-core scala-sdk/adapters/cats scala-sdk/adapters/zio scala-sdk/adapters/sttp scala-sdk/generated scala-sdk/tests/Check.scala --main-class sprout.sdk.tests.Check
   - name: scala-sdk-test-js
     needs: [scala-sdk-generate, scala-sdk-fixtures, scala-sdk-generator-test]
     run: |
       mkdir -p scala-sdk/dist
-      sh scala-sdk/scripts/scala.sh --power package scala-sdk/project.scala scala-sdk/core scala-sdk/adapters/cats scala-sdk/adapters/zio scala-sdk/adapters/sttp scala-sdk/generated scala-sdk/tests/Check.scala --main-class sprout.sdk.tests.Check --js --js-module-kind commonjs -o scala-sdk/dist/check.cjs --force
+      sh scala-sdk/scripts/scala.sh --power package scala-sdk/project.scala scala-sdk/sdk-core scala-sdk/adapters/cats scala-sdk/adapters/zio scala-sdk/adapters/sttp scala-sdk/generated scala-sdk/tests/Check.scala --main-class sprout.sdk.tests.Check --js --js-module-kind commonjs -o scala-sdk/dist/check.cjs --force
       bun scala-sdk/dist/check.cjs
   - name: scala-sdk-test-native
     needs: [scala-sdk-generate, scala-sdk-fixtures, scala-sdk-generator-test, scala-sdk-native-tools]
     run: |
       mkdir -p scala-sdk/dist
-      sh scala-sdk/scripts/native.sh --power package scala-sdk/project.scala scala-sdk/core scala-sdk/adapters/cats scala-sdk/adapters/zio scala-sdk/adapters/sttp scala-sdk/generated scala-sdk/tests/Check.scala --main-class sprout.sdk.tests.Check -o scala-sdk/dist/check-native --force
+      sh scala-sdk/scripts/native.sh --power package scala-sdk/project.scala scala-sdk/sdk-core scala-sdk/adapters/cats scala-sdk/adapters/zio scala-sdk/adapters/sttp scala-sdk/generated scala-sdk/tests/Check.scala --main-class sprout.sdk.tests.Check -o scala-sdk/dist/check-native --force
       scala-sdk/dist/check-native
   - name: scala-sdk-native-cli
     needs: [scala-sdk-native-tools]
     run: |
       mkdir -p scala-sdk/dist
-      sh scala-sdk/scripts/native.sh --power package scala-sdk/project.scala scala-sdk/core scala-sdk/adapters/sttp scala-sdk/adapters/native scala-sdk/cli --main-class sprout.sdk.cli.NativeCli -o scala-sdk/dist/sprout-native --force
+      sh scala-sdk/scripts/native.sh --power package scala-sdk/project.scala scala-sdk/sdk-core scala-sdk/adapters/sttp scala-sdk/adapters/native scala-sdk/cli --main-class sprout.sdk.cli.NativeCli -o scala-sdk/dist/sprout-native --force
   - name: scala-sdk-native-cli-test
     needs: [scala-sdk-native-cli]
     run: bun scala-sdk/tests/native-cli.ts
+  - name: scala-sdk-native-cli-upload
+    needs: [scala-sdk-native-cli-test]
+    run: sh scala-sdk/scripts/native-release.sh upload
+  - name: scala-sdk-native-cli-install
+    needs: [scala-sdk-native-cli-upload]
+    run: sh scala-sdk/scripts/native-release.sh install-built
+  - name: scala-sdk-cli-benchmark
+    needs: [scala-sdk-native-cli, client-build]
+    run: bun scala-sdk/scripts/benchmark-cli.ts
   - name: scala-sdk-http-jvm
     needs: [scala-sdk-generate]
     run: |
       mkdir -p scala-sdk/dist
-      sh scala-sdk/scripts/scala.sh --power package scala-sdk/project.scala scala-sdk/core scala-sdk/adapters/cats scala-sdk/adapters/sttp scala-sdk/generated/sprout scala-sdk/tests/HttpCheck.scala --assembly --preamble=false --main-class sprout.sdk.tests.HttpCheck -o scala-sdk/dist/http-check.jar --force
+      sh scala-sdk/scripts/scala.sh --power package scala-sdk/project.scala scala-sdk/sdk-core scala-sdk/adapters/cats scala-sdk/adapters/sttp scala-sdk/generated/sprout scala-sdk/tests/HttpCheck.scala --assembly --preamble=false --main-class sprout.sdk.tests.HttpCheck -o scala-sdk/dist/http-check.jar --force
   - name: scala-sdk-http-js
     needs: [scala-sdk-generate]
     run: |
       mkdir -p scala-sdk/dist
-      sh scala-sdk/scripts/scala.sh --power package scala-sdk/project.scala scala-sdk/core scala-sdk/adapters/cats scala-sdk/adapters/sttp scala-sdk/generated/sprout scala-sdk/tests/HttpCheck.scala --js --js-module-kind commonjs --main-class sprout.sdk.tests.HttpCheck -o scala-sdk/dist/http-check.cjs --force
+      sh scala-sdk/scripts/scala.sh --power package scala-sdk/project.scala scala-sdk/sdk-core scala-sdk/adapters/cats scala-sdk/adapters/sttp scala-sdk/generated/sprout scala-sdk/tests/HttpCheck.scala --js --js-module-kind commonjs --main-class sprout.sdk.tests.HttpCheck -o scala-sdk/dist/http-check.cjs --force
   - name: scala-sdk-integration-test
     needs: [scala-sdk-native-cli, scala-sdk-http-jvm, scala-sdk-http-js]
     run: bun scala-sdk/tests/integration.ts
   - name: scala-sdk-test
-    needs: [scala-sdk-test-jvm, scala-sdk-test-js, scala-sdk-test-native, scala-sdk-integration-test, scala-sdk-native-cli-test]
+    needs: [scala-sdk-test-jvm, scala-sdk-test-js, scala-sdk-test-native, scala-sdk-integration-test, scala-sdk-native-cli-test, scala-sdk-generator-platform-test]
     run: ':'
   - name: scala-sdk-publish-local-jvm
-    needs: [scala-sdk-generate]
     run: sh scala-sdk/scripts/publish-local.sh jvm
   - name: scala-sdk-publish-local-js
-    needs: [scala-sdk-generate]
     run: sh scala-sdk/scripts/publish-local.sh js
   - name: scala-sdk-publish-local-native
-    needs: [scala-sdk-generate, scala-sdk-native-tools]
+    needs: [scala-sdk-native-tools]
     run: sh scala-sdk/scripts/publish-local.sh native
   - name: scala-sdk-publish-local
     needs: [scala-sdk-publish-local-jvm, scala-sdk-publish-local-js, scala-sdk-publish-local-native]
@@ -125,10 +152,24 @@ jobs:
       set -a
       . ./scala-sdk/config.env
       set +a
-      bun scala-sdk/scripts/verify-artifacts.ts
+      bun scala-sdk/scripts/verify-artifacts.ts protocol
+  - name: scala-sdk-publish-client-local-jvm
+    needs: [scala-sdk-generate]
+    run: sh scala-sdk/scripts/publish-local.sh jvm client
+  - name: scala-sdk-publish-client-local-js
+    needs: [scala-sdk-generate]
+    run: sh scala-sdk/scripts/publish-local.sh js client
+  - name: scala-sdk-publish-client-local-native
+    needs: [scala-sdk-generate, scala-sdk-native-tools]
+    run: sh scala-sdk/scripts/publish-local.sh native client
+  - name: scala-sdk-publish-client-local
+    needs: [scala-sdk-publish-client-local-jvm, scala-sdk-publish-client-local-js, scala-sdk-publish-client-local-native]
+    run: ':'
   - name: scala-sdk-published-test
     needs: [scala-sdk-publish-local, scala-sdk-native-tools]
-    run: sh scala-sdk/scripts/test-published.sh
+    run: |
+      groot jobs scala-sdk-publish-client-local
+      groot jobs scala-sdk-test-installed
   - name: scala-sdk-test-installed
     needs: [scala-sdk-native-tools]
     run: |

@@ -4,6 +4,8 @@ sdk=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 . "$sdk/config.env"
 
 platform=${1:?Expected jvm, js or native}
+scope=${2:-protocol}
+case "$scope" in protocol|client) : ;; *) echo "Expected protocol or client" >&2; exit 1 ;; esac
 case "$platform" in
   jvm) suffix=_3 ;;
   js) suffix=_sjs1_3 ;;
@@ -19,9 +21,28 @@ organization_path=$(printf '%s' "$SDK_ORGANIZATION" | tr . /)
 publish() {
   name=$1
   sources=$2
+  version=$SDK_VERSION
+  if [ "$scope" = client ]; then version=$SDK_CLIENT_VERSION; fi
+  base="$repository/$organization_path/$name$suffix/$version/$name$suffix-$version"
+  # Released protocol/tooling artifacts are immutable. Business publishing never
+  # calls this branch and cannot republish the core, adapters or generator.
+  if [ -f "$base.jar" ]; then
+    case "$version" in
+      *-SNAPSHOT) : ;;
+      *)
+        for file in "$base.jar" "$base-sources.jar" "$base.pom"; do
+          expected=$(cat "$file.sha256")
+          actual=$(sha256sum "$file" | cut -d ' ' -f 1)
+          test "$actual" = "$expected"
+        done
+        printf 'Already published: %s:%s (immutable)\n' "$name$suffix" "$version"
+        return
+        ;;
+    esac
+  fi
   set -- --power publish "$sdk/project.scala" "$sources" \
     --organization "$SDK_ORGANIZATION" --module-name "$name$suffix" \
-    --project-version "$SDK_VERSION" --publish-repository "$repository" \
+    --project-version "$version" --publish-repository "$repository" \
     --repository "$repository_uri" --sources-jar --doc=false --signer none \
     --workspace "$sdk/.scala-build/publish/$platform/$name" \
     --suppress-directives-in-multiple-files-warning --suppress-outdated-dependency-warning
@@ -44,18 +65,21 @@ publish() {
   fi
 
   # Keep SHA-256 alongside Scala CLI's standard Maven POM/JAR checksums.
-  base="$repository/$organization_path/$name$suffix/$SDK_VERSION/$name$suffix-$SDK_VERSION"
   for file in "$base.jar" "$base-sources.jar" "$base.pom"; do
     sha256sum "$file" | cut -d ' ' -f 1 > "$file.sha256"
   done
 }
 
-publish sprout-sdk-core "$sdk/core"
-publish sprout-client "$sdk/generated/sprout"
-publish sprout-sdk-cats "$sdk/adapters/cats"
-publish sprout-sdk-zio "$sdk/adapters/zio"
-publish sprout-sdk-sttp "$sdk/adapters/sttp"
-if [ "$platform" = native ]; then
-  publish sprout-sdk-native-unix "$sdk/adapters/native"
+if [ "$scope" = client ]; then
+  publish "$SDK_CLIENT_MODULE" "$SDK_CLIENT_SOURCES"
+else
+  publish sprout-sdk-core "$sdk/sdk-core"
+  publish sprout-sdk-generator "$sdk/sdk-generator"
+  publish sprout-sdk-cats "$sdk/adapters/cats"
+  publish sprout-sdk-zio "$sdk/adapters/zio"
+  publish sprout-sdk-sttp "$sdk/adapters/sttp"
+  if [ "$platform" = native ]; then
+    publish sprout-sdk-native-unix "$sdk/adapters/native"
+  fi
 fi
-printf 'Published %s artifacts to %s (%s:%s)\n' "$platform" "$repository" "$SDK_ORGANIZATION" "$SDK_VERSION"
+printf 'Published %s %s artifacts to %s\n' "$scope" "$platform" "$repository"
