@@ -190,6 +190,46 @@ Core requires no Monad, Functor, Cats Effect or ZIO. `Call` is an immutable requ
 plus decoder; `Executor[F]` decides how it is run. Circe brings Cats Core
 transitively but does not choose an effect runtime.
 
+For sttp backends, `SttpClient.connect` combines transport, executor and discovery:
+
+```scala
+import sprout.sdk.Catalog
+import sprout.sdk.sttp.SttpClient
+import _root_.sttp.client4.DefaultSyncBackend
+
+val backend = DefaultSyncBackend() // Backend[Identity], JVM or Native
+try
+  val client = SttpClient.connect(backend, "http://localhost:8080")
+  val response = client.call("schedule.new", Catalog.parse("""{
+    "query": {"name": "hello"},
+    "body": {"command": ["echo", "hi"], "every": "1h"}
+  }"""))
+  println(response.body)
+finally backend.close()
+```
+
+The signature is `connect[F[_]](backend: Backend[F], baseUrl: String, ...):
+F[DynamicClient[F]]`. `F` is inferred from the backend: `Identity` returns a client
+directly; `Future` returns `Future[DynamicClient[Future]]`; a Cats Effect `IO`
+backend returns `IO[DynamicClient[IO]]`. This factory is in the sttp adapter; it
+requires no additional effect type class from callers. For an `IO` backend:
+
+```scala
+val result = for
+  client <- SttpClient.connect(backend, baseUrl)
+  response <- client.call("schedule.new", input)
+yield response
+```
+
+`connect` accepts optional `headers`, `timeout` and `schemaPath`. Headers and timeout
+apply to both discovery and subsequent calls. Discovery HTTP/decode failures use
+the backend's effect error channel (exceptions for `Identity`); the caller owns
+backend cleanup even if discovery fails. Reuse the client to reuse its catalog.
+This convenience API is available in source; the published `0.2.0` adapter does
+not include it yet.
+
+For an application-owned transport, the lower-level API remains available:
+
 ```scala
 import sprout.sdk.*
 import sprout.sdk.cats.CatsExecutor

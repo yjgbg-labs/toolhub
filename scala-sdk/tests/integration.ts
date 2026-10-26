@@ -52,8 +52,8 @@ try {
     assert.equal(code, 0, `${command.join(" ")}\n${stdout}\n${stderr}`);
     assert.match(stdout, /HTTP integration passed/);
   }
-  assert.equal(requests.filter(request => request === "GET /openapi.json").length, 8);
-  assert.equal(requests.length, 24);
+  assert.equal(requests.filter(request => request === "GET /openapi.json").length, 10);
+  assert.equal(requests.length, 30);
   console.log("SDK HTTP integration passed: JVM HttpClient, JS Fetch, Native Curl + Unix Socket; JSON POST, UTF-8 and HTTP errors");
 } finally {
   await unix.stop(true);

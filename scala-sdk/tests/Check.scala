@@ -6,6 +6,9 @@ import io.circe.Json
 import sprout.sdk.*
 import sprout.sdk.cats.CatsExecutor
 import sprout.sdk.zio.ZioExecutor
+import sprout.sdk.sttp.SttpClient
+import _root_.sttp.client4.testing.BackendStub
+import _root_.sttp.shared.Identity
 import sprout.generated.{Calls, Client, ScheduleJob}
 import sprout.fixture.*
 
@@ -32,6 +35,11 @@ object Check extends IOApp.Simple:
       val discovery = Catalog.discover()
       assert(discovery.request == HttpRequest("GET", "/openapi.json"))
       val catalog = discovery.decode(response(200, document.noSpaces)).toOption.get
+      val backend = BackendStub.synchronous
+        .whenRequestMatches(_.uri.path.lastOption.contains("openapi.json")).thenRespondAdjust(document.noSpaces)
+        .whenAnyRequest.thenRespondAdjust("updated")
+      val connected: DynamicClient[Identity] = SttpClient.connect(backend, "http://unused.invalid")
+      assert(connected.call("items.edit", Catalog.parse("""{"path":{"id":"item"},"body":{"id":1}}""")).body == "updated")
       val dynamic = catalog.call("items.edit", Catalog.parse("""{"path":{"id":"a /空+"},"body":{"id":9223372036854775807,"child":{"id":2}}}"""))
       assert(dynamic.request.method == "PATCH" && dynamic.request.path == "/items/a%20%2F%E7%A9%BA%2B")
       assert(dynamic.request.body.get.contains("9223372036854775807"))
