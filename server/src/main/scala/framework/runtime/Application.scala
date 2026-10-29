@@ -96,7 +96,10 @@ final class Application private[framework] (
           endpoint.run(context).map { result =>
             val output = endpoint.outputs.getOrElse(result.key, throw new IllegalArgumentException("Response belongs to a different endpoint"))
             (output.mediaType, result.payload) match
-              case (Some(mediaType), Some(payload)) => textResponse(output.status, payload, mediaType)
+              case (Some(mediaType), Some(ResponseBody.Text(payload))) => textResponse(output.status, payload, mediaType)
+              case (Some(mediaType), Some(ResponseBody.Streaming(bytes))) =>
+                Response[IO](Status.fromInt(output.status).toOption.get).withBodyStream(bytes)
+                  .putHeaders(Header.Raw(CIString("Content-Type"), mediaType), Header.Raw(CIString("Cache-Control"), "no-cache"))
               case (None, None) => Response[IO](Status.fromInt(output.status).toOption.get)
               case _ => throw new IllegalStateException("Response does not match its declaration")
           }

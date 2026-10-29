@@ -30,6 +30,8 @@ framework/
 ├── rpc/
 │   ├── Scopes.scala
 │   ├── Metadata.scala
+│   ├── PlainText.scala
+│   ├── SSE.scala
 │   └── SuccessResponse.scala
 └── runtime/
     └── Application.scala
@@ -124,11 +126,12 @@ val app = httpApp {
 - Both `commands` and `command` take one name matching `[A-Za-z][A-Za-z0-9_-]*`.
   The nesting determines the path and operationId; names cannot contain dots
   or slashes. For example, `commands("users") { command[String]("get") { ... } }`
-  produces `/users/get` and `users.get`. A root `command[String]("health")`
+  produces `/users/get` and `users.get`. A root `command[PlainText]("health")`
   produces `/health` and `health`. Commands are leaves and cannot contain groups
   or other commands.
 - `command[A]` declares the HTTP 200 result type. Its handler returns `IO[A]`.
-  `String` produces text, `Unit` an empty body, and other `JsonModel` types JSON.
+  `PlainText` produces `text/plain`, `Unit` an empty body, `SSE[A]` an event stream,
+  and `JsonModel` types (including ordinary `String`) JSON.
 - `param[A]("name", "description") { ... }` declares a query parameter.
   `default`, numeric/string constraints, optional values and repeated query
   values work as in the HTTP DSL. The configuration block is optional.
@@ -139,6 +142,69 @@ val app = httpApp {
   commands. An optional/defaulted body still selects POST.
 - `CommandScope[A] extends CommandsScope`: reusable parameter and middleware
   declarations accept `CommandsScope`; only `CommandScope[A]` permits `handle`.
+
+### Plain text and JSON strings
+
+`PlainText` is an opaque `String` subtype (`opaque type PlainText <: String = String`).
+Construct it explicitly with `PlainText(value)`; it can be used wherever a `String`
+is expected, but a `String` does not implicitly become a `PlainText`.
+
+```scala
+command[PlainText]("health") { handle { IO.pure(PlainText("ok")) } }
+command[String]("label") { handle { IO.pure("ok") } }
+```
+
+`health` returns the bytes `ok` as `text/plain`; `label` returns `"ok"` as
+`application/json`. The health and scheduler log endpoints use `PlainText`.
+
+### Server-sent events
+
+`SSE[A]` wraps `fs2.Stream[IO, A]`. A `SuccessResponse[SSE[A]]` is available when
+`A` has a non-streaming `SuccessResponse`; nested SSE streams are rejected.
+
+```scala
+import cats.effect.IO
+import fs2.Stream
+import framework.rpcDsl.*
+import scala.concurrent.duration.*
+
+case class Tick(value: Long) derives JsonModel
+
+val app = httpApp {
+  command[SSE[Tick]]("ticks") {
+    handle { IO.pure(SSE(Stream.awakeEvery[IO](1.second).zipWithIndex.map { case (_, n) => Tick(n) })) }
+  }
+  command[SSE[PlainText]]("messages") {
+    handle { IO.pure(SSE(Stream.emits(List[PlainText](PlainText("hello"), PlainText("world"))).covary[IO])) }
+  }
+}
+```
+
+When building plaintext collections or streams, retain the element type explicitly
+(for example, `List[PlainText](...)` or `.map[PlainText](PlainText(_))`) so Scala
+does not widen it to `String`.
+
+Responses use `text/event-stream` with `Cache-Control: no-cache`. Every element
+becomes one standard SSE event, terminated by a blank line:
+
+```text
+data: {"value":0}
+
+data: {"value":1}
+
+```
+
+JSON values use compact JSON; ordinary `String` values are quoted JSON strings.
+`PlainText` is unquoted, and embedded CR/LF line endings are normalized into
+multiple `data:` lines within the same event. Empty text or `Unit` produces an
+empty data event. OpenAPI 3.1 describes the wire body as a string under
+`text/event-stream`, not a JSON array.
+
+The stream is consumed lazily with backpressure, without collecting it into
+memory. Put resource acquisition/finalizers inside the stream so cancellation
+and client disconnect release them. Handler errors before the response is
+returned can be recovered normally. Once body streaming starts, failures
+terminate the stream; handle them in the source stream if an error event is needed.
 
 ## Documentation text
 
@@ -191,6 +257,26 @@ Both DSLs retain `middleware(Handler => Handler)`, shared declarations and
 `Output.raise`. Inputs are decoded and validated before middleware. Middleware
 nests from root to endpoint, with the first declaration outermost. A declared
 response can short-circuit a typed command using `response.raise(payload)`.
+
+The RPC DSL also provides
+`recover(handler: RequestContext ?=> PartialFunction[Throwable, EndpointResult])(using CommandsScope)`:
+
+```scala
+commands("users") {
+  val missing = response.json[framework.http.ErrorBody](404) {}
+  recover {
+    case error: NoSuchElementException =>
+      missing(framework.http.ErrorBody("not_found", error.getMessage))
+  }
+  command[Int]("get") { handle { IO.raiseError(new NoSuchElementException("missing user")) } }
+}
+```
+
+Recovery inherits the same scope, ordering and request context as middleware,
+including access to parameter `.value`. The partial function returns a declared
+response value (not an `IO`); unmatched exceptions propagate to outer recovery
+and ultimately the framework's HTTP 500 response. Deliberately raised responses
+are already successful results when they reach recovery.
 
 ### Non-200 responses
 

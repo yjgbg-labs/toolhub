@@ -39,9 +39,10 @@ class CommandResultSuite extends CatsEffectSuite:
       assertEquals(effectBody, JsonModel[Page[User]].encoder(Page(List(user))))
   }
 
-  test("String is text, Unit is empty and nullable and scalar JSON keep their declared schemas") {
+  test("PlainText is text, String is JSON, Unit is empty and scalar schemas match the wire") {
     val app = httpApp {
-      command[String]("text") { handle { IO.pure("literal \"text\"\n") } }
+      command[PlainText]("text") { handle { IO.pure(PlainText("literal \"text\"\n")) } }
+      command[String]("string") { handle { IO.pure("literal \"text\"\n") } }
       command[Unit]("empty") { handle { IO.unit } }
       command[Option[User]]("nullable") { handle { IO.pure(None) } }
       command[Int]("count") { handle { IO.pure(7) } }
@@ -49,11 +50,14 @@ class CommandResultSuite extends CatsEffectSuite:
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
     def success(path: String) = doc.hcursor.downField("paths").downField(path).downField("get").downField("responses").downField("200")
     assertEquals(success("/text").downField("content").downField("text/plain").downField("schema").get[String]("type"), Right("string"))
+    assertEquals(success("/string").downField("content").downField("application/json").downField("schema").get[String]("type"), Right("string"))
     assert(!success("/empty").downField("content").succeeded)
     assertEquals(success("/count").downField("content").downField("application/json").downField("schema").get[String]("type"), Right("integer"))
     for
       text <- app.httpApp(request("/text"))
       textBody <- text.as[String]
+      string <- app.httpApp(request("/string"))
+      stringBody <- string.as[String]
       empty <- app.httpApp(request("/empty"))
       emptyBody <- empty.as[String]
       nullable <- app.httpApp(request("/nullable")).flatMap(_.as[Json])
@@ -62,6 +66,8 @@ class CommandResultSuite extends CatsEffectSuite:
       assertEquals(text.status, Status.Ok)
       assertEquals(text.headers.get[`Content-Type`].map(_.mediaType), Some(org.http4s.MediaType.text.plain))
       assertEquals(textBody, "literal \"text\"\n")
+      assertEquals(string.headers.get[`Content-Type`].map(_.mediaType), Some(org.http4s.MediaType.application.json))
+      assertEquals(stringBody, Json.fromString("literal \"text\"\n").noSpaces)
       assertEquals(empty.status, Status.Ok)
       assertEquals(emptyBody, "")
       assertEquals(empty.headers.get[`Content-Type`], None)

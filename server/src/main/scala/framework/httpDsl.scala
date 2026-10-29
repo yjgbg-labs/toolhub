@@ -138,10 +138,10 @@ object httpDsl:
 
   object response:
     def json[A](status: Int)(init: ResponseScope ?=> Unit)(using model: JsonModel[A], scope: DeclarationScope): Output[A] =
-      scope.output[A](status, Some("application/json"), Some(model.schema), value => Some(model.encoder(value).noSpaces)).configure(init)
+      scope.output[A](status, Some("application/json"), Some(model.schema), value => Some(ResponseBody.Text(model.encoder(value).noSpaces))).configure(init)
 
     def text(status: Int)(init: ResponseScope ?=> Unit)(using scope: DeclarationScope): Output[String] =
-      scope.output[String](status, Some("text/plain"), Some(JsonModel[String].schema), value => Some(value)).configure(init)
+      scope.output[String](status, Some("text/plain"), Some(JsonModel[String].schema), value => Some(ResponseBody.Text(value))).configure(init)
 
     def empty(status: Int)(init: ResponseScope ?=> Unit)(using scope: DeclarationScope): Output[Unit] =
       scope.output[Unit](status, None, None, _ => None).configure(init)

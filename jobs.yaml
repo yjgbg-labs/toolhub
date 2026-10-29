@@ -32,7 +32,6 @@ jobs:
       fi
       case "${SERVER_SHA256:-}" in *[!a-f0-9]*|'') exit 1 ;; esac
       test "${#SERVER_SHA256}" -eq 64
-      test "$SPROUT_PORT" -ge 1 && test "$SPROUT_PORT" -le 65535
       test "$SERVER_START_TIMEOUT_MS" -gt 0
       unit="$SYSTEMD_UNIT_DIR/$SERVER_SERVICE"
       current="$SERVER_INSTALL_ROOT/server/current"
@@ -74,7 +73,6 @@ jobs:
       Type=simple
       WorkingDirectory=$(printf '%s' "$SERVER_INSTALL_ROOT/server" | sed 's/%/%%/g')
       Environment=$(quote "PATH=$(dirname "$(command -v bun)"):$(dirname "$groot"):/usr/local/bin:/usr/bin:/bin")
-      Environment=$(quote "SPROUT_PORT=$SPROUT_PORT")
       Environment=$(quote "SPROUT_HOME=$SPROUT_HOME")
       ExecStart=$(exec_quote "$groot") use-jdk "$JDK_MAJOR" -- java -XX:ActiveProcessorCount=4 -jar $(exec_quote "$current/groot.jar")
       UMask=0077
@@ -94,13 +92,13 @@ jobs:
       systemctl --user enable "$SERVER_SERVICE"
       systemctl --user restart "$SERVER_SERVICE"
       deadline=$(($(date +%s) + (SERVER_START_TIMEOUT_MS + 999) / 1000))
-      until [ "$(curl -fsS --max-time 2 "http://127.0.0.1:$SPROUT_PORT/health" 2>/dev/null)" = ok ]; do
+      until [ "$(curl -fsS --max-time 2 "http://127.0.0.1:$SERVER_PORT/health" 2>/dev/null)" = ok ]; do
         test "$(date +%s)" -lt "$deadline" || { echo 'Server health check timed out' >&2; exit 1; }
         sleep 0.25
       done
       systemctl --user is-active --quiet "$SERVER_SERVICE"
       systemctl --user is-enabled "$SERVER_SERVICE"
-      printf 'Installed server %s at 0.0.0.0:%s\n' "$SERVER_SHA256" "$SPROUT_PORT"
+      printf 'Installed server %s at 0.0.0.0:%s\n' "$SERVER_SHA256" "$SERVER_PORT"
 
   - name: cli-deploy
     run: |

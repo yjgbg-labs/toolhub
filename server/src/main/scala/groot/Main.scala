@@ -9,7 +9,7 @@ object Main extends IOApp.Simple:
     val app = httpApp {
       server {
         host("0.0.0.0")
-        port(sys.env.get("SPROUT_PORT").filter(_.nonEmpty).getOrElse("18080").toInt)
+        port(18080)
       }
 
       openapi {
@@ -21,8 +21,8 @@ object Main extends IOApp.Simple:
       }
 
       ScheduleRoutes.register(scheduler)
-      command[String]("health") {
-        handle { IO.pure("ok") }
+      command[PlainText]("health") {
+        handle { IO.pure(PlainText("ok")) }
       }
     }
     app.serve
