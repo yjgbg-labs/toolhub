@@ -257,5 +257,6 @@ Scheduled job names now use `?name=...` instead of a path segment. Consequently,
 CLI calls use `sprout schedule log --name example`, and Code Mode/client inputs
 use `{ query: { name: "example" } }`. The health endpoint is now `GET /health`.
 
-Run server checks from the repository root with `groot jobs server-test`; use
-`groot jobs integration-test` for the real server, CLI and plugin integration.
+Run server checks from the repository root with `groot jobs server-test` and
+deploy with `groot jobs server-deploy`. See [the project README](../README.md)
+for the independent Native CLI and OpenCode plugin workflows.

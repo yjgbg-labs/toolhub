@@ -1,10 +1,10 @@
 import { afterAll, expect, test } from "bun:test";
-import { ApiClient, Catalog } from "@sprout/cli/api";
+import { ApiClient, Catalog } from "../src/api";
 import type { Plugin } from "@opencode/plugin";
 import type { Info, ToolEditor, ToolContext } from "@opencode/plugin/promise/tool";
 import plugin from "../src/index";
 import { operationTools } from "../src/tools";
-import { document, fixture } from "../../cli/test/fixture";
+import { document, fixture } from "./fixture";
 
 const api = fixture();
 afterAll(() => api.server.stop(true));
