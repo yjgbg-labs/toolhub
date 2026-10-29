@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { resolve } from "node:path";
 
-const binary = resolve("cli/dist/sprout-native");
+const binary = resolve("cli/dist/groot-cli");
 const encode = (value: string) => new TextEncoder().encode(value);
 const headers = { "Content-Type": "Text/Event-Stream; charset=utf-8" };
 
