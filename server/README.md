@@ -339,7 +339,7 @@ in a `routes` block containing the relevant endpoints. Nested grouping belongs
 to RPC `commands`.
 
 Scheduled job names now use `?name=...` instead of a path segment. Consequently,
-CLI calls use `sprout schedule log --name example`, and Code Mode/client inputs
+CLI calls use `groot-cli schedule log --name example`, and Code Mode/client inputs
 use `{ query: { name: "example" } }`. The health endpoint is now `GET /health`.
 
 Run server checks from the repository root with `groot jobs server-test` and

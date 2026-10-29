@@ -27,7 +27,7 @@ CLI 的动态协议实现直接编入 Native 可执行文件；插件打成独�
 | --- | --- |
 | `groot jobs server-test` | Scala 服务端测试和服务部署检查 |
 | `groot jobs server-deploy` | 服务端测试 → JAR 构建 → S3 上传 → 下载校验 → user service 安装及健康检查 |
-| `groot jobs cli-deploy` | Native 编译 → CLI/安装检查 → S3 上传 → 下载校验 → 安装 `sprout` 和 `sprout-native` |
+| `groot jobs cli-deploy` | Native 编译 → CLI/安装检查 → S3 上传 → 下载校验 → 安装 `groot-cli` 和兼容入口 `sprout` |
 | `groot jobs pluging-deploy` | 插件依赖安装 → 类型检查 → bundle 构建 → 测试 → S3 上传 → 下载校验 → 安装 OpenCode 插件 |
 
 `pluging-deploy` 是任务的实际名称。每个组件独立部署，只处理自身制品。
@@ -41,7 +41,7 @@ CLI 的动态协议实现直接编入 Native 可执行文件；插件打成独�
 
 ```text
 server/<sha256>/groot.jar
-native-cli/<sha256>/sprout-native
+native-cli/<sha256>/groot-cli
 plugin/<sha256>/index.js
 ```
 
@@ -50,7 +50,7 @@ plugin/<sha256>/index.js
 
 - S3 下载：`http://s3.yjgbg.lab:9000/public/sprout-http`
 - 服务端：`~/.local/share/sprout-http`；user unit：`groot-sprout-http.service`
-- CLI：`~/.local/share/sprout-native`；命令入口：`~/.local/bin/sprout`
+- CLI：`~/.local/share/groot-cli`；命令入口：`~/.local/bin/groot-cli`（兼容别名 `sprout`）
 - 插件：`~/.local/share/sprout-plugin`；入口：`~/.config/opencode/plugins/sprout.ts`
 
 可通过同名环境变量覆盖 S3 地址和安装路径。开发环境需要 Bun、groot、JDK 25、
@@ -60,9 +60,9 @@ Scala CLI、curl 和 mc；Native 编译还需要 Clang 和 libcurl 等开发库�
 ## 使用
 
 ```sh
-sprout --help
-sprout health
-sprout schedule new --name hello --body '{"command":["echo","hi"],"every":"1h"}'
+groot-cli --help
+groot-cli health
+groot-cli schedule new --name hello --body '{"command":["echo","hi"],"every":"1h"}'
 ```
 
 服务端固定监听 `0.0.0.0:18080`，不读取端口环境变量；CLI 和插件默认连接

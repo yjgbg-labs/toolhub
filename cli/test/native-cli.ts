@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 
 // Deliberately unrelated to Sprout's business API. The very same binary is also
 // tested after changing the live contract without rebuilding.
-const binary = resolve(process.argv[2] ?? "cli/dist/sprout-native");
+const binary = resolve(process.argv[2] ?? "cli/dist/groot-cli");
 const directory = await mkdtemp("/tmp/opencode/native-cli-");
 const string = { type: "string" };
 const responses = { "200": { description: "Result", content: { "application/json": { schema: {} } } } };
@@ -104,6 +104,7 @@ try {
     assert.match(await ok([]), /greeting/);
     assert.match(await ok(["inventory", "parts"]), /Manage parts/);
     const help = await ok(["inventory", "parts", "revise", "--help"]);
+    assert.ok(help.startsWith(`Usage: ${basename(binary)} inventory parts revise`));
     assert.match(help, /PATCH \/v2\/parts\/\{part\}/);
     assert.match(help, /--limit <integer>.*default 5/);
     assert.match(help, /--header.token <string>/);

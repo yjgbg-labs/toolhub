@@ -123,18 +123,18 @@ jobs:
         export COURSIER_REPOSITORIES=https://repo.maven.apache.org/maven2
         mkdir -p cli/dist
         groot use-jdk "$JDK_MAJOR" -- scala-cli --power package cli/project.scala cli/src/main/scala \
-          --native --native-version 0.5.12 --jvm system --server=false --main-class sprout.cli.NativeCli -o cli/dist/sprout-native --force
+          --native --native-version 0.5.12 --jvm system --server=false --main-class sprout.cli.NativeCli -o cli/dist/groot-cli --force
         bun cli/test/native-cli.ts
         bun test cli/test
         [ "${CHECK_ONLY:-0}" != 1 ] || exit 0
-        CLI_SHA256=$(sha256sum cli/dist/sprout-native | cut -d ' ' -f 1)
-        printf '%s  sprout-native\n' "$CLI_SHA256" > cli/dist/sprout-native.sha256
+        CLI_SHA256=$(sha256sum cli/dist/groot-cli | cut -d ' ' -f 1)
+        printf '%s  groot-cli\n' "$CLI_SHA256" > cli/dist/groot-cli.sha256
         printf 'CLI_SHA256=%s\n' "$CLI_SHA256" > cli/dist/release.env
         destination="$ARTIFACT_UPLOAD_BASE/native-cli/$CLI_SHA256"
-        if ! mc stat "$destination/sprout-native" >/dev/null 2>&1; then
-          mc cp --quiet cli/dist/sprout-native "$destination/sprout-native"
+        if ! mc stat "$destination/groot-cli" >/dev/null 2>&1; then
+          mc cp --quiet cli/dist/groot-cli "$destination/groot-cli"
         fi
-        mc cp --quiet cli/dist/sprout-native.sha256 "$destination/sprout-native.sha256"
+        mc cp --quiet cli/dist/groot-cli.sha256 "$destination/groot-cli.sha256"
       fi
       case "${CLI_SHA256:-}" in *[!a-f0-9]*|'') exit 1 ;; esac
       test "${#CLI_SHA256}" -eq 64
@@ -143,27 +143,44 @@ jobs:
       temporary=
       trap 'rm -rf "$stage"; if [ -n "$temporary" ]; then rm -f "$temporary"; fi' EXIT HUP INT TERM
       url="$ARTIFACT_DOWNLOAD_BASE/native-cli/$CLI_SHA256"
-      curl -fsSL --max-time 180 "$url/sprout-native" -o "$stage/sprout-native"
-      curl -fsSL --max-time 30 "$url/sprout-native.sha256" -o "$stage/sprout-native.sha256"
-      test "$(cat "$stage/sprout-native.sha256")" = "$CLI_SHA256  sprout-native"
-      (cd "$stage" && sha256sum -c sprout-native.sha256)
-      chmod 755 "$stage/sprout-native"
+      curl -fsSL --max-time 180 "$url/groot-cli" -o "$stage/groot-cli"
+      curl -fsSL --max-time 30 "$url/groot-cli.sha256" -o "$stage/groot-cli.sha256"
+      test "$(cat "$stage/groot-cli.sha256")" = "$CLI_SHA256  groot-cli"
+      (cd "$stage" && sha256sum -c groot-cli.sha256)
+      chmod 755 "$stage/groot-cli"
       release="$CLI_INSTALL_ROOT/releases/$CLI_SHA256"
-      if [ -e "$release" ]; then cmp "$stage/sprout-native" "$release/sprout-native"; else mv "$stage" "$release"; fi
-      for name in sprout sprout-native; do
+      if [ -e "$release" ]; then
+        if [ -e "$release/groot-cli" ]; then
+          cmp "$stage/groot-cli" "$release/groot-cli"
+        else
+          cmp "$stage/groot-cli" "$release/sprout-native"
+          install -m 755 "$stage/groot-cli" "$release/groot-cli"
+        fi
+      else
+        mv "$stage" "$release"
+      fi
+      managed_cli_link() {
+        case "$(readlink "$1")" in
+          "$CLI_INSTALL_ROOT"/releases/*/groot-cli|"$CLI_INSTALL_ROOT"/releases/*/sprout-native|"$HOME"/.local/share/sprout-native/releases/*/sprout-native) return 0 ;;
+          *) return 1 ;;
+        esac
+      }
+      for name in sprout groot-cli; do
         destination="$CLI_BIN_DIR/$name"
         if [ -L "$destination" ]; then
-          case "$(readlink "$destination")" in "$CLI_INSTALL_ROOT"/releases/*/sprout-native) : ;; *) echo "Unmanaged link: $destination" >&2; exit 1 ;; esac
+          managed_cli_link "$destination" || { echo "Unmanaged link: $destination" >&2; exit 1; }
         elif [ -e "$destination" ]; then
           grep -q 'Managed by sprout-http deployment' "$destination" || { echo "Unmanaged file: $destination" >&2; exit 1; }
         fi
       done
-      for name in sprout sprout-native; do
+      for name in sprout groot-cli; do
         temporary="$CLI_BIN_DIR/.$name.$$"
-        ln -s "$release/sprout-native" "$temporary"
+        ln -s "$release/groot-cli" "$temporary"
         mv -Tf "$temporary" "$CLI_BIN_DIR/$name"
       done
-      printf 'Installed Native CLI %s\n' "$CLI_SHA256"
+      legacy="$CLI_BIN_DIR/sprout-native"
+      if [ -L "$legacy" ] && managed_cli_link "$legacy"; then rm "$legacy"; fi
+      printf 'Installed groot-cli %s\n' "$CLI_SHA256"
 
   - name: pluging-deploy
     run: |
