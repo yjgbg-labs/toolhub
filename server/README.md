@@ -32,8 +32,7 @@ framework/
 │   ├── Metadata.scala
 │   └── SuccessResponse.scala
 └── runtime/
-    ├── Application.scala
-    └── UnixListener.scala
+    └── Application.scala
 ```
 
 - `model` owns JSON codecs, schema definitions and derivation, independently of
@@ -47,7 +46,7 @@ framework/
   operation IDs and shared declaration scopes before the HTTP compiler runs.
   `Metadata.scala` owns RPC group descriptions. HTTP and
   runtime carry generic OpenAPI extensions without depending on the RPC model.
-- `runtime` executes HTTP contracts and manages TCP/Unix listeners. It depends
+- `runtime` executes HTTP contracts and manages TCP listeners. It depends
   on `http` and `model`, rather than the DSL entry points.
 
 The two root DSL objects compose these packages. For explicit type imports use

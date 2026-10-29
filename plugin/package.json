@@ -3,11 +3,6 @@
   "version": "0.1.0",
   "type": "module",
   "exports": { ".": "./src/index.ts" },
-  "scripts": {
-    "check": "bun run --bun tsc --noEmit",
-    "test": "bun test test",
-    "build": "bun build src/index.ts --target=bun --outfile dist/index.js"
-  },
   "dependencies": {
     "@opencode/plugin": "2.0.9",
     "ajv": "8.20.0",

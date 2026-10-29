@@ -1,15 +1,16 @@
 package sprout.cli
 
-import _root_.sttp.client4.{DefaultSyncBackend, SyncBackend}
+import _root_.sttp.client4.DefaultSyncBackend
 
 /** The executable knows only HTTP/OpenAPI and delegates commands to the catalog. */
 object NativeCli:
   def main(args: Array[String]): Unit =
     val exitCode = try
-      val base = sys.env.getOrElse("SPROUT_BASE_URL", "unix://" + sys.env.getOrElse("XDG_RUNTIME_DIR", sys.props("user.home") + "/.local/run") + "/sprout-http/http.sock")
-      val backend: SyncBackend = if base.startsWith("unix://") then new UnixSocketBackend(base.stripPrefix("unix://")) else DefaultSyncBackend()
+      val base = sys.env.get("SPROUT_BASE_URL").filter(_.nonEmpty)
+        .getOrElse("http://127.0.0.1:" + sys.env.get("SPROUT_PORT").filter(_.nonEmpty).getOrElse("8080"))
+      val backend = DefaultSyncBackend()
       try
-        val transport = new HttpTransport(backend, if base.startsWith("unix://") then "http://localhost" else base)
+        val transport = new HttpTransport(backend, base)
         // Scala Native preserves argv[0], including the name of an invoked symlink.
         val program = new java.io.File(scala.scalanative.runtime.filename).getName
         val result = CommandLine.run(program, args.toVector, transport, readJsonArgument)

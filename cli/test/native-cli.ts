@@ -52,7 +52,7 @@ let discoveryCount = 0;
 const requests: Array<{ method: string; path: string; query: string[][]; token: string | null; cookie: string | null; contentType: string | null; body: string }> = [];
 const handler = async (request: Request) => {
   const url = new URL(request.url);
-  // Exercise base URLs with a path prefix as well as Unix sockets.
+  // Exercise base URLs with and without a path prefix.
   const path = url.pathname.replace(/^\/gateway/, "");
   if (path === "/openapi.json") {
     discoveryCount++;
@@ -70,17 +70,15 @@ const handler = async (request: Request) => {
   if (path === "/new-endpoint") return new Response("discovered after compilation", { headers: { "Content-Type": "text/plain" } });
   return new Response("unknown", { status: 404 });
 };
-const socket = `${directory}/http.sock`;
-const unix = Bun.serve({ unix: socket, fetch: handler });
 const tcp = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
 try {
-  for (const baseUrl of [`unix://${socket}`, `http://127.0.0.1:${tcp.port}/gateway`]) {
+  for (const baseUrl of ["", `http://127.0.0.1:${tcp.port}/gateway`]) {
     served = document;
     discoveryStatus = 200;
     async function run(args: string[], stdin?: string) {
       const previousDiscoveries = discoveryCount;
       const child = Bun.spawn([binary, ...args], {
-        env: { ...process.env, SPROUT_BASE_URL: baseUrl },
+        env: { ...process.env, SPROUT_BASE_URL: baseUrl, SPROUT_PORT: String(tcp.port) },
         stdin: stdin === undefined ? "ignore" : new Blob([stdin]), stdout: "pipe", stderr: "pipe",
       });
       const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -173,9 +171,8 @@ try {
     discoveryStatus = 200;
     await invalid(["--help"], /Missing string: openapi/);
   }
-  console.log("Dynamic Native CLI passed: live OpenAPI replacement, nested commands, parameters, JSON/file/stdin, exact int64, errors, TCP + Unix Socket");
+  console.log("Dynamic Native CLI passed: live OpenAPI replacement, nested commands, parameters, JSON/file/stdin, exact int64, errors, TCP defaults and URL overrides");
 } finally {
-  await unix.stop(true);
   await tcp.stop(true);
   await rm(directory, { recursive: true, force: true });
 }

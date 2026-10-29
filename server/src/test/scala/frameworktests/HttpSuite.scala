@@ -240,9 +240,9 @@ class HttpSuite extends CatsEffectSuite:
     app.httpApp(request("/")).map(result => assertEquals(result.status, Status.InternalServerError))
   }
 
-  test("Ember serves the application over a real ephemeral TCP port") {
+  test("Ember listens on all IPv4 interfaces and serves requests through loopback") {
     val app = httpApp {
-      server { host("127.0.0.1"); port(0) }
+      server { host("0.0.0.0"); port(0) }
       routes {
         get("/health") {
           operationId("health")
@@ -252,6 +252,7 @@ class HttpSuite extends CatsEffectSuite:
       }
     }
     (app.resource, EmberClientBuilder.default[IO].build).tupled.use { (server, client) =>
+      assert(server.address.getAddress.isAnyLocalAddress)
       val uri = Uri.unsafeFromString(s"http://127.0.0.1:${server.address.getPort}/health")
       client.expect[String](uri).map(value => assertEquals(value, "healthy"))
     }

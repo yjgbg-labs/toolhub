@@ -8,7 +8,7 @@ import framework.runtime.Application
 object rpcDsl:
   export framework.model.JsonModel
   export framework.http.{ParamCodec, RequestContext, EndpointResult, Handler, Input, Output}
-  export httpDsl.{server, host, port, socket, maxBodyBytes, openapi, endpoint, info, title, version,
+  export httpDsl.{server, host, port, maxBodyBytes, openapi, endpoint, info, title, version,
     default, constraint, minimum, maximum, minLength, maxLength, pattern, value}
 
   private def group(scope: CommandsScope): CommandGroup = scope match

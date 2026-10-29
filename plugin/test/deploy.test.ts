@@ -2,10 +2,12 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { install } from "../scripts/install";
 
 const directory = await mkdtemp("/tmp/opencode/plugin-deploy-");
 afterAll(() => rm(directory, { recursive: true, force: true }));
+const root = new URL("../../", import.meta.url).pathname;
+const jobs = Bun.YAML.parse(await Bun.file(join(root, "jobs.yaml")).text()) as { jobs: { name: string; run: string }[] };
+const run = jobs.jobs.find(job => job.name === "pluging-deploy")!.run;
 const bytes = new TextEncoder().encode('export default { id: "sprout", setup(ctx) { return ctx.options; } };');
 const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 let corrupt = false;
@@ -14,7 +16,15 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
   return new Response(corrupt ? "corrupt" : bytes);
 } });
 afterAll(() => server.stop(true));
-const config = { root: join(directory, "releases-home"), pluginDir: join(directory, "plugins"), downloadBase: server.url.href, sha256 };
+const config = { root: join(directory, "releases ' % home"), pluginDir: join(directory, "plugins") };
+async function install(value = config) {
+  const child = Bun.spawn(["sh", "-e", "-c", run], {
+    cwd: root, stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, INSTALL_ONLY: "1", PLUGIN_SHA256: sha256, PLUGIN_INSTALL_ROOT: value.root, OPENCODE_PLUGIN_DIR: value.pluginDir, ARTIFACT_DOWNLOAD_BASE: server.url.href.replace(/\/$/, "") },
+  });
+  const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  if (code !== 0) throw new Error(stdout + stderr);
+}
 
 test("plugin deploy loads an independent bundle and preserves plugin options", async () => {
   await install(config);
@@ -29,7 +39,7 @@ test("checksum failure leaves the installed plugin entry intact", async () => {
   const before = await readFile(target, "utf8");
   corrupt = true;
   try {
-    await expect(install({ ...config, root: join(directory, "corrupt-release") })).rejects.toThrow("SHA-256 mismatch");
+    await expect(install(config)).rejects.toThrow("FAILED");
     expect(await readFile(target, "utf8")).toBe(before);
   } finally { corrupt = false; }
 });
