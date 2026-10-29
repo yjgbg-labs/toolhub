@@ -7,7 +7,8 @@ final case class HttpRequest(
     path: String,
     query: Vector[(String, String)] = Vector.empty,
     headers: Vector[(String, String)] = Vector.empty,
-    body: Option[String] = None
+    body: Option[String] = None,
+    allowStreaming: Boolean = false
 ):
   def url(baseUrl: String): String =
     val suffix = if query.isEmpty then "" else query.map((k, v) => s"${Wire.encode(k)}=${Wire.encode(v)}").mkString("?", "&", "")
