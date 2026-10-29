@@ -61,7 +61,7 @@ object CommandLine:
       catch
         case error: IllegalArgumentException =>
           throw new IllegalArgumentException(s"${error.getMessage}\n${usage(node, path, program)}\nRun '$program ${path.mkString(" ")} --help' for details.")
-      render(successful(send(request)))
+      render(successful(send(request.copy(allowStreaming = true))))
 
   private def successful(response: HttpResponse): HttpResponse =
     if response.status < 200 || response.status >= 300 then

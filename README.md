@@ -70,6 +70,12 @@ sprout schedule new --name hello --body '{"command":["echo","hi"],"every":"1h"}'
 指定完整的 HTTP(S) 地址。CLI 每次从服务端加载 `/openapi.json`，帮助中的程序名
 取调用文件/软链接的原始名称。
 
+CLI 遇到成功响应的 `Content-Type: text/event-stream` 时，会像 `tail -f` 一样
+持续打印每个 SSE 事件的 `data` 内容，并立即刷新控制台，支持管道与重定向。
+JSON 数据保持原文，多行 `data:` 合并为多行文本；心跳注释和 `event`、`id`、
+`retry` 字段不打印。流结束时退出，按 `Ctrl+C` 可中断；连接断开后不自动重连。
+命令请求不设置总传输时限，以支持长时间、间歇性事件流；OpenAPI 发现仍限时 30 秒。
+
 OpenCode 插件在 setup 时发现命令并注册 Code Mode 工具及 namespace，返回清理函数。
 支持通过插件 options 配置 `baseUrl`、`schemaUrl`、`headers`、`tokenEnv`、`timeoutMs`。
 安装后的入口由 OpenCode 自动发现，文件变更自动加载。

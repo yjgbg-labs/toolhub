@@ -127,7 +127,7 @@ jobs:
         groot use-jdk "$JDK_MAJOR" -- scala-cli --power package cli/project.scala cli/src/main/scala \
           --native --native-version 0.5.12 --jvm system --server=false --main-class sprout.cli.NativeCli -o cli/dist/sprout-native --force
         bun cli/test/native-cli.ts
-        bun test cli/test/release.test.ts
+        bun test cli/test
         [ "${CHECK_ONLY:-0}" != 1 ] || exit 0
         CLI_SHA256=$(sha256sum cli/dist/sprout-native | cut -d ' ' -f 1)
         printf '%s  sprout-native\n' "$CLI_SHA256" > cli/dist/sprout-native.sha256

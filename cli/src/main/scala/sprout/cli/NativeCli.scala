@@ -10,7 +10,11 @@ object NativeCli:
         .getOrElse("http://127.0.0.1:" + sys.env.get("SPROUT_PORT").filter(_.nonEmpty).getOrElse("18080"))
       val backend = DefaultSyncBackend()
       try
-        val transport = new HttpTransport(backend, base)
+        val transport = new HttpTransport(backend, base, event => {
+          System.out.println(event)
+          System.out.flush()
+          if System.out.checkError() then throw new java.io.IOException("Failed to write SSE event to stdout")
+        })
         // Scala Native preserves argv[0], including the name of an invoked symlink.
         val program = new java.io.File(scala.scalanative.runtime.filename).getName
         val result = CommandLine.run(program, args.toVector, transport, readJsonArgument)
