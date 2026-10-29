@@ -46,13 +46,13 @@ at runtime by the existing CLI binary.
 Publish protocol/tooling libraries **once per protocol/tooling release**:
 
 ```sh
-groot jobs scala-sdk-publish-local
+groot jobs sdk-publish-core
 ```
 
 This publishes 16 artifacts to `~/.m2/repository/lab/yjgbg/`. Existing non-SNAPSHOT
 versions are checksum-verified and skipped, never overwritten. Change `SDK_VERSION`
-for a new protocol/tooling release. Individual platform jobs end in `-jvm`, `-js`,
-or `-native`. `SDK_MAVEN_REPOSITORY` overrides the destination.
+for a new protocol/tooling release. One job publishes all three platforms in order.
+`SDK_MAVEN_REPOSITORY` overrides the destination.
 
 | Artifact base name | Platforms | Dependencies |
 | --- | --- | --- |
@@ -74,8 +74,8 @@ After the protocol libraries have been installed:
 
 ```sh
 # Reproducible checked-in schema by default; live discovery is explicit.
-groot jobs scala-sdk-schema
-SDK_CLIENT_VERSION=0.3.0 groot jobs scala-sdk-publish-client-local
+groot jobs sdk-schema
+SDK_CLIENT_VERSION=0.3.0 groot jobs sdk-publish-client
 
 # Another business API, still using the same protocol libraries:
 SDK_SCHEMA=/absolute/inventory.json \
@@ -83,11 +83,11 @@ SDK_CLIENT_PACKAGE=inventory.generated \
 SDK_CLIENT_SOURCES=scala-sdk/generated/inventory \
 SDK_CLIENT_MODULE=inventory-client \
 SDK_CLIENT_VERSION=1.0.0 \
-groot jobs scala-sdk-publish-client-local
+groot jobs sdk-publish-client
 ```
 
-`scala-sdk-publish-client-local` never invokes protocol publication or a CLI build.
-`scala-sdk-generate` only generates sources. `scala-sdk-schema` uses
+`sdk-publish-client` never invokes protocol publication or a CLI build.
+`sdk-generate` only generates sources. `sdk-schema` uses
 `SPROUT_OPENAPI_URL` or `SPROUT_SOCKET` to refresh `openapi.json`.
 
 The generator can be called as a library on all three platforms:
@@ -101,9 +101,9 @@ val files: Map[String, String] = Generator.generate(catalog, "inventory.generate
 // Models.scala, Calls.scala, Client.scala; caller owns I/O and compilation.
 ```
 
-Runnable launchers are available through `scala-sdk-generator-jvm`,
-`scala-sdk-generator-native` and `scala-sdk-generator-js`. Build a launcher once,
-then run it against changed schemas without recompiling it:
+`generator-build` builds the Scala.js launcher used by SDK generation.
+`generator-test` also builds the JVM/Native launchers and compares all three
+platforms' generated output. Built launchers can be reused with changed schemas:
 
 ```sh
 scala-sdk/dist/generator-native openapi.json inventory.generated output/directory
@@ -280,9 +280,9 @@ references, `allOf`, mixed fixed/dictionary objects and success status ranges).
 ## Native CLI and deployment
 
 ```sh
-groot jobs scala-sdk-native-cli-test
-groot jobs scala-sdk-native-cli-install  # build/test → S3 upload → download/check → install
-groot jobs cli-deploy                   # install the pinned CLI release; no build
+groot jobs cli-test
+groot jobs cli-release  # build/test → S3 upload → download/check → install
+groot jobs cli-deploy   # install the pinned CLI release; no build
 sprout --help
 sprout schedule log --name example
 ```
@@ -315,12 +315,15 @@ Runtime requires the corresponding platform's libcurl/system libraries.
 ## Verification and comparison
 
 ```sh
-groot jobs scala-sdk-test                    # core + generated SDK + generator on 3 targets, HTTP + CLI
-groot jobs scala-sdk-generator-platform-test # identical output from JVM/JS/Native generator
-groot jobs scala-sdk-published-test          # initial protocol/client publication + isolated consumers
-groot jobs scala-sdk-test-installed          # only existing Maven artifacts, including generator and CLI
-groot jobs scala-sdk-cli-benchmark           # Native vs TS/Bun fresh-process help benchmark
+groot jobs sdk-test             # core + generated SDK + generator on 3 targets, HTTP + CLI
+groot jobs generator-test       # generator tests and identical JVM/JS/Native output
+groot jobs sdk-check-published  # only existing Maven artifacts, including generator and CLI
+groot jobs cli-benchmark        # Native vs TS/Bun fresh-process help benchmark
 ```
+
+For an initial local release, run `sdk-publish-core`, `sdk-publish-client`, then
+`sdk-check-published`. Publication is explicit; test jobs do not publish SDKs or
+deploy services. See [JOBS.md](../JOBS.md) for the complete job list and old-name map.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for Native/TypeScript CLI and
 Scala.js/TypeScript Code Mode plugin trade-offs.

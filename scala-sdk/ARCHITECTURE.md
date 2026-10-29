@@ -20,8 +20,8 @@
 
 - core、generator、CLI 都不携带业务端点定义；`openapi.json` 快照只用于生成业务
   SDK和测试。业务服务新增符合现有协议的端点后，CLI 下一次调用即可发现。
-- 发布协议库使用 `scala-sdk-publish-local`。非 SNAPSHOT 版本不可覆盖。
-- 发布业务 SDK 使用 `scala-sdk-publish-client-local`；这条任务图没有协议库发布或
+- 发布协议库使用 `sdk-publish-core`。非 SNAPSHOT 版本不可覆盖。
+- 发布业务 SDK 使用 `sdk-publish-client`；这条任务图没有协议库发布或
   CLI 构建任务，业务 SDK 的 module、package、版本和生成目录可独立指定。
 - Native CLI 单独上传到 S3，以内容 SHA-256 固定版本。`cli-deploy` 只下载并校验
   固定制品。server/business SDK 发布不决定 CLI 版本。
@@ -52,7 +52,7 @@
 
 ### 可复现基准
 
-运行 `groot jobs scala-sdk-cli-benchmark`，输出在
+运行 `groot jobs cli-benchmark`，输出在
 `scala-sdk/dist/cli-benchmark.json`。比较同一 OpenAPI 文档、同一 Unix Socket fixture
 下的 `--help`，每次启动新进程，5 次预热后交错采样 20 次，报告耗时中位数与
 `/usr/bin/time` 的进程峰值 RSS 中位数。Native 当前是 debug 链接模式。
