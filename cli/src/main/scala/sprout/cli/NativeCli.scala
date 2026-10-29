@@ -7,7 +7,7 @@ object NativeCli:
   def main(args: Array[String]): Unit =
     val exitCode = try
       val base = sys.env.get("SPROUT_BASE_URL").filter(_.nonEmpty)
-        .getOrElse("http://127.0.0.1:" + sys.env.get("SPROUT_PORT").filter(_.nonEmpty).getOrElse("8080"))
+        .getOrElse("http://127.0.0.1:" + sys.env.get("SPROUT_PORT").filter(_.nonEmpty).getOrElse("18080"))
       val backend = DefaultSyncBackend()
       try
         val transport = new HttpTransport(backend, base)

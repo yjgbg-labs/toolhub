@@ -9,7 +9,7 @@ object Main extends IOApp.Simple:
     val app = httpApp {
       server {
         host("0.0.0.0")
-        port(sys.env.get("SPROUT_PORT").filter(_.nonEmpty).getOrElse("8080").toInt)
+        port(sys.env.get("SPROUT_PORT").filter(_.nonEmpty).getOrElse("18080").toInt)
       }
 
       openapi {

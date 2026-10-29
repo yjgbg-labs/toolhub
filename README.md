@@ -65,7 +65,7 @@ sprout health
 sprout schedule new --name hello --body '{"command":["echo","hi"],"every":"1h"}'
 ```
 
-服务端默认监听 `0.0.0.0:8080`；CLI 和插件默认连接 `http://127.0.0.1:8080`。
+服务端默认监听 `0.0.0.0:18080`；CLI 和插件默认连接 `http://127.0.0.1:18080`。
 `SPROUT_PORT` 可修改服务端端口和客户端的默认端口；`SPROUT_BASE_URL` 可为客户端
 指定完整的 HTTP(S) 地址。CLI 每次从服务端加载 `/openapi.json`，帮助中的程序名
 取调用文件/软链接的原始名称。

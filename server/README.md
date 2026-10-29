@@ -60,7 +60,7 @@ import cats.effect.IO
 import framework.httpDsl.*
 
 val app = httpApp {
-  server { port(8080) }
+  server { port(18080) }
   routes {
     get("/users/{id}") {
       operationId("users.get")
