@@ -5,6 +5,11 @@
   "exports": { ".": "./src/index.ts" },
   "dependencies": {
     "@opencode/plugin": "2.0.9",
-    "@sprout/cli": "workspace:*"
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "typescript": "5.9.3"
   }
 }

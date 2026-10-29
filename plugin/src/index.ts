@@ -1,5 +1,5 @@
 import * as Plugin from "@opencode/plugin/promise/plugin";
-import { ApiClient, defaultBaseUrl } from "@sprout/cli/api";
+import { ApiClient, defaultBaseUrl } from "./api";
 import { operationTools } from "./tools";
 
 export default Plugin.define({

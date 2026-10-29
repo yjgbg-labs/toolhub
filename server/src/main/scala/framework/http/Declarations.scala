@@ -3,7 +3,7 @@ package framework.http
 import cats.effect.IO
 import io.circe.Json
 
-final case class ServerSettings(host: String, port: Int, maxBodyBytes: Long, socket: Option[String] = None)
+final case class ServerSettings(host: String, port: Int, maxBodyBytes: Long)
 final case class OpenApiSettings(endpoint: String, title: String, version: String, description: Option[String])
 
 private[framework] final case class ScopeDecl(

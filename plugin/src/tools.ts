@@ -1,5 +1,5 @@
 import type { Info } from "@opencode/plugin/promise/tool";
-import type { ApiClient } from "@sprout/cli/api";
+import type { ApiClient } from "./api";
 
 export function operationTools(client: ApiClient): Info[] {
   const names = new Set<string>();
