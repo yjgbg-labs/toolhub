@@ -23,7 +23,7 @@ test("plugin clients use the local TCP port and support independent URL override
   expect((await firstClient.call("health")).body).toBe("first");
   expect((await secondClient.call("health")).body).toBe("second");
   expect((await firstClient.call("health")).body).toBe("first");
-  expect(defaultBaseUrl({})).toBe("http://127.0.0.1:8080");
+  expect(defaultBaseUrl({})).toBe("http://127.0.0.1:18080");
 });
 
 test("HTTP discovery and requests preserve JSON bodies, HTTP errors and cancellation", async () => {

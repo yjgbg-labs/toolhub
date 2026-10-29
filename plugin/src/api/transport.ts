@@ -1,7 +1,7 @@
 export type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export function defaultBaseUrl(env: Record<string, string | undefined> = process.env): string {
-  return `http://127.0.0.1:${env.SPROUT_PORT || "8080"}`;
+  return `http://127.0.0.1:${env.SPROUT_PORT || "18080"}`;
 }
 
 export function transport(value: string, request: Fetch = globalThis.fetch): { baseUrl: string; fetch: Fetch } {
