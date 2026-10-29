@@ -20,6 +20,13 @@ async function fixture(name: string) {
   await writeFile(log, "");
   await writeFile(join(bin, "groot"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   await writeFile(join(bin, "systemctl"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$COMMAND_LOG"\n', { mode: 0o755 });
+  await writeFile(join(bin, "curl"), `#!/bin/sh
+if [ "$1" = -fsS ]; then
+  test "$4" = http://127.0.0.1:18080/health || exit 2
+  set -- -fsS --max-time 2 "$TEST_HEALTH_URL"
+fi
+exec "$REAL_CURL" "$@"
+`, { mode: 0o755 });
   let corrupt = false;
   let healthy = true;
   const artifacts = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
@@ -36,7 +43,7 @@ async function fixture(name: string) {
   const env = {
     ...process.env, INSTALL_ONLY: "1", PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: log,
     SERVER_INSTALL_ROOT: join(home, "data '$ 100%"), SYSTEMD_UNIT_DIR: join(home, "units"),
-    SPROUT_PORT: String(local.port), SPROUT_HOME: join(home, "config"),
+    REAL_CURL: Bun.which("curl")!, TEST_HEALTH_URL: `${local.url.href}health`, SPROUT_HOME: join(home, "config"),
     ARTIFACT_DOWNLOAD_BASE: artifacts.url.href.replace(/\/$/, ""), SERVER_SERVICE: "groot-sprout-http.service",
     SERVER_START_TIMEOUT_MS: "1000",
   };
@@ -63,7 +70,7 @@ test("inline server deployment verifies artifacts and a user unit, then checks T
     const content = await readFile(unit, "utf8");
     expect((await stat(unit)).mode & 0o777).toBe(0o644);
     expect(content).toContain('use-jdk "25" -- java');
-    expect(content).toContain(`SPROUT_PORT=${api.env.SPROUT_PORT}`);
+    expect(content).not.toContain("SPROUT_PORT=");
     expect(content).toContain("data '$$ 100%%/server/current/groot.jar");
     expect((await api.commands()).trim().split("\n").map(line => line.split(" ")[1])).toEqual(["daemon-reload", "enable", "restart", "is-active", "is-enabled"]);
     expect((await api.install()).code).toBe(0);

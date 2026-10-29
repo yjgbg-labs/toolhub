@@ -1,7 +1,22 @@
+# Build outputs and caches
+.scala-build/
 .bsp/
 .metals/
+.cache/
+target/
+dist/
 artifacts/
 node_modules/
-dist/
-.scala-build/
-.cache/
+
+# Local editor settings
+.vscode/
+.idea/
+*.iml
+
+# Local environment and runtime files
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Thumbs.db

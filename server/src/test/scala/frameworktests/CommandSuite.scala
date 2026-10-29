@@ -128,7 +128,7 @@ class CommandSuite extends CatsEffectSuite:
     assertEquals(op.get[String]("description"), Right("Report details"))
     assert(doc.hcursor.get[List[Json]]("tags").toOption.forall(_.isEmpty))
     assert(op.get[List[String]]("tags").toOption.forall(_.isEmpty))
-    app.httpApp(request("/reports/daily/get?id=7")).flatMap(_.as[String]).map(value => assertEquals(value, "7"))
+    app.httpApp(request("/reports/daily/get?id=7")).flatMap(_.as[Json]).map(value => assertEquals(value, Json.fromString("7")))
   }
 
   test("commands can be reopened with consistent metadata") {
@@ -138,7 +138,7 @@ class CommandSuite extends CatsEffectSuite:
     }
     val doc = io.circe.parser.parse(app.openApiJson).toOption.get
     assertEquals(doc.hcursor.downField("x-rpc").get[List[Json]]("commands").toOption.get.size, 1)
-    app.httpApp(request("/reports/get")).flatMap(_.as[String]).map(value => assertEquals(value, "get"))
+    app.httpApp(request("/reports/get")).flatMap(_.as[Json]).map(value => assertEquals(value, Json.fromString("get")))
   }
 
   test("invalid names, conflicting metadata and duplicate command identities fail at startup") {
@@ -206,7 +206,7 @@ class CommandSuite extends CatsEffectSuite:
       rpc <- app.httpApp(request("/health")).flatMap(_.as[String])
     yield
       assertEquals(http.status, Status.Created)
-      assertEquals(rpc, "ok")
+      assertEquals(rpc, Json.fromString("ok").noSpaces)
   }
 
   test("httpApp configures the server and shares root declarations with top-level and nested commands") {
@@ -236,8 +236,8 @@ class CommandSuite extends CatsEffectSuite:
       invalid <- app.httpApp(request("/nested/read?tenant=", Method.POST))
       wrongMethod <- app.httpApp(request("/read"))
     yield
-      assertEquals(root, "default")
-      assertEquals(nested, "acme")
+      assertEquals(root, Json.fromString("default").noSpaces)
+      assertEquals(nested, Json.fromString("acme").noSpaces)
       assertEquals(denied.status, Status.Forbidden)
       assertEquals(invalid.status, Status.BadRequest)
       assertEquals(wrongMethod.status, Status.MethodNotAllowed)

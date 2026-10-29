@@ -48,7 +48,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
       _ = assertEquals(first, Json.fromValues(List("acme", "7", "20", "secret", "abc").map(Json.fromString)))
       _ <- (1 to 50).toList.parTraverse_ { n =>
         app.httpApp(request(s"/api/users/admin/read?tenant=t$n&limit=$n&token=key$n"))
-          .flatMap(_.as[String]).map(value => assertEquals(value, s"t$n:key$n:$n"))
+          .flatMap(_.as[Json]).map(value => assertEquals(value, Json.fromString(s"t$n:key$n:$n")))
       }
       invalid <- app.httpApp(request("/api/users/get?tenant=acme&id=7&limit=0&token=secret"))
     yield assertEquals(invalid.status, Status.BadRequest)
@@ -68,8 +68,8 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
     val op = operationDoc(app, "/tenants/users/get")
     assertEquals(op.get[String]("operationId"), Right("tenants.users.get"))
     assertEquals(op.get[List[Json]]("parameters").toOption.get.map(_.hcursor.get[String]("name").toOption.get), List("tenant", "section", "id"))
-    app.httpApp(request("/tenants/users/get?tenant=acme&section=admin&id=7")).flatMap(_.as[String])
-      .map(value => assertEquals(value, "acme:admin:7"))
+    app.httpApp(request("/tenants/users/get?tenant=acme&section=admin&id=7")).flatMap(_.as[Json])
+      .map(value => assertEquals(value, Json.fromString("acme:admin:7")))
   }
 
   test("inherited JSON bodies decode once for middleware and differently typed child handlers") {
@@ -102,7 +102,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
       name <- app.httpApp(req("/users/name")).flatMap(_.as[String])
       copied <- app.httpApp(req("/users/copy/read")).flatMap(_.as[Json])
     yield
-      assertEquals(name, "Ada")
+      assertEquals(name, Json.fromString("Ada").noSpaces)
       assertEquals(copied.hcursor.get[String]("name"), Right("Ada"))
       assertEquals(decoded.get(), 2)
       assertEquals(seen.get(), 2)
@@ -129,20 +129,20 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
     val pending = app.httpApp(request("/outer/inner/run"))
     assertEquals(events.toList, Nil)
     pending.flatMap(_.as[String]).map { result =>
-      assertEquals(result, "ok")
+      assertEquals(result, Json.fromString("ok").noSpaces)
       assertEquals(events.toList, List("+root", "+first", "+second", "+child", "+operation", "handle",
         "-operation", "-child", "-second", "-first", "-root"))
     }
   }
 
-  test("group recovery handles synchronous, asynchronous, IO construction and encoding failures") {
+  test("recover inherits scope and request context for synchronous, asynchronous, IO construction and encoding failures") {
     val app = httpApp { commands("recover") {
       val label = param[String]("label", "Label") { default("shared") }
       val rejected = response.text(422) { description("Recovered failure") }
-      middleware { next => next.recover {
+      recover {
         case error: IllegalStateException => rejected(s"${label.value}:${error.getMessage}")
         case error: IllegalArgumentException => rejected(s"${label.value}:${error.getMessage}")
-      } }
+      }
       command[String]("pure") { handle { throw new IllegalStateException("pure") } }
       command[Int]("effect") { handle { IO.raiseError[Int](new IllegalStateException("effect")) } }
       command[Unit]("construct") {
@@ -178,10 +178,10 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
       val denied = response.text(403) {}
       val unexpected = response.text(502) {}
       val reject = denied.raise("denied")
-      middleware { next => next.recover { case _ =>
+      recover { case _ =>
         recovered.incrementAndGet()
         unexpected("unexpected")
-      } }
+      }
       command[Int]("handler") {
         handle { (reject *> IO(continued.incrementAndGet())).guarantee(IO { finalized.incrementAndGet(); () }) }
       }
@@ -209,13 +209,13 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
   test("inner recovery wins and errors thrown by middleware or recovery reach outer middleware") {
     val app = httpApp { commands("outer") {
       val outer = response.text(502) {}
-      middleware { next => next.recover { case e: IllegalArgumentException => outer(e.getMessage) } }
+      recover { case e: IllegalArgumentException => outer(e.getMessage) }
       commands("inner") {
         val inner = response.text(409) {}
         middleware { next => next.recoverWith { case _: IllegalStateException => IO.pure(inner("inner")) } }
         command[String]("handled") { handle { IO.raiseError[String](new IllegalStateException("failure")) } }
         command[String]("rethrow") {
-          middleware { next => next.recover { case _: IllegalStateException => throw new IllegalArgumentException("recovery") } }
+          recover { case _: IllegalStateException => throw new IllegalArgumentException("recovery") }
           handle { throw new IllegalStateException("failure") }
         }
         command[String]("middleware") {
@@ -345,7 +345,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
       badOutput <- app.httpApp(request("/users/output"))
     yield
       assertEquals(first.status, Status.Forbidden)
-      assertEquals(second, "independent")
+      assertEquals(second, Json.fromString("independent").noSpaces)
       assertEquals(badInput.status, Status.InternalServerError)
       assertEquals(badOutput.status, Status.InternalServerError)
   }
@@ -398,7 +398,7 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
       import framework.rpcDsl.*
       httpApp { commands("users") {
         val bad = response.json[Int](400) {}
-        middleware { next => next.recover { case _: RuntimeException => bad("wrong") } }
+        recover { case _: RuntimeException => bad("wrong") }
       } }
     """)
     val middlewareResult = typeCheckErrors("""

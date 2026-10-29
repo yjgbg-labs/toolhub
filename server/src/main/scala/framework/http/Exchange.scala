@@ -2,6 +2,7 @@ package framework.http
 
 import cats.effect.IO
 import framework.model.JsonModel
+import fs2.Stream
 
 private[framework] final class InputKey[A]
 private[framework] final class ResponseKey[A]
@@ -22,20 +23,24 @@ final class RequestContext private[framework] (slots: Map[InputKey[?], Int], val
     val slot = slots.getOrElse(input.key, throw new IllegalArgumentException("Input belongs to a different endpoint"))
     values(slot).asInstanceOf[A]
 
+private[framework] enum ResponseBody:
+  case Text(value: String)
+  case Streaming(bytes: Stream[IO, Byte])
+
 final class EndpointResult private[framework] (
     private[framework] val key: ResponseKey[?],
-    private[framework] val payload: Option[String]
+    private[framework] val payload: Option[ResponseBody]
 )
 
 private[framework] final class RaisedResponse(val result: EndpointResult) extends RuntimeException(null, null, false, false)
 
-class Output[A] private[framework] (key: ResponseKey[A], encode: A => Option[String]):
+class Output[A] private[framework] (key: ResponseKey[A], encode: A => Option[ResponseBody]):
   def apply(value: A): EndpointResult = new EndpointResult(key, encode(value))
   def raise(value: A): IO[Nothing] = IO.defer(IO.raiseError(new RaisedResponse(apply(value))))
 
 final class OutputDeclaration[A] private[framework] (
     key: ResponseKey[A],
-    encode: A => Option[String],
+    encode: A => Option[ResponseBody],
     config: ResponseScope
 ) extends Output[A](key, encode):
   private[framework] def configure(init: ResponseScope ?=> Unit): Output[A] =

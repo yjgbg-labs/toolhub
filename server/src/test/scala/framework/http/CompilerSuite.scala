@@ -20,7 +20,7 @@ class CompilerSuite extends CatsEffectSuite:
         command[String]("get") { handle { calls.incrementAndGet(); IO.pure(tenant.value) } }
         commands("admin") { command[String]("get") { handle { IO.pure(tenant.value) } } }
         val failed = response.text(503) {}
-        middleware { next => next.recover { case _: IllegalStateException => failed("unavailable") } }
+        recover { case _: IllegalStateException => failed("unavailable") }
       }
     }
     val declaration = builder.get.freeze()
@@ -42,7 +42,7 @@ class CompilerSuite extends CatsEffectSuite:
       a <- first.httpApp(Request[IO](Method.GET, Uri.unsafeFromString("/users/get"))).flatMap(_.as[String])
       b <- second.httpApp(Request[IO](Method.GET, Uri.unsafeFromString("/users/get"))).flatMap(_.as[String])
     yield
-      assertEquals(a, "default")
-      assertEquals(b, "default")
+      assertEquals(a, "\"default\"")
+      assertEquals(b, "\"default\"")
       assertEquals(calls.get(), 2)
   }

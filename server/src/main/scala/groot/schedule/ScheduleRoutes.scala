@@ -10,11 +10,9 @@ object ScheduleRoutes:
 
     val invalid = response.json[ErrorBody](400) { description("Invalid schedule configuration") }
     val missing = response.json[ErrorBody](404) { description("Job not found") }
-    middleware { next =>
-      next.recover {
-        case error: InvalidSchedule => invalid(ErrorBody("invalid_schedule", error.getMessage))
-        case error: MissingJob => missing(ErrorBody("not_found", error.getMessage))
-      }
+    recover {
+      case error: InvalidSchedule => invalid(ErrorBody("invalid_schedule", error.getMessage))
+      case error: MissingJob => missing(ErrorBody("not_found", error.getMessage))
     }
 
     command[List[ScheduleEntry]]("list") {
@@ -41,11 +39,11 @@ object ScheduleRoutes:
       handle { scheduler.reset(name.value) }
     }
 
-    command[String]("log") {
+    command[PlainText]("log") {
       description("Read the last lines of a scheduled job's combined stdout/stderr log")
       val name = param[String]("name", "Job name") { minLength(1) }
       val lines = param[Int]("lines", "Number of log lines") { default(100); minimum(1); maximum(10000) }
-      handle { scheduler.log(name.value, lines.value) }
+      handle { scheduler.log(name.value, lines.value).map(PlainText(_)) }
     }
 
     commands("config") {

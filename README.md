@@ -65,9 +65,9 @@ sprout health
 sprout schedule new --name hello --body '{"command":["echo","hi"],"every":"1h"}'
 ```
 
-服务端默认监听 `0.0.0.0:18080`；CLI 和插件默认连接 `http://127.0.0.1:18080`。
-`SPROUT_PORT` 可修改服务端端口和客户端的默认端口；`SPROUT_BASE_URL` 可为客户端
-指定完整的 HTTP(S) 地址。CLI 每次从服务端加载 `/openapi.json`，帮助中的程序名
+服务端固定监听 `0.0.0.0:18080`，不读取端口环境变量；CLI 和插件默认连接
+`http://127.0.0.1:18080`。客户端可用 `SPROUT_PORT` 覆盖默认端口，或通过
+`SPROUT_BASE_URL` 指定完整的 HTTP(S) 地址。CLI 每次从服务端加载 `/openapi.json`，帮助中的程序名
 取调用文件/软链接的原始名称。
 
 OpenCode 插件在 setup 时发现命令并注册 Code Mode 工具及 namespace，返回清理函数。

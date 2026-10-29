@@ -2,11 +2,12 @@ package framework
 
 import cats.effect.IO
 import framework.http.{AppScope, DescriptionScope, EndpointScope, ResponseScope, RoutesScope}
-import framework.rpc.{Command, CommandGroup, CommandScope, CommandsScope, Metadata, SuccessResponse}
+import framework.rpc.{Command, CommandGroup, CommandScope, CommandsScope, Metadata}
 import framework.runtime.Application
 
 object rpcDsl:
   export framework.model.JsonModel
+  export framework.rpc.{PlainText, SSE, SuccessResponse}
   export framework.http.{ParamCodec, RequestContext, EndpointResult, Handler, Input, Output}
   export httpDsl.{server, host, port, maxBodyBytes, openapi, endpoint, info, title, version,
     default, constraint, minimum, maximum, minLength, maxLength, pattern, value}
@@ -66,6 +67,9 @@ object rpcDsl:
 
   def middleware(wrap: Handler => Handler)(using scope: CommandsScope): Unit =
     httpDsl.middleware(wrap)(using scope.http)
+
+  def recover(handler: RequestContext ?=> PartialFunction[Throwable, EndpointResult])(using scope: CommandsScope): Unit =
+    middleware { next => next.recover(handler) }
 
   def handle[A](using scope: CommandScope[A])(logic: RequestContext ?=> IO[A]): Unit =
     httpDsl.handle(using scope.http) { logic.map(value => scope.success(value)) }

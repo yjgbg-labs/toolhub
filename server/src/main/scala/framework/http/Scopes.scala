@@ -93,8 +93,8 @@ abstract class DeclarationScope private[framework] (
   private[framework] def output[A](
       status: Int,
       mediaType: Option[String],
-      schema: Option[Schema[A]],
-      encode: A => Option[String]
+      schema: Option[Schema[?]],
+      encode: A => Option[ResponseBody]
   ): OutputDeclaration[A] =
     gate.check()
     require(status >= 200 && status <= 599, s"Unsupported response status: $status")
