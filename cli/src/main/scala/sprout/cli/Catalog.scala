@@ -56,6 +56,7 @@ final class Catalog(document: Json):
         val schema = resolve(field(param, "schema").getOrElse(throw new IllegalArgumentException(s"Missing schema for $name")))
         val supported = types(schema).filterNot(_ == "null")
         require(supported.size == 1 && Set("string", "integer", "number", "boolean", "array")(supported.head), s"Unsupported parameter schema: $name")
+        require(name != "cwd" || supported.head == "string", "Implicit cwd parameter must be a string")
         if supported.head == "array" then
           val items = resolve(field(schema, "items").getOrElse(Json.Null))
           require(location == "query" && types(items).size == 1 && Set("string", "integer", "number", "boolean")(types(items).head), s"Only primitive query arrays are supported: $name")

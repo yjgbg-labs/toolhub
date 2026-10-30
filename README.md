@@ -63,12 +63,16 @@ Scala CLI、curl 和 mc；Native 编译还需要 Clang 和 libcurl 等开发库�
 groot-cli --help
 groot-cli health
 groot-cli schedule new --name hello --body '{"command":["echo","hi"],"every":"1h"}'
+groot-cli jobs --job build --parallel 2
 ```
 
 服务端固定监听 `0.0.0.0:18080`，不读取端口环境变量；CLI 和插件默认连接
 `http://127.0.0.1:18080`。客户端可用 `SPROUT_PORT` 覆盖默认端口，或通过
 `SPROUT_BASE_URL` 指定完整的 HTTP(S) 地址。CLI 每次从服务端加载 `/openapi.json`，帮助中的程序名
 取调用文件/软链接的原始名称。
+
+CLI 对服务端声明的字符串参数 `cwd` 自动传入本机当前目录的绝对路径，并隐藏对应的命令行参数。
+该机制适用于任意命令；用户无需提供 `cwd`，也不能通过参数或 `--input` 覆盖它。
 
 CLI 遇到成功响应的 `Content-Type: text/event-stream` 时，会像 `tail -f` 一样
 持续打印每个 SSE 事件的 `data` 内容，并立即刷新控制台，支持管道与重定向。
@@ -83,3 +87,34 @@ JSON 数据保持原文，多行 `data:` 合并为多行文本；心跳注释和
 OpenCode 插件在 setup 时发现命令并注册 Code Mode 工具及 namespace，返回清理函数。
 支持通过插件 options 配置 `baseUrl`、`schemaUrl`、`headers`、`tokenEnv`、`timeoutMs`。
 安装后的入口由 OpenCode 自动发现，文件变更自动加载。
+
+### 本地 jobs
+
+在项目目录执行 `groot-cli jobs --job <任务>`；服务端根据隐式传入的 cwd 读取 `jobs.yaml`，`--parallel` 默认 `5`。
+`groot-cli jobs --help` 显示参数说明。
+
+服务端用 Scala 读取单个 YAML 文件、解析并校验完整依赖图，
+再将目标及其传递依赖编译为 `Shell` 响应。客户端执行生成的 `/bin/sh` 脚本，使用 Linux
+常用工具 `mktemp`、`mkfifo`、`date` 和 `rm`；无需 Bun 或客户端 YAML 解析器。
+配置路径是服务端可访问的 `<cwd>/jobs.yaml`，jobs 不使用请求体。
+
+```yaml
+version: 1
+jobs:
+  - name: install
+    run: echo preparing
+  - name: test
+    needs: [install]
+    run: echo testing
+  - name: build
+    needs: [install, test]
+    run: |
+      echo building
+```
+
+- 仅支持一个 `version: 1` 文件；`imports` 和 namespace 不受支持。
+- 执行目标及其传递依赖，共享依赖只执行一次；就绪任务按并发上限运行。
+- 每个 `run` 用 `/bin/sh -e -c` 执行，继承 CLI 的当前目录、环境和标准输入输出。
+- Shell 通过后台进程和 FIFO 完成通知调度；任意任务结束即可释放并发名额。
+- 保留 `[jobs] start/done/fail/skip` 日志。失败跳过所有下游任务，独立分支继续完成；整体成功退出 `0`，失败退出 `1`。
+- 重复名称、无效配置、缺失依赖和循环由服务端返回 HTTP 400，客户端不执行任何任务。

@@ -17,7 +17,7 @@ object NativeCli:
         })
         // Scala Native preserves argv[0], including the name of an invoked symlink.
         val program = new java.io.File(scala.scalanative.runtime.filename).getName
-        CommandLine.run(program, args.toVector, transport, readJsonArgument)
+        CommandLine.run(program, args.toVector, transport, readArgument, new java.io.File(".").getCanonicalPath)
       finally backend.close()
       result match
         case CommandLine.Result.Text(value) =>
@@ -31,8 +31,7 @@ object NativeCli:
         1
     if exitCode != 0 then sys.exit(exitCode)
 
-  private def readJsonArgument(value: String): io.circe.Json =
-    val text = if value == "-" then scala.io.Source.fromInputStream(System.in, "UTF-8").mkString
-      else if value.startsWith("@") then scala.util.Using.resource(scala.io.Source.fromFile(value.drop(1), "UTF-8"))(_.mkString)
-      else value
-    Catalog.parse(text)
+  private def readArgument(value: String): String =
+    if value == "-" then scala.io.Source.fromInputStream(System.in, "UTF-8").mkString
+    else if value.startsWith("@") then scala.util.Using.resource(scala.io.Source.fromFile(value.drop(1), "UTF-8"))(_.mkString)
+    else value

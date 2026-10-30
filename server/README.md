@@ -161,6 +161,16 @@ command[String]("label") { handle { IO.pure("ok") } }
 
 ### Client-side shell scripts
 
+The CLI automatically supplies any declared string parameter named `cwd` from
+its current working directory, without exposing a user-editable CLI argument:
+
+```scala
+val cwd = param[String]("cwd", "Caller working directory")
+```
+
+This uses ordinary OpenAPI parameters. File discovery and parsing belong to the
+server-side command handler.
+
 `Shell` is an explicitly constructed opaque `String` subtype:
 `opaque type Shell <: String = String`. It is exported by `framework.rpcDsl.*`.
 

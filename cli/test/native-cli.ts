@@ -44,6 +44,10 @@ const document = {
     "/message": { get: { operationId: "greeting", responses } },
     "/missing": { get: { operationId: "inventory.missing", responses } },
     "/exact": { get: { operationId: "numbers", responses } },
+    "/context/{cwd}": { get: { operationId: "context", responses, parameters: [
+      parameter("cwd", "path", string, true), parameter("cwd", "query", { ...string, default: "/server/default" }),
+      parameter("cwd", "header", string, true), parameter("cwd", "cookie"),
+    ] } },
   },
 };
 let served: unknown = document;
@@ -67,6 +71,7 @@ const handler = async (request: Request) => {
   if (path === "/message") return Response.json("hello from an unrelated API");
   if (path === "/missing") return Response.json({ error: "fixture missing" }, { status: 404 });
   if (path === "/exact") return new Response('{"serial":9223372036854775807}', { headers: { "Content-Type": "application/problem+json" } });
+  if (path.startsWith("/context/")) return Response.json({ ...received, cwdHeader: request.headers.get("cwd") });
   if (path === "/new-endpoint") return new Response("discovered after compilation", { headers: { "Content-Type": "text/plain" } });
   return new Response("unknown", { status: 404 });
 };
@@ -78,6 +83,7 @@ try {
     async function run(args: string[], stdin?: string) {
       const previousDiscoveries = discoveryCount;
       const child = Bun.spawn([binary, ...args], {
+        cwd: directory,
         env: { ...process.env, SPROUT_BASE_URL: baseUrl, SPROUT_PORT: String(tcp.port) },
         stdin: stdin === undefined ? "ignore" : new Blob([stdin]), stdout: "pipe", stderr: "pipe",
       });
@@ -138,6 +144,24 @@ try {
     for (const source of [`@${directory}/body.json`, "-"]) {
       assert.equal(JSON.parse(await ok([...command, "body", "--header.token", "secret", "--body", source], body)).body, body);
     }
+    for (const args of [["context"], ["context", "--input", "{}"]]) {
+      const context = JSON.parse(await ok(args));
+      assert.equal(decodeURIComponent(context.path), `/context/${directory}`);
+      assert.equal(context.path.split("/").length, 3);
+      assert.deepEqual(context.query, [["cwd", directory]]);
+      assert.equal(context.cwdHeader, directory);
+      assert.equal(context.cookie, `cwd=${encodeURIComponent(directory)}`);
+      assert.equal(context.body, "");
+    }
+    assert.doesNotMatch(await ok(["context", "--help"]), /--(?:(?:query|path|header|cookie)\.)?cwd|<cwd>|--body\b/);
+    await invalid(["context", "--body", '"override"'], /has no body/);
+    await invalid(["context", "--input", '{"body":"override"}'], /has no body/);
+    for (const flag of ["cwd", "query.cwd", "path.cwd", "header.cwd", "cookie.cwd"]) {
+      await invalid(["context", `--${flag}`, "/override"], /cwd is supplied automatically/);
+    }
+    for (const location of ["query", "path", "header", "cookie"]) {
+      await invalid(["context", "--input", JSON.stringify({ [location]: { cwd: "/override" } })], /cwd is supplied automatically/);
+    }
     await invalid([...command, ...required], /Missing required argument.*path.part/);
     await invalid([...command, "part", "--body", body], /Missing required argument.*header.token/);
     await invalid([...command, "part", "--header.token", "secret"], /Missing required argument.*--body/);
@@ -158,12 +182,15 @@ try {
     assert.equal(failure.code, 1);
     assert.match(failure.stderr, /HTTP 404.*fixture missing/);
 
-    served = { ...document, info: { title: "Fresh HTTP API", version: "2" }, paths: { "/new-endpoint": { put: { operationId: "fresh.deep.command", responses } } } };
+    served = { ...document, info: { title: "Fresh HTTP API", version: "2" }, paths: { "/new-endpoint": { put: {
+      operationId: "fresh.deep.command", parameters: [parameter("cwd", "query", string, true)], responses,
+    } } } };
     const refreshed = await ok(["--help"]);
     assert.match(refreshed, /fresh/);
     assert.doesNotMatch(refreshed, /inventory|greeting/);
     assert.equal(await ok(["fresh", "deep", "command"]), "discovered after compilation\n");
     assert.equal(requests.at(-1)!.method, "PUT");
+    assert.deepEqual(requests.at(-1)!.query, [["cwd", directory]]);
     await invalid(["inventory", "parts"], /Unknown command/);
 
     served = { error: "discovery unavailable" };

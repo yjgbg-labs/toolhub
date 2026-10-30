@@ -10,6 +10,7 @@
 //> using dep com.softwaremill.sttp.apispec::openapi-circe:0.11.10
 //> using dep com.outr::scribe:3.19.0
 //> using dep com.outr::scribe-slf4j2:3.19.0
+//> using dep org.snakeyaml:snakeyaml-engine:3.2
 //> using test.dep org.typelevel::munit-cats-effect:2.2.0
 //> using test.dep org.http4s::http4s-ember-client:0.23.37
 //> using test.dep io.swagger.parser.v3:swagger-parser-v3:2.1.48
