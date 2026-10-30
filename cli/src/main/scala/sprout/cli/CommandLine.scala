@@ -5,13 +5,17 @@ import scala.collection.mutable
 
 /** Command discovery and invocation depend only on the live OpenAPI contract. */
 object CommandLine:
+  enum Result:
+    case Text(value: String)
+    case Shell(script: String)
+
   private val reserved = Set("body", "input", "help")
   private final class Node:
     val children = mutable.LinkedHashMap.empty[String, Node]
     var operation: Option[Operation] = None
     var description: String = ""
 
-  def run(program: String, args: Vector[String], send: HttpRequest => HttpResponse, readJson: String => Json): String =
+  def run(program: String, args: Vector[String], send: HttpRequest => HttpResponse, readJson: String => Json): Result =
     // Consume option values before recognizing help: --name -h is a literal value.
     val rest = Vector.newBuilder[String]
     var showHelp = false
@@ -54,7 +58,7 @@ object CommandLine:
       offset += 1
     if showHelp || node.operation.isEmpty then
       require(showHelp || remaining.size == offset, "Choose an operation before passing parameters")
-      help(node, path, program)
+      Result.Text(help(node, path, program))
     else
       val operation = node.operation.get
       val request = try catalog.request(operation, input(catalog, operation, remaining.drop(offset), readJson))
@@ -68,12 +72,15 @@ object CommandLine:
       throw new RuntimeException(s"HTTP ${response.status}: ${response.body}")
     response
 
-  private def render(response: HttpResponse): String =
-    if response.body.isEmpty then ""
-    else if response.mediaType.exists(t => t == "application/json" || t.endsWith("+json")) then
-      val json = Catalog.parse(response.body)
-      if json.isNull then "" else json.asString.getOrElse(json.spaces2)
-    else response.body
+  private def render(response: HttpResponse): Result =
+    if response.mediaType.contains("application/x-sh") then Result.Shell(response.body)
+    else Result.Text {
+      if response.body.isEmpty then ""
+      else if response.mediaType.exists(t => t == "application/json" || t.endsWith("+json")) then
+        val json = Catalog.parse(response.body)
+        if json.isNull then "" else json.asString.getOrElse(json.spaces2)
+      else response.body
+    }
 
   private def flagName(operation: Operation, param: Parameter): String =
     if reserved(param.name) || operation.parameters.count(_.name == param.name) > 1 then s"${param.location}.${param.name}"

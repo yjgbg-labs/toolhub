@@ -31,6 +31,7 @@ framework/
 │   ├── Scopes.scala
 │   ├── Metadata.scala
 │   ├── PlainText.scala
+│   ├── Shell.scala
 │   ├── SSE.scala
 │   └── SuccessResponse.scala
 └── runtime/
@@ -130,8 +131,9 @@ val app = httpApp {
   produces `/health` and `health`. Commands are leaves and cannot contain groups
   or other commands.
 - `command[A]` declares the HTTP 200 result type. Its handler returns `IO[A]`.
-  `PlainText` produces `text/plain`, `Unit` an empty body, `SSE[A]` an event stream,
-  and `JsonModel` types (including ordinary `String`) JSON.
+  `PlainText` produces `text/plain`, `Shell` an `application/x-sh` script,
+  `Unit` an empty body, `SSE[A]` an event stream, and `JsonModel` types
+  (including ordinary `String`) JSON.
 - `param[A]("name", "description") { ... }` declares a query parameter.
   `default`, numeric/string constraints, optional values and repeated query
   values work as in the HTTP DSL. The configuration block is optional.
@@ -156,6 +158,28 @@ command[String]("label") { handle { IO.pure("ok") } }
 
 `health` returns the bytes `ok` as `text/plain`; `label` returns `"ok"` as
 `application/json`. The health and scheduler log endpoints use `PlainText`.
+
+### Client-side shell scripts
+
+`Shell` is an explicitly constructed opaque `String` subtype:
+`opaque type Shell <: String = String`. It is exported by `framework.rpcDsl.*`.
+
+```scala
+command[Shell]("local-info") {
+  handle { IO.pure(Shell("printf 'Client directory: '; pwd")) }
+}
+```
+
+The server returns the script unchanged with `Content-Type: application/x-sh`;
+OpenAPI describes it as a string. Running `groot-cli local-info` executes the
+complete successful response locally with `/bin/sh -c`, inheriting the CLI's
+working directory, environment and standard input/output/error. Output appears
+as the script runs, and the CLI exits with the script's exit status.
+
+Execution is selected from the actual response media type, including headers
+with charset parameters. The HTTP response must finish successfully before
+execution starts. Plain text, JSON, SSE events, HTTP errors and OpenAPI discovery
+responses are never interpreted as executable scripts.
 
 ### Server-sent events
 
