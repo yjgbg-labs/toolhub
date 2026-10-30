@@ -1,5 +1,4 @@
 //> using scala 3.9.0
-//> using resourceDir src/main/resources
 //> using options -deprecation -feature -unchecked
 //> using javaOpt -XX:ActiveProcessorCount=4
 //> using javaOpt --enable-native-access=ALL-UNNAMED

@@ -21,7 +21,7 @@ class GraalSdkSuite extends CatsEffectSuite:
       log <- manager.logs(task.id)
     yield (task, log.toString)
 
-  test("the frozen command tree supports await, nested/hyphenated names, typed inputs, all response kinds and API errors") {
+  test("the read-only command tree supports native Promises, nested/hyphenated names, typed inputs, all response kinds and API errors") {
     temporary.use { home =>
       for
         calls <- Ref.of[IO, Int](0)
@@ -57,7 +57,16 @@ class GraalSdkSuite extends CatsEffectSuite:
         _ <- GraalManager.resource(home.resolve("data"), IO.pure(app.commandSdk)).use { manager =>
           run(manager, """
             if (typeof search !== "undefined" || typeof Java !== "undefined" || typeof fetch !== "undefined") throw Error("unexpected SDK");
-            if (!Object.isFrozen(tools) || !Object.isFrozen(tools.sample)) throw Error("mutable tree");
+            const originalTools = tools, health = tools.health;
+            for (const mutate of [() => { tools.health = null; }, () => { delete tools.health; },
+                 () => { tools.extra = 42; }, () => { globalThis.tools = {}; },
+                 () => { Object.defineProperty(tools, "health", {value: null}); }]) {
+              try { mutate(); } catch (_) {}
+            }
+            if (tools !== originalTools || tools.health !== health || tools.extra !== undefined) throw Error("mutable tree");
+            if (!Object.keys(tools).includes("sample") || tools.getClass !== undefined) throw Error("invalid namespace");
+            const promise = tools.health(undefined);
+            if (!(promise instanceof Promise) || (await promise).body !== "ok") throw Error("expected native Promise");
             console.log((await tools.health()).body, (await tools.sample()).body);
             console.log((await tools.sample.name()).body, (await tools.sample.length()).body, (await tools.sample.prototype()).body);
             console.log((await tools.sample.deep["echo-text"]({query: {words: ["a&b", "中文/🙂"]}, body: "raw\ntext"})).body);
@@ -70,11 +79,14 @@ class GraalSdkSuite extends CatsEffectSuite:
             for (const invoke of [() => tools.sample.denied(), () => tools.sample.json({body: {text: "missing values"}}),
                  () => tools.sample.json({query: {scale: 0}, body: {text: "x", values: []}})]) {
               try { await invoke(); throw Error("expected rejection"); }
-              catch (error) { if (error.name !== "ApiError") throw error; console.log(error.operationId, error.response.status); }
+              catch (error) { if (!(error instanceof Error) || error.name !== "ApiError") throw error; console.log(error.operationId, error.response.status); }
             }
-            for (const input of [{query: {scale: "3"}}, {query: {typo: 1}}, {unknown: true}, null]) {
-              try { await tools.sample.empty(input); throw Error("accepted invalid input"); }
-              catch (error) { if (error.message === "accepted invalid input") throw error; }
+            const cyclic = {}; cyclic.self = cyclic;
+            for (const input of [{query: {scale: "3"}}, {query: {typo: 1}}, {unknown: true}, null, cyclic, 1n, () => {}]) {
+              const rejected = tools.sample.empty(input);
+              if (!(rejected instanceof Promise)) throw Error("validation did not return a Promise");
+              try { await rejected; throw Error("accepted invalid input"); }
+              catch (error) { if (!(error instanceof Error) || error.message === "accepted invalid input") throw error; }
             }
           """).flatMap { (task, log) =>
             IO {

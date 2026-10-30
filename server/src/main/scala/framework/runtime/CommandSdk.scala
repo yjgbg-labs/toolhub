@@ -15,10 +15,10 @@ final class CommandSdk private[framework] (
 ):
   private val byId = endpoints.map(endpoint => endpoint.spec.operationId -> endpoint.spec).toMap
 
-  val commands: Json = Json.fromValues(byId.keys.toVector.sorted.map { id =>
+  val commands: Vector[String] = byId.keys.toVector.sorted.map { id =>
     require(id.matches("[A-Za-z][A-Za-z0-9_-]*(\\.[A-Za-z][A-Za-z0-9_-]*)*"), s"Invalid SDK operationId: $id")
-    Json.fromString(id)
-  })
+    id
+  }
 
   def call(id: String, input: Json): IO[Json] = IO.defer {
     val spec = byId.getOrElse(id, throw new IllegalArgumentException(s"Unknown command: $id"))

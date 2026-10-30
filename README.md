@@ -158,6 +158,8 @@ UTF-8 字符跨写入块也能正确处理；断开日志连接只停止订阅�
 
 每个任务的 `tools` 对象自动包含当前 Scala server 注册的完整命令树，与 Code Mode 的命名、
 输入分组和响应结构一致。命令声明增删后，SDK 随服务启动生成，无需维护独立的方法列表。
+工具树由 Scala `ProxyObject` / `ProxyExecutable` 直接注入每个 Context；Promise、JSON 对象和错误
+使用该 Context 的原生构造器创建，不加载额外的 JavaScript SDK 包装代码。
 例如 `schedule.list` 映射为 `tools.schedule.list()`，带连字符的方法使用方括号。
 参数定义沿用 `/openapi.json`；GraalJS 内不提供 `search()`。
 
