@@ -38,6 +38,8 @@ final class Application private[framework] (
     }
   }
 
+  lazy val commandSdk: CommandSdk = new CommandSdk(endpoints, httpApp)
+
   def resource: Resource[IO, org.http4s.server.Server] =
     EmberServerBuilder.default[IO]
       .withHost(Host.fromString(serverSettings.host).get)
@@ -75,8 +77,9 @@ final class Application private[framework] (
 
   private def execute(endpoint: BoundEndpoint, params: Map[String, String], request: Request[IO]): IO[Response[IO]] =
     val spec = endpoint.spec
-    val body = if spec.inputs.exists(_.location == InputLocation.Body) then readBody(request)
-               else IO.pure(Right(None): Either[Response[IO], Option[Json]])
+    val body = spec.inputs.find(_.location == InputLocation.Body) match
+      case Some(input) => readBody(request, input.bodyMediaType.get)
+      case None => IO.pure(Right(None): Either[Response[IO], Option[Json]])
     body.flatMap {
       case Left(response) => IO.pure(response)
       case Right(json) =>
@@ -105,16 +108,18 @@ final class Application private[framework] (
           }
     }
 
-  private def readBody(request: Request[IO]): IO[Either[Response[IO], Option[Json]]] =
+  private def readBody(request: Request[IO], mediaType: String): IO[Either[Response[IO], Option[Json]]] =
     request.body.take(serverSettings.maxBodyBytes + 1).compile.to(Array).map { bytes =>
+      val isText = mediaType == "text/plain"
+      val matchesType = request.headers.get[`Content-Type`].exists(_.mediaType == org.http4s.MediaType.parse(mediaType).toOption.get)
       if bytes.length > serverSettings.maxBodyBytes then Left(errorResponse(413, "body_too_large", "Request body too large"))
+      else if bytes.isEmpty && isText && matchesType then Right(Some(Json.fromString("")))
       else if bytes.isEmpty then Right(None)
-      else if !request.headers.get[`Content-Type`].exists(_.mediaType == org.http4s.MediaType.application.json) then
-        Left(errorResponse(415, "unsupported_media_type", "Expected application/json"))
+      else if !matchesType then Left(errorResponse(415, "unsupported_media_type", s"Expected $mediaType"))
       else
         val decoded = Try(UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString).toEither.left.map(_ => "Invalid UTF-8")
-          .flatMap(text => io.circe.parser.parse(text).left.map(_ => "Malformed JSON"))
-        decoded.left.map(message => errorResponse(400, "invalid_json", message)).map(Some(_))
+          .flatMap(text => if isText then Right(Json.fromString(text)) else io.circe.parser.parse(text).left.map(_ => "Malformed JSON"))
+        decoded.left.map(message => errorResponse(400, if isText then "invalid_text" else "invalid_json", message)).map(Some(_))
     }
 
   private def headerValues(request: Request[IO], name: String): Vector[String] =

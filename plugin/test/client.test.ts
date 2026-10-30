@@ -45,6 +45,42 @@ test("text, empty and HTTP error responses have consistent outcomes", async () =
   }
 });
 
+test("text request bodies are sent verbatim with string schema validation; JSON remains preferred", async () => {
+  const sent: { body: string; contentType: string | null }[] = [];
+  const textSchema = { type: "string", minLength: 1 };
+  const operation = (content: object) => ({ post: {
+    operationId: "notes.save", requestBody: { required: true, content }, responses: { "200": { description: "ok" } },
+  } });
+  const doc = { openapi: "3.1.2", info: { title: "Text", version: "1" },
+    components: { schemas: { Text: textSchema } },
+    paths: { "/notes": operation({ "text/plain": { schema: { $ref: "#/components/schemas/Text" } } }) },
+  };
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    if (new URL(request.url).pathname === "/openapi.json") return Response.json(doc);
+    const received = { body: await request.text(), contentType: request.headers.get("content-type") };
+    sent.push(received);
+    return Response.json(received);
+  } });
+  try {
+    const client = await ApiClient.connect({ baseUrl: server.url.toString() });
+    const source = "  const text = '中文🙂';\r\nconsole.log(\"quoted\\n\", text);\n";
+    expect((await client.call("notes.save", { body: source })).body).toEqual({ body: source, contentType: "text/plain" });
+    for (const input of [{}, { body: 42 }, { body: {} }, { body: "" }]) {
+      await expect(client.call("notes.save", input)).rejects.toThrow("Invalid input");
+    }
+    expect(sent).toHaveLength(1);
+    textSchema.type = "object";
+    expect(() => new Catalog(doc)).toThrow("text/plain body must have a string schema");
+    textSchema.type = "string";
+    doc.paths["/notes"] = operation({ "text/plain": { schema: textSchema }, "application/json": { schema: textSchema } });
+    const jsonClient = await ApiClient.connect({ baseUrl: server.url.toString() });
+    expect((await jsonClient.call("notes.save", { body: source })).body).toEqual({ body: JSON.stringify(source), contentType: "application/json" });
+    doc.paths["/notes"] = operation({ "application/json": { schema: true } });
+    const anyJsonClient = await ApiClient.connect({ baseUrl: server.url.toString() });
+    expect((await anyJsonClient.call("notes.save", { body: 42 })).body).toEqual({ body: "42", contentType: "application/json" });
+  } finally { await server.stop(true); }
+});
+
 test("ambiguous operation IDs and unsupported contracts fail catalog construction", () => {
   const doc = document();
   doc.paths["/health"].get.operationId = "users.create";

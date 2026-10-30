@@ -42,6 +42,10 @@ const document = {
       delete: { operationId: "inventory.parts.remove", responses: { "204": { description: "Removed" } } },
     },
     "/message": { get: { operationId: "greeting", responses } },
+    "/note": { post: {
+      operationId: "inventory.notes.save", responses,
+      requestBody: { required: true, content: { "text/plain": { schema: { type: "string", minLength: 1 } } } },
+    } },
     "/missing": { get: { operationId: "inventory.missing", responses } },
     "/exact": { get: { operationId: "numbers", responses } },
     "/context/{cwd}": { get: { operationId: "context", responses, parameters: [
@@ -69,6 +73,7 @@ const handler = async (request: Request) => {
   requests.push(received);
   if (path.startsWith("/v2/parts/")) return request.method === "DELETE" ? new Response(null, { status: 204 }) : Response.json(received);
   if (path === "/message") return Response.json("hello from an unrelated API");
+  if (path === "/note") return Response.json(received);
   if (path === "/missing") return Response.json({ error: "fixture missing" }, { status: 404 });
   if (path === "/exact") return new Response('{"serial":9223372036854775807}', { headers: { "Content-Type": "application/problem+json" } });
   if (path.startsWith("/context/")) return Response.json({ ...received, cwdHeader: request.headers.get("cwd") });
@@ -144,6 +149,36 @@ try {
     for (const source of [`@${directory}/body.json`, "-"]) {
       assert.equal(JSON.parse(await ok([...command, "body", "--header.token", "secret", "--body", source], body)).body, body);
     }
+    const note = ["inventory", "notes", "save"];
+    const text = "  const message = '中文🙂';\r\nconsole.log(\"quoted\\n\", message);\n";
+    assert.match(await ok([...note, "--help"]), /--body <text\|@file\|->.*UTF-8 text body; required/);
+    await Bun.write(`${directory}/note.txt`, text);
+    for (const source of [text, `@${directory}/note.txt`, "-"]) {
+      const received = JSON.parse(await ok([...note, "--body", source], text));
+      assert.equal(received.method, "POST");
+      assert.equal(received.contentType, "text/plain");
+      assert.equal(received.body, text);
+      assert.deepEqual(received.query, []);
+    }
+    assert.equal(JSON.parse(await ok([...note, "--input", JSON.stringify({ body: text })])).body, text);
+    assert.equal(JSON.parse(await ok([...note, "--body", '"literal quotes"'])).body, '"literal quotes"');
+    await invalid(note, /Missing required argument.*--body/);
+    await invalid([...note, "--body", ""], /minLength/);
+    await invalid([...note, "--input", '{"body":42}'], /expected string/);
+    const noteOperation = document.paths["/note"].post;
+    served = { ...document, paths: { "/note": { post: { ...noteOperation,
+      requestBody: { required: true, content: {
+        "text/plain": { schema: string }, "application/json": { schema: string },
+      } },
+    } } } };
+    const preferred = JSON.parse(await ok([...note, "--body", JSON.stringify(text)]));
+    assert.equal(preferred.contentType, "application/json");
+    assert.equal(preferred.body, JSON.stringify(text));
+    served = { ...document, paths: { "/note": { post: { ...noteOperation,
+      requestBody: { required: true, content: { "text/plain": { schema: { type: "object" } } } },
+    } } } };
+    await invalid([...note, "--body", text], /text\/plain body must have a string schema/);
+    served = document;
     for (const args of [["context"], ["context", "--input", "{}"]]) {
       const context = JSON.parse(await ok(args));
       assert.equal(decodeURIComponent(context.path), `/context/${directory}`);
@@ -199,7 +234,7 @@ try {
     discoveryStatus = 200;
     await invalid(["--help"], /Missing string: openapi/);
   }
-  console.log("Dynamic Native CLI passed: live OpenAPI replacement, nested commands, parameters, JSON/file/stdin, exact int64, errors, TCP defaults and URL overrides");
+  console.log("Dynamic Native CLI passed: live OpenAPI replacement, nested commands, parameters, JSON/text/file/stdin, exact int64, errors, TCP defaults and URL overrides");
 } finally {
   await tcp.stop(true);
   await rm(directory, { recursive: true, force: true });

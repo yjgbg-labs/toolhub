@@ -84,7 +84,7 @@ path. When omitted, an ID is derived from the HTTP method and path.
 `routes` is a flat collection: inputs, responses, tags and middleware declared
 there apply to all of its endpoints, including declarations made after an
 endpoint. Multiple `routes` blocks have independent shared declarations.
-Inputs use `path`, `query`, `header`, `cookie` and `body.json`; responses use
+Inputs use `path`, `query`, `header`, `cookie`, `body.json` and `body.text`; responses use
 `response.json`, `response.text` and `response.empty`. HTTP handlers return
 `IO[EndpointResult]`.
 
@@ -139,6 +139,8 @@ val app = httpApp {
   values work as in the HTTP DSL. The configuration block is optional.
 - `body[A]("description") { ... }` declares a JSON body with the same defaults
   and validation. The configuration block is optional.
+- `body.text("description") { ... }` declares a UTF-8 `text/plain` body as
+  `Input[String]`, with the same string constraints and defaults.
 - A command with a body uses POST; a command without one uses GET. This is based
   on the complete declaration, including inherited bodies declared after child
   commands. An optional/defaulted body still selects POST.
@@ -146,6 +148,27 @@ val app = httpApp {
   declarations accept `CommandsScope`; only `CommandScope[A]` permits `handle`.
 
 ### Plain text and JSON strings
+
+For request bodies, HTTP uses `body.text` and RPC uses `body.text("description")`:
+
+```scala
+command[PlainText]("echo") {
+  val input = body.text("Text to echo") { minLength(1) }
+  handle { IO.pure(PlainText(input.value)) }
+}
+```
+
+This accepts raw UTF-8 bytes with `Content-Type: text/plain` (optionally with
+`charset=utf-8`) and publishes a string schema under that media type in OpenAPI.
+Quotes and whitespace are preserved. An explicitly typed empty text body is the
+empty string; an empty body without a content type is missing and uses a declared
+default or fails required validation. Invalid UTF-8 returns 400, oversized bodies
+return 413, and nonempty bodies with another media type return 415. The server's
+`maxBodyBytes` limit applies to JSON and text bodies alike.
+
+`body[String](...)` / `body.json[String]` continue to require a JSON-encoded string.
+Dynamic clients use `--body 'text'` or `{ body: "text" }` for text requests and
+serialize the string directly on the wire.
 
 `PlainText` is an opaque `String` subtype (`opaque type PlainText <: String = String`).
 Construct it explicitly with `PlainText(value)`; it can be used wherever a `String`

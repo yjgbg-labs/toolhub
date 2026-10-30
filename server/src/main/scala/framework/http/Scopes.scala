@@ -73,6 +73,11 @@ abstract class DeclarationScope private[framework] (
     handle
 
   private[framework] def jsonBody[A](using model: JsonModel[A]): Input[A] =
+    requestBody[A]("application/json")
+
+  private[framework] def textBody: Input[String] = requestBody[String]("text/plain")
+
+  private def requestBody[A](mediaType: String)(using model: JsonModel[A]): Input[A] =
     gate.check()
     hasBody = true
     val config = new InputScope[A](gate)
@@ -85,8 +90,8 @@ abstract class DeclarationScope private[framework] (
         missing.isEmpty, config.defaultValue.map(model.encoder.apply), false, rules, {
           case RawInput.Body(Some(json)) => model.decoder.decodeJson(json).left.map(_.getMessage)
           case RawInput.Body(None) => missing.toRight("Missing required request body")
-          case _ => Left("Expected a JSON body")
-        })
+          case _ => Left(s"Expected a $mediaType body")
+        }, Some(mediaType))
     )
     handle
 

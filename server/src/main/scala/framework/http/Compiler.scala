@@ -47,8 +47,9 @@ private[framework] object Compiler:
     }
     val automatic = Vector(500 -> "Internal server error") ++
       Option.when(scope.inputs.nonEmpty)(400 -> "Invalid request").toVector ++
-      (if scope.inputs.exists(_.location == InputLocation.Body) then
-        Vector(413 -> "Request body too large", 415 -> "Expected application/json") else Vector.empty)
+      scope.inputs.find(_.location == InputLocation.Body).toVector.flatMap { input =>
+        Vector(413 -> "Request body too large", 415 -> s"Expected ${input.bodyMediaType.get}")
+      }
     automatic.foldLeft(declared) { case (responses, (status, description)) =>
       val existing = responses.find(_.status == status)
       val content = if method == "HEAD" then Vector.empty else

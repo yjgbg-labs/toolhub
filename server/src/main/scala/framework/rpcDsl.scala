@@ -48,8 +48,12 @@ object rpcDsl:
   def param[A](using codec: ParamCodec[A], scope: CommandsScope)(name: String, description: String): Input[A] =
     httpDsl.query[A](using codec, scope.http)(name) { httpDsl.description(description) }
 
-  def body[A](using model: JsonModel[A], scope: CommandsScope)(description: String): Input[A] =
-    httpDsl.body.json[A](using model, scope.http).apply { httpDsl.description(description) }
+  object body:
+    def apply[A](using model: JsonModel[A], scope: CommandsScope)(description: String): Input[A] =
+      httpDsl.body.json[A](using model, scope.http).apply { httpDsl.description(description) }
+
+    def text(description: String)(using scope: CommandsScope): Input[String] =
+      httpDsl.body.text(using scope.http).apply { httpDsl.description(description) }
 
   def description(value: String)(using scope: CommandsScope | DescriptionScope): Unit = scope match
     case commands: CommandsScope => httpDsl.description(value)(using commands.http)

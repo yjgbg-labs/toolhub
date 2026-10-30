@@ -135,6 +135,7 @@ object httpDsl:
   object body:
     // Input.apply handles the optional configuration block without an ambiguous overload.
     def json[A: JsonModel](using scope: DeclarationScope): Input[A] = scope.jsonBody[A]
+    def text(using scope: DeclarationScope): Input[String] = scope.textBody
 
   object response:
     def json[A](status: Int)(init: ResponseScope ?=> Unit)(using model: JsonModel[A], scope: DeclarationScope): Output[A] =

@@ -20,7 +20,7 @@ export interface Operation {
   path: string;
   description: string;
   parameters: Parameter[];
-  body?: { required: boolean; schema: Schema; description?: string };
+  body?: { required: boolean; schema: Schema; description?: string; mediaType: "application/json" | "text/plain" };
   inputSchema: Schema;
   outputSchema: Schema;
 }
@@ -138,10 +138,17 @@ export class Catalog {
         let body: Operation["body"];
         if (op.requestBody) {
           const request = resolve(doc, op.requestBody);
-          const json = request.content?.["application/json"];
-          if (!json?.schema) throw new Error(`Expected application/json request body: ${id}`);
+          const mediaType = (["application/json", "text/plain"] as const).find(media => request.content?.[media]?.schema);
+          if (!mediaType) throw new Error(`Expected application/json or text/plain request body: ${id}`);
+          const schema = request.content[mediaType].schema;
+          if (mediaType === "text/plain") {
+            const type = resolve(doc, schema).type;
+            if (type !== "string" && !(Array.isArray(type) && type.length === 1 && type[0] === "string")) {
+              throw new Error(`text/plain body must have a string schema: ${id}`);
+            }
+          }
           if (["get", "head"].includes(method)) throw new Error(`A ${method.toUpperCase()} request cannot have a body: ${id}`);
-          body = { schema: json.schema, required: request.required === true, description: request.description };
+          body = { schema, required: request.required === true, description: request.description, mediaType };
         }
         const properties: Schema = Object.create(null);
         const required: string[] = [];
