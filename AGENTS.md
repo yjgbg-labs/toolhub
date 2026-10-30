@@ -26,7 +26,7 @@
 
 创建、修改、构建、打包或部署应用项目时，必须加载 `jobs` skill，并遵循其中的 `jobs.yaml` 编排和 `groot k8s` 部署约定。
 
-- 正常构建和部署操作统一通过 `groot jobs <job>` 执行。
+- 正常构建和部署操作统一通过 `groot-cli jobs --job <job>` 执行。
 - Kubernetes YAML 固定放在项目根目录的 `./k8s`。
 - 禁止使用 `kubectl apply` 绕过 `groot k8s` 的资源跟踪。
 

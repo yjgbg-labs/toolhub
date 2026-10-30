@@ -20,44 +20,19 @@ jobs:
         mkdir -p server/dist
         groot use-jdk "$JDK_MAJOR" -- scala-cli --power package server/project.scala server/src/main/scala \
           --assembly --preamble=false --main-class groot.Main --jvm system --server=false -o server/dist/groot.jar --force
-        [ "${CHECK_ONLY:-0}" != 1 ] || exit 0
-        SERVER_SHA256=$(sha256sum server/dist/groot.jar | cut -d ' ' -f 1)
-        printf '%s  groot.jar\n' "$SERVER_SHA256" > server/dist/groot.jar.sha256
-        printf 'SERVER_SHA256=%s\n' "$SERVER_SHA256" > server/dist/release.env
-        destination="$ARTIFACT_UPLOAD_BASE/server/$SERVER_SHA256"
-        if ! mc stat "$destination/groot.jar" >/dev/null 2>&1; then
-          mc cp --quiet server/dist/groot.jar "$destination/groot.jar"
-        fi
-        mc cp --quiet server/dist/groot.jar.sha256 "$destination/groot.jar.sha256"
       fi
-      case "${SERVER_SHA256:-}" in *[!a-f0-9]*|'') exit 1 ;; esac
-      test "${#SERVER_SHA256}" -eq 64
+      test -s server/dist/groot.jar
+      [ "${CHECK_ONLY:-0}" != 1 ] || exit 0
       test "$SERVER_START_TIMEOUT_MS" -gt 0
       unit="$SYSTEMD_UNIT_DIR/$SERVER_SERVICE"
-      current="$SERVER_INSTALL_ROOT/server/current"
-      release="$SERVER_INSTALL_ROOT/releases/$SERVER_SHA256"
+      target="$SERVER_INSTALL_ROOT/server/groot.jar"
       if [ -e "$unit" ]; then
         grep -q 'Managed by sprout-http deployment' "$unit" || { echo "Unmanaged unit: $unit" >&2; exit 1; }
       fi
-      if [ -L "$current" ]; then
-        case "$(readlink "$current")" in "$SERVER_INSTALL_ROOT"/releases/*) : ;; *) exit 1 ;; esac
-      else
-        test ! -e "$current"
-      fi
-      mkdir -p "$SERVER_INSTALL_ROOT/releases" "$SERVER_INSTALL_ROOT/server" "$SYSTEMD_UNIT_DIR"
+      mkdir -p "$SERVER_INSTALL_ROOT/server" "$SYSTEMD_UNIT_DIR"
       stage=$(mktemp -d "$SERVER_INSTALL_ROOT/.install.XXXXXX")
       trap 'rm -rf "$stage"; rm -f "$unit.tmp.$$"' EXIT HUP INT TERM
-      mkdir -p "$stage/release/server"
-      url="$ARTIFACT_DOWNLOAD_BASE/server/$SERVER_SHA256/groot.jar"
-      curl -fsSL --max-time 180 "$url" -o "$stage/release/server/groot.jar"
-      curl -fsSL --max-time 30 "$url.sha256" -o "$stage/release/server/groot.jar.sha256"
-      test "$(cat "$stage/release/server/groot.jar.sha256")" = "$SERVER_SHA256  groot.jar"
-      (cd "$stage/release/server" && sha256sum -c groot.jar.sha256)
-      if [ -e "$release" ]; then
-        cmp "$stage/release/server/groot.jar" "$release/server/groot.jar"
-      else
-        mv "$stage/release" "$release"
-      fi
+      install -m 644 server/dist/groot.jar "$stage/groot.jar"
       groot=$(command -v groot)
       "$groot" use-jdk "$JDK_MAJOR" -- java --version
       quote() { printf '"'; printf '%s' "$1" | sed 's/\\/\\\\/g;s/"/\\"/g;s/%/%%/g'; printf '"'; }
@@ -74,7 +49,7 @@ jobs:
       WorkingDirectory=$(printf '%s' "$SERVER_INSTALL_ROOT/server" | sed 's/%/%%/g')
       Environment=$(quote "PATH=$(dirname "$(command -v bun)"):$(dirname "$groot"):/usr/local/bin:/usr/bin:/bin")
       Environment=$(quote "SPROUT_HOME=$SPROUT_HOME")
-      ExecStart=$(exec_quote "$groot") use-jdk "$JDK_MAJOR" -- java -XX:ActiveProcessorCount=4 -jar $(exec_quote "$current/groot.jar")
+      ExecStart=$(exec_quote "$groot") use-jdk "$JDK_MAJOR" -- java -XX:ActiveProcessorCount=4 -jar $(exec_quote "$target")
       UMask=0077
       Restart=on-failure
       RestartSec=3
@@ -86,8 +61,7 @@ jobs:
       systemd-analyze --user verify "$stage/$SERVER_SERVICE"
       install -m 644 "$stage/$SERVER_SERVICE" "$unit.tmp.$$"
       mv -f "$unit.tmp.$$" "$unit"
-      ln -s "$release/server" "$stage/current"
-      mv -Tf "$stage/current" "$current"
+      mv -Tf "$stage/groot.jar" "$target"
       systemctl --user daemon-reload
       systemctl --user enable "$SERVER_SERVICE"
       systemctl --user restart "$SERVER_SERVICE"
@@ -98,7 +72,7 @@ jobs:
       done
       systemctl --user is-active --quiet "$SERVER_SERVICE"
       systemctl --user is-enabled "$SERVER_SERVICE"
-      printf 'Installed server %s at 0.0.0.0:%s\n' "$SERVER_SHA256" "$SERVER_PORT"
+      printf 'Installed server %s at 0.0.0.0:%s\n' "$target" "$SERVER_PORT"
 
   - name: cli-deploy
     run: |
@@ -126,41 +100,14 @@ jobs:
           --native --native-version 0.5.12 --jvm system --server=false --main-class sprout.cli.NativeCli -o cli/dist/groot-cli --force
         bun cli/test/native-cli.ts
         bun test cli/test
-        [ "${CHECK_ONLY:-0}" != 1 ] || exit 0
-        CLI_SHA256=$(sha256sum cli/dist/groot-cli | cut -d ' ' -f 1)
-        printf '%s  groot-cli\n' "$CLI_SHA256" > cli/dist/groot-cli.sha256
-        printf 'CLI_SHA256=%s\n' "$CLI_SHA256" > cli/dist/release.env
-        destination="$ARTIFACT_UPLOAD_BASE/native-cli/$CLI_SHA256"
-        if ! mc stat "$destination/groot-cli" >/dev/null 2>&1; then
-          mc cp --quiet cli/dist/groot-cli "$destination/groot-cli"
-        fi
-        mc cp --quiet cli/dist/groot-cli.sha256 "$destination/groot-cli.sha256"
       fi
-      case "${CLI_SHA256:-}" in *[!a-f0-9]*|'') exit 1 ;; esac
-      test "${#CLI_SHA256}" -eq 64
-      mkdir -p "$CLI_INSTALL_ROOT/releases" "$CLI_BIN_DIR"
-      stage=$(mktemp -d "$CLI_INSTALL_ROOT/releases/.download.XXXXXX")
-      temporary=
-      trap 'rm -rf "$stage"; if [ -n "$temporary" ]; then rm -f "$temporary"; fi' EXIT HUP INT TERM
-      url="$ARTIFACT_DOWNLOAD_BASE/native-cli/$CLI_SHA256"
-      curl -fsSL --max-time 180 "$url/groot-cli" -o "$stage/groot-cli"
-      curl -fsSL --max-time 30 "$url/groot-cli.sha256" -o "$stage/groot-cli.sha256"
-      test "$(cat "$stage/groot-cli.sha256")" = "$CLI_SHA256  groot-cli"
-      (cd "$stage" && sha256sum -c groot-cli.sha256)
-      chmod 755 "$stage/groot-cli"
-      release="$CLI_INSTALL_ROOT/releases/$CLI_SHA256"
-      if [ -e "$release" ]; then cmp "$stage/groot-cli" "$release/groot-cli"; else mv "$stage" "$release"; fi
+      test -s cli/dist/groot-cli
+      [ "${CHECK_ONLY:-0}" != 1 ] || exit 0
+      mkdir -p "$CLI_BIN_DIR"
       destination="$CLI_BIN_DIR/groot-cli"
-      if [ -L "$destination" ]; then
-        case "$(readlink "$destination")" in "$CLI_INSTALL_ROOT"/releases/*/groot-cli) : ;; *) echo "Unmanaged link: $destination" >&2; exit 1 ;; esac
-      elif [ -e "$destination" ]; then
-        echo "Unmanaged file: $destination" >&2
-        exit 1
-      fi
-      temporary="$CLI_BIN_DIR/.groot-cli.$$"
-      ln -s "$release/groot-cli" "$temporary"
-      mv -Tf "$temporary" "$destination"
-      printf 'Installed groot-cli %s\n' "$CLI_SHA256"
+      chmod 755 cli/dist/groot-cli
+      mv -Tf cli/dist/groot-cli "$destination"
+      printf 'Installed groot-cli %s\n' "$destination"
 
   - name: pluging-deploy
     run: |
@@ -171,33 +118,18 @@ jobs:
         bun run --cwd plugin --bun tsc --noEmit
         bun build plugin/src/index.ts --target=bun --outfile plugin/dist/index.js
         bun test plugin/test
-        [ "${CHECK_ONLY:-0}" != 1 ] || exit 0
-        PLUGIN_SHA256=$(sha256sum plugin/dist/index.js | cut -d ' ' -f 1)
-        printf '%s  index.js\n' "$PLUGIN_SHA256" > plugin/dist/index.js.sha256
-        printf 'PLUGIN_SHA256=%s\n' "$PLUGIN_SHA256" > plugin/dist/release.env
-        destination="$ARTIFACT_UPLOAD_BASE/plugin/$PLUGIN_SHA256"
-        if ! mc stat "$destination/index.js" >/dev/null 2>&1; then
-          mc cp --quiet plugin/dist/index.js "$destination/index.js"
-        fi
-        mc cp --quiet plugin/dist/index.js.sha256 "$destination/index.js.sha256"
       fi
-      case "${PLUGIN_SHA256:-}" in *[!a-f0-9]*|'') exit 1 ;; esac
-      test "${#PLUGIN_SHA256}" -eq 64
+      test -s plugin/dist/index.js
+      [ "${CHECK_ONLY:-0}" != 1 ] || exit 0
       target="$OPENCODE_PLUGIN_DIR/sprout.ts"
       if [ -e "$target" ]; then
         grep -q 'Managed by sprout-http deployment' "$target" || { echo "Unmanaged plugin: $target" >&2; exit 1; }
       fi
-      mkdir -p "$PLUGIN_INSTALL_ROOT/releases" "$OPENCODE_PLUGIN_DIR"
-      stage=$(mktemp -d "$PLUGIN_INSTALL_ROOT/releases/.download.XXXXXX")
-      trap 'rm -rf "$stage"; rm -f "$target.tmp.$$"' EXIT HUP INT TERM
-      url="$ARTIFACT_DOWNLOAD_BASE/plugin/$PLUGIN_SHA256/index.js"
-      curl -fsSL --max-time 180 "$url" -o "$stage/index.js"
-      curl -fsSL --max-time 30 "$url.sha256" -o "$stage/index.js.sha256"
-      test "$(cat "$stage/index.js.sha256")" = "$PLUGIN_SHA256  index.js"
-      (cd "$stage" && sha256sum -c index.js.sha256)
-      release="$PLUGIN_INSTALL_ROOT/releases/$PLUGIN_SHA256"
-      if [ -e "$release" ]; then cmp "$stage/index.js" "$release/index.js"; else mv "$stage" "$release"; fi
-      bun -e 'import {pathToFileURL} from "node:url"; console.log("// Managed by sprout-http deployment\nexport { default } from " + JSON.stringify(pathToFileURL(process.argv[1]).href) + ";");' "$release/index.js" > "$target.tmp.$$"
-      chmod 644 "$target.tmp.$$"
-      mv -f "$target.tmp.$$" "$target"
-      printf 'Installed plugin %s\n' "$PLUGIN_SHA256"
+      mkdir -p "$OPENCODE_PLUGIN_DIR"
+      stage=$(mktemp -d "$OPENCODE_PLUGIN_DIR/.install.XXXXXX")
+      trap 'rm -rf "$stage"' EXIT HUP INT TERM
+      printf '// Managed by sprout-http deployment\n' > "$stage/sprout.ts"
+      cat plugin/dist/index.js >> "$stage/sprout.ts"
+      chmod 644 "$stage/sprout.ts"
+      mv -Tf "$stage/sprout.ts" "$target"
+      printf 'Installed plugin %s\n' "$target"

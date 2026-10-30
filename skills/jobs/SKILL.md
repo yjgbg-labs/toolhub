@@ -1,20 +1,20 @@
 ---
 name: jobs
-description: 创建、修改、构建或部署项目及使用groot k8s时使用，遵循jobs.yaml和S3流程
+description: 创建、修改、构建或部署项目及使用groot k8s时使用
 ---
 
 # 项目 Job 编排与交付
 
-创建、修改、构建、打包或部署应用项目时，使用本 skill。一次性项目流程由 `groot jobs` 编排；周期任务使用 `schedule` skill。
+创建、修改、构建、打包或部署应用项目时，使用本 skill。一次性项目流程由 `jobs.yaml` 编排；周期任务使用 `schedule` skill。
 
 ## 强制约定
 
-- 项目根目录必须提供 `jobs.yaml`，正常操作统一执行 `groot jobs <job>`。
+- 项目根目录必须提供 `jobs.yaml`，正常操作使用 `groot-cli jobs --job <job>`；旧入口为 `groot jobs <job>`。
 - Kubernetes YAML 固定放在项目根目录的 `./k8s`。
 - Kubernetes 部署必须由 job 调用 `groot k8s sync ./k8s`，禁止用 `kubectl apply` 绕过资源跟踪。
-- 所有程序制品通过 `s3.yjgbg.lab` 上传和下载，不依赖开发机目录或临时文件复制。
-- 制品必须使用稳定版本标识并提供 SHA-256；Pod 下载后先校验再启动。
-- `config.env` 集中定义制品版本、上传地址、集群内下载地址、运行时镜像和部署参数。
+- 本机部署直接安装本机构建产物到目标目录，无需先上传再下载。
+- CLI 可执行文件安装到 `~/.local/bin`；服务端和插件安装到各自配置的目标目录。
+- `config.env` 集中定义 JDK、安装路径、服务名和其他实际使用的部署参数。
 
 推荐目录：
 
@@ -27,21 +27,21 @@ description: 创建、修改、构建或部署项目及使用groot k8s时使用�
 └── artifacts/
 ```
 
-## 制品流
+## 本机安装
 
-上传使用开发环境可访问的地址：
+CLI 构建和测试通过后，直接安装可执行文件，例如：
 
-```text
-http://s3.yjgbg.lab:9000/public/<project>/
+```sh
+mkdir -p "$HOME/.local/bin"
+chmod 755 cli/dist/groot-cli
+mv -Tf cli/dist/groot-cli "$HOME/.local/bin/groot-cli"
 ```
 
-Pod 优先使用集群内地址下载同一对象：
+服务端直接安装 JAR 到服务配置的目标路径，更新 user unit 后重启并检查健康状态。
+插件直接安装 bundle 到配置的插件目标路径。
 
-```text
-http://rustfs.rustfs.svc.cluster.local:9000/public/<project>/
-```
-
-版本优先使用 Git commit 或内容哈希。不要覆盖同一版本的制品，否则 Kubernetes 无法可靠触发滚动更新。
+跨机器或 Kubernetes 部署按项目实际需要选择制品分发方式；对象存储不是统一前置条件。
+远程制品使用明确版本，下载后校验 SHA-256；具体地址由项目配置定义。
 
 ## 任务图
 
@@ -62,44 +62,28 @@ jobs:
     needs: [test]
     run: bun run build
 
-  - name: package
-    needs: [build]
-    run: ./scripts/package.sh
-
-  - name: upload
-    needs: [package]
-    run: ./scripts/upload.sh
-
-  - name: render
-    run: |
-      . ./config.env
-      groot k8s render ./k8s --project example-prod --env ARTIFACT_URL
-
-  - name: diff
-    run: |
-      . ./config.env
-      groot k8s diff ./k8s --project example-prod --context microk8s --env ARTIFACT_URL
-
   - name: deploy
-    needs: [upload]
-    run: |
-      . ./config.env
-      groot k8s sync ./k8s --project example-prod --context microk8s --env ARTIFACT_URL
+    needs: [build]
+    run: ./scripts/deploy.sh
 
   - name: status
-    run: microk8s kubectl --namespace example get deployment,pod,service
+    run: ./scripts/status.sh
 ```
 
-依赖必须表达真实产物关系：`package` 依赖 `build`，`upload` 依赖 `package`，`deploy` 依赖 `upload`。可并行任务不要添加虚假依赖。
+示例中的脚本由项目提供，也可以直接内联到 `run`。已有项目保留实际任务名称和目录结构。
+依赖必须表达真实产物关系；本机部署依赖构建即可，不强制添加 package 或 upload 阶段。
+可并行任务不要添加虚假依赖；只在确实需要时增加打包、上传或 Kubernetes render/diff 任务。
 
-每个 job 只有一个 `run` shell 脚本。`needs` 可以引用根 job 或 `job@namespace`；导入文件使用同样的 `version: 1` 结构。脚本由 `/bin/sh -e -c` 执行，工作目录始终是根 `jobs.yaml` 所在目录。
+每个 job 只有一个 `run` shell 脚本，`needs` 引用同一文件中的任务名。
+`groot-cli jobs` 只支持单个 `version: 1` 的 `jobs.yaml`，不支持 imports 或 namespace。
+CLI 隐式传递 cwd，服务端读取该目录下的配置并返回 Shell；任务在 CLI 当前目录由 `/bin/sh -e -c` 执行。
 
 ## Kubernetes
 
 任务涉及以下任一内容时，必须先读取 [k8s.md](./k8s.md)：
 
 - 创建或修改 `./k8s` 中的资源；
-- 执行 `render`、`diff` 或 `deploy`；
+- 执行 Kubernetes 的 `render`、`diff` 或 `deploy`；
 - 使用 `groot k8s`；
 - 处理 Vault Secret、inventory 或资源删除；
 - 排查 Kubernetes 部署问题。
@@ -108,18 +92,19 @@ jobs:
 
 ## 工作流程
 
-1. 读取 `jobs.yaml`、递归 imports、`config.env` 和相关脚本，确认现有任务图。
-2. 新项目先设计 build、test、package、upload、deploy 和 status，再实现各步骤。
-3. 执行用户目标对应的最小 `groot jobs <job>`；不要为检查而运行有副作用的 job。
-4. 部署前运行 `groot jobs diff`；部署后运行 status，并验证 DNS 和 HTTP 端点。
+1. 读取 `jobs.yaml`、`config.env` 和相关脚本，确认现有任务图及安装目标。
+2. 按实际需要设计 test、build、deploy 和 status，本机交付直接安装构建产物。
+3. 执行用户目标对应的最小 `groot-cli jobs --job <job>`；不要为检查而运行有副作用的 job。
+4. Kubernetes 部署前运行 diff 任务；部署后验证命令入口、服务状态或 HTTP 健康端点。
 5. 只有排障时才直接执行 job 内部命令，修复后仍需通过对应 job 验证。
 
 ## 排障
 
 - `cannot read .../jobs.yaml`：确认命令在项目根目录执行。
-- `depends on missing job` 或循环依赖：读取完整 imports 后修正任务图。
-- package、upload 或 deploy 失败：从首个失败 job 排查，下游跳过是预期行为。
-- 制品下载失败：分别验证外部上传地址、集群内下载地址和 SHA-256 文件。
+- 缺失依赖或循环依赖：检查同一 `jobs.yaml` 中的任务名称和依赖关系。
+- 构建或安装失败：从首个失败 job 排查，下游跳过是预期行为。
+- 本机安装失败：检查构建产物、目标目录、可执行权限和命令入口。
+- 远程制品下载失败：检查项目配置的分发地址、版本和校验文件。
 - Kubernetes 同步问题：按 [k8s.md](./k8s.md) 检查 render、inventory 和资源归属。
 
 不要把 token、密码、私钥或 Secret 明文写入 `jobs.yaml`、`config.env` 或制品。

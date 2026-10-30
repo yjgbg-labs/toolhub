@@ -1,6 +1,6 @@
 # Kubernetes 交付
 
-本文是 `jobs` skill 的按需参考，只在项目涉及 Kubernetes 时读取。完整构建、打包和 S3 制品流以 [SKILL.md](./SKILL.md) 为准。
+本文是 `jobs` skill 的按需参考，只在项目涉及 Kubernetes 时读取。任务编排和交付方式以 [SKILL.md](./SKILL.md) 为准，制品分发按项目实际需要配置。
 
 ## 命令
 
@@ -34,8 +34,8 @@ groot k8s sync ./k8s --project <id> [options]
 
 - 资源文件固定放在 `./k8s`，按名称排序后应具备可读的创建顺序。
 - namespaced 资源必须显式写 `metadata.namespace`。
-- Deployment 使用制品 URL、SHA-256 URL 或版本作为 Pod template 参数，确保制品变化触发滚动更新。
-- initContainer 从 RustFS 集群内地址下载制品、校验 SHA-256，并解压到共享 `emptyDir`。
+- Deployment 使用明确的镜像或制品版本作为 Pod template 参数，确保版本变化触发滚动更新。
+- 使用 initContainer 下载制品时，采用 Pod 可访问的项目分发地址，校验 SHA-256 后再解压到共享 `emptyDir`。
 - 对外 Service 使用 ExternalDNS annotation 声明 `*.yjgbg.lab` 域名。
 - 容器应配置 readiness、liveness、资源限制和最小权限 security context。
 
@@ -101,4 +101,4 @@ Custom Resource 先于 CRD 删除，Namespace 在普通资源之后删除。同�
 - `inventory ... is not owned`：检查 project ID 冲突，不要覆盖 inventory。
 - `project annotation does not match`：stale 资源已失去当前项目归属，人工确认后处理。
 - `another sync ... appears to be running`：检查同步进程和本地锁。
-- Pod 制品校验失败：比较 S3 对象、SHA-256 文件和 Deployment 中的两个 URL。
+- Pod 制品校验失败：比较分发端制品、SHA-256 文件和 Deployment 中配置的版本及地址。

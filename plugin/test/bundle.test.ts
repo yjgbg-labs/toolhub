@@ -1,14 +1,21 @@
 import { expect, test } from "bun:test";
-import { cp, mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { fixture } from "./fixture";
 
-test("the bundled plugin loads outside the repository and executes dynamically discovered tools", async () => {
+test("the installed bundle loads outside the repository and executes dynamically discovered tools", async () => {
   const directory = await mkdtemp("/tmp/opencode/plugin-bundle-");
   const api = fixture();
   try {
-    await cp(new URL("../dist/index.js", import.meta.url), `${directory}/index.js`);
-    const { default: plugin } = await import(pathToFileURL(`${directory}/index.js`).href);
+    const root = new URL("../../", import.meta.url).pathname;
+    const jobs = Bun.YAML.parse(await Bun.file(`${root}/jobs.yaml`).text()) as { jobs: { name: string; run: string }[] };
+    const child = Bun.spawn(["sh", "-e", "-c", jobs.jobs.find(job => job.name === "pluging-deploy")!.run], {
+      cwd: root, stdout: "pipe", stderr: "pipe",
+      env: { ...process.env, INSTALL_ONLY: "1", CHECK_ONLY: "0", OPENCODE_PLUGIN_DIR: directory },
+    });
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect(code, stdout + stderr).toBe(0);
+    const { default: plugin } = await import(pathToFileURL(`${directory}/sprout.ts`).href);
     const tools: any[] = [];
     let disposed = false;
     const cleanup = await plugin.setup({ options: { baseUrl: api.baseUrl }, tool: {

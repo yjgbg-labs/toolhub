@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const directory = await mkdtemp("/tmp/opencode/server-deploy-");
@@ -7,16 +7,17 @@ afterAll(() => rm(directory, { recursive: true, force: true }));
 const root = new URL("../../", import.meta.url).pathname;
 const jobs = Bun.YAML.parse(await Bun.file(join(root, "jobs.yaml")).text()) as { jobs: { name: string; run: string }[] };
 const run = jobs.jobs.find(job => job.name === "server-deploy")!.run;
-const releases = ["first", "second"].map(value => {
-  const bytes = new TextEncoder().encode(`test JAR ${value}`);
-  return { bytes, sha256: new Bun.CryptoHasher("sha256").update(bytes).digest("hex") };
-});
 
 async function fixture(name: string) {
   const home = join(directory, name);
   const bin = join(home, "bin");
   const log = join(home, "commands.log");
+  const cwd = join(home, "project");
+  const source = join(cwd, "server/dist/groot.jar");
   await mkdir(bin, { recursive: true });
+  await mkdir(join(cwd, "server/dist"), { recursive: true });
+  await writeFile(join(cwd, "config.env"), await readFile(join(root, "config.env")));
+  await writeFile(source, "first JAR");
   await writeFile(log, "");
   await writeFile(join(bin, "groot"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   await writeFile(join(bin, "systemctl"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$COMMAND_LOG"\n', { mode: 0o755 });
@@ -27,43 +28,41 @@ if [ "$1" = -fsS ]; then
 fi
 exec "$REAL_CURL" "$@"
 `, { mode: 0o755 });
-  let corrupt = false;
   let healthy = true;
-  const artifacts = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
-    const path = new URL(request.url).pathname;
-    const release = releases.find(value => path.startsWith(`/server/${value.sha256}/`));
-    if (!release) return new Response(null, { status: 404 });
-    if (path.endsWith(".sha256")) return new Response(`${release.sha256}  groot.jar\n`);
-    return new Response(corrupt ? "corrupt" : release.bytes);
-  } });
   const local = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch() {
     const ready = healthy && (await readFile(log, "utf8")).includes("--user restart");
     return new Response(ready ? "ok" : "starting", { status: ready ? 200 : 503 });
   } });
   const env = {
-    ...process.env, INSTALL_ONLY: "1", PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: log,
+    ...process.env, INSTALL_ONLY: "1", CHECK_ONLY: "0", PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: log,
     SERVER_INSTALL_ROOT: join(home, "data '$ 100%"), SYSTEMD_UNIT_DIR: join(home, "units"),
     REAL_CURL: Bun.which("curl")!, TEST_HEALTH_URL: `${local.url.href}health`, SPROUT_HOME: join(home, "config"),
-    ARTIFACT_DOWNLOAD_BASE: artifacts.url.href.replace(/\/$/, ""), SERVER_SERVICE: "groot-sprout-http.service",
+    SERVER_SERVICE: "groot-sprout-http.service",
     SERVER_START_TIMEOUT_MS: "1000",
   };
   return {
-    env,
+    env, source,
     commands: () => readFile(log, "utf8"),
-    corrupt: () => { corrupt = true; },
     unhealthy: () => { healthy = false; },
-    async install(sha256 = releases[0]!.sha256) {
-      const child = Bun.spawn(["sh", "-e", "-c", run], { cwd: root, env: { ...env, SERVER_SHA256: sha256 }, stdout: "pipe", stderr: "pipe" });
+    async install(checkOnly = false) {
+      const child = Bun.spawn(["sh", "-e", "-c", run], { cwd, env: { ...env, CHECK_ONLY: checkOnly ? "1" : "0" }, stdout: "pipe", stderr: "pipe" });
       const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
       return { code, output: stdout + stderr };
     },
-    stop: async () => { await artifacts.stop(true); await local.stop(true); },
+    stop: () => local.stop(true),
   };
 }
 
-test("inline server deployment verifies artifacts and a user unit, then checks TCP health", async () => {
+test("inline server deployment installs a local JAR, migrates the user unit and checks TCP health", async () => {
   const api = await fixture("server");
   try {
+    const legacy = join(api.env.SERVER_INSTALL_ROOT, "releases/old/server");
+    await mkdir(legacy, { recursive: true });
+    await writeFile(join(legacy, "groot.jar"), "old JAR");
+    await mkdir(join(api.env.SERVER_INSTALL_ROOT, "server"));
+    await symlink(legacy, join(api.env.SERVER_INSTALL_ROOT, "server/current"));
+    await mkdir(api.env.SYSTEMD_UNIT_DIR);
+    await writeFile(join(api.env.SYSTEMD_UNIT_DIR, api.env.SERVER_SERVICE), "# Managed by sprout-http deployment\nold unit");
     const result = await api.install();
     expect(result.code, result.output).toBe(0);
     const unit = join(api.env.SYSTEMD_UNIT_DIR, api.env.SERVER_SERVICE);
@@ -71,25 +70,43 @@ test("inline server deployment verifies artifacts and a user unit, then checks T
     expect((await stat(unit)).mode & 0o777).toBe(0o644);
     expect(content).toContain('use-jdk "25" -- java');
     expect(content).not.toContain("SPROUT_PORT=");
-    expect(content).toContain("data '$$ 100%%/server/current/groot.jar");
+    expect(content).toContain("data '$$ 100%%/server/groot.jar");
+    expect(content).not.toContain("/current/");
     expect((await api.commands()).trim().split("\n").map(line => line.split(" ")[1])).toEqual(["daemon-reload", "enable", "restart", "is-active", "is-enabled"]);
     expect((await api.install()).code).toBe(0);
-    expect((await api.install(releases[1]!.sha256)).code).toBe(0);
-    expect(await readlink(join(api.env.SERVER_INSTALL_ROOT, "server/current"))).toEndWith(`${releases[1]!.sha256}/server`);
+    await writeFile(api.source, "second JAR");
+    expect((await api.install()).code).toBe(0);
+    expect(await readFile(join(api.env.SERVER_INSTALL_ROOT, "server/groot.jar"), "utf8")).toBe("second JAR");
+    expect(await readFile(api.source, "utf8")).toBe("second JAR");
+    expect(await readFile(join(legacy, "groot.jar"), "utf8")).toBe("old JAR");
   } finally { await api.stop(); }
 });
 
-test("checksum failure preserves the active server and does not restart it", async () => {
-  const api = await fixture("checksum");
+test("missing or empty local artifacts preserve the active server without restarting", async () => {
+  const api = await fixture("missing");
   try {
     expect((await api.install()).code).toBe(0);
     const before = await api.commands();
-    api.corrupt();
-    const result = await api.install(releases[1]!.sha256);
-    expect(result.code).not.toBe(0);
-    expect(result.output).toContain("FAILED");
+    const unit = join(api.env.SYSTEMD_UNIT_DIR, api.env.SERVER_SERVICE);
+    const beforeUnit = await readFile(unit, "utf8");
+    await rm(api.source);
+    expect((await api.install()).code).not.toBe(0);
+    await writeFile(api.source, "");
+    expect((await api.install()).code).not.toBe(0);
     expect(await api.commands()).toBe(before);
-    expect(await readlink(join(api.env.SERVER_INSTALL_ROOT, "server/current"))).toEndWith(`${releases[0]!.sha256}/server`);
+    expect(await readFile(unit, "utf8")).toBe(beforeUnit);
+    expect(await readFile(join(api.env.SERVER_INSTALL_ROOT, "server/groot.jar"), "utf8")).toBe("first JAR");
+  } finally { await api.stop(); }
+});
+
+test("CHECK_ONLY takes precedence over INSTALL_ONLY without changing the server", async () => {
+  const api = await fixture("check");
+  try {
+    const result = await api.install(true);
+    expect(result.code, result.output).toBe(0);
+    expect(await api.commands()).toBe("");
+    expect(await Bun.file(join(api.env.SERVER_INSTALL_ROOT, "server/groot.jar")).exists()).toBe(false);
+    expect(await Bun.file(join(api.env.SYSTEMD_UNIT_DIR, api.env.SERVER_SERVICE)).exists()).toBe(false);
   } finally { await api.stop(); }
 });
 
