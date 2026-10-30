@@ -149,37 +149,17 @@ jobs:
       (cd "$stage" && sha256sum -c groot-cli.sha256)
       chmod 755 "$stage/groot-cli"
       release="$CLI_INSTALL_ROOT/releases/$CLI_SHA256"
-      if [ -e "$release" ]; then
-        if [ -e "$release/groot-cli" ]; then
-          cmp "$stage/groot-cli" "$release/groot-cli"
-        else
-          cmp "$stage/groot-cli" "$release/sprout-native"
-          install -m 755 "$stage/groot-cli" "$release/groot-cli"
-        fi
-      else
-        mv "$stage" "$release"
+      if [ -e "$release" ]; then cmp "$stage/groot-cli" "$release/groot-cli"; else mv "$stage" "$release"; fi
+      destination="$CLI_BIN_DIR/groot-cli"
+      if [ -L "$destination" ]; then
+        case "$(readlink "$destination")" in "$CLI_INSTALL_ROOT"/releases/*/groot-cli) : ;; *) echo "Unmanaged link: $destination" >&2; exit 1 ;; esac
+      elif [ -e "$destination" ]; then
+        echo "Unmanaged file: $destination" >&2
+        exit 1
       fi
-      managed_cli_link() {
-        case "$(readlink "$1")" in
-          "$CLI_INSTALL_ROOT"/releases/*/groot-cli|"$CLI_INSTALL_ROOT"/releases/*/sprout-native|"$HOME"/.local/share/sprout-native/releases/*/sprout-native) return 0 ;;
-          *) return 1 ;;
-        esac
-      }
-      for name in sprout groot-cli; do
-        destination="$CLI_BIN_DIR/$name"
-        if [ -L "$destination" ]; then
-          managed_cli_link "$destination" || { echo "Unmanaged link: $destination" >&2; exit 1; }
-        elif [ -e "$destination" ]; then
-          grep -q 'Managed by sprout-http deployment' "$destination" || { echo "Unmanaged file: $destination" >&2; exit 1; }
-        fi
-      done
-      for name in sprout groot-cli; do
-        temporary="$CLI_BIN_DIR/.$name.$$"
-        ln -s "$release/groot-cli" "$temporary"
-        mv -Tf "$temporary" "$CLI_BIN_DIR/$name"
-      done
-      legacy="$CLI_BIN_DIR/sprout-native"
-      if [ -L "$legacy" ] && managed_cli_link "$legacy"; then rm "$legacy"; fi
+      temporary="$CLI_BIN_DIR/.groot-cli.$$"
+      ln -s "$release/groot-cli" "$temporary"
+      mv -Tf "$temporary" "$destination"
       printf 'Installed groot-cli %s\n' "$CLI_SHA256"
 
   - name: pluging-deploy
