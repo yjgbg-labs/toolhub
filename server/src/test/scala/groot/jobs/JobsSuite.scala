@@ -46,7 +46,8 @@ class JobsSuite extends CatsEffectSuite:
   }
 
   private def request(yaml: String, job: String, parallel: Int = 5): Request[IO] =
-    Request[IO](Method.POST, endpoint.withQueryParam("job", job).withQueryParam("parallel", parallel)).withEntity(Json.fromString(yaml))
+    Request[IO](Method.POST, endpoint.withQueryParam("job", job).withQueryParam("parallel", parallel)
+      .withQueryParam("cwd", "/client-only/project")).withEntity(Json.fromString(yaml))
 
   private def script(yaml: String, job: String, parallel: Int = 5): IO[String] =
     app.httpApp(request(yaml, job, parallel)).flatMap { response =>
@@ -62,13 +63,43 @@ class JobsSuite extends CatsEffectSuite:
       .downField("application/x-sh").downField("schema").get[String]("type"), Right("string"))
     val parameters = operation.get[Vector[Json]]("parameters").toOption.get.map(value => value.hcursor.get[String]("name").toOption.get -> value.hcursor).toMap
     assertEquals(parameters("job").get[Boolean]("required"), Right(true))
+    assertEquals(parameters("cwd").get[Boolean]("required"), Right(true))
     assertEquals(parameters("parallel").downField("schema").get[Int]("default"), Right(5))
     assertEquals(parameters("parallel").downField("schema").get[Int]("minimum"), Right(1))
-    assertEquals(operation.downField("requestBody").downField("content").downField("application/json").downField("schema").get[String]("type"), Right("string"))
-    assertEquals(operation.downField("requestBody").get[String]("x-cli-default-file"), Right("jobs.yaml"))
+    assertEquals(operation.downField("requestBody").downField("content").downField("application/json").downField("schema").get[List[String]]("type"), Right(List("string", "null")))
+    assertEquals(operation.downField("requestBody").get[Boolean]("required"), Right(false))
     List("/jobs", "/jobs?job=", "/jobs?job=build&parallel=0", "/jobs?job=build&parallel=1.5").traverse_ { path =>
       app.httpApp(Request[IO](Method.POST, Uri.unsafeFromString(path)).withEntity(Json.fromString("version: 1\njobs: []")))
         .map(response => assertEquals(response.status, Status.BadRequest))
+    }
+  }
+
+  test("the server reads jobs.yaml from cwd and recompiles the current file when the body is omitted") {
+    temporary.use { root =>
+      val call = Request[IO](Method.POST, endpoint.withQueryParam("cwd", root.toString).withQueryParam("job", "build"))
+      List("first", "second").traverse_ { value =>
+        for
+          _ <- IO.blocking(Files.writeString(root.resolve("jobs.yaml"), s"version: 1\njobs: [{name: build, run: 'printf $value > result.txt'}]\n"))
+          response <- app.httpApp(call)
+          _ = assertEquals(response.status, Status.Ok)
+          shell <- response.as[String]
+          result <- execute(shell, root)
+        yield
+          assertEquals(result.code, 0, result.stderr)
+          assertEquals(Files.readString(root.resolve("result.txt")), value)
+      }
+    }
+  }
+
+  test("missing server-side configuration and invalid cwd return HTTP 400") {
+    temporary.use { root =>
+      List(root.toString -> "cannot read", "relative/project" -> "cwd must be an absolute path").traverse_ { (cwd, message) =>
+        val call = Request[IO](Method.POST, endpoint.withQueryParam("cwd", cwd).withQueryParam("job", "build"))
+        app.httpApp(call).flatMap { response =>
+          assertEquals(response.status, Status.BadRequest)
+          response.as[Json].map(json => assert(json.hcursor.get[String]("message").toOption.get.contains(message)))
+        }
+      }
     }
   }
 

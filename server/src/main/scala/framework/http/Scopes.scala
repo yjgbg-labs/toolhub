@@ -35,7 +35,6 @@ final class OpenApiScope private[framework] (private[framework] val gate: Config
 
 final class InputScope[A] private[framework] (private[framework] val gate: ConfigurationGate) extends DescriptionScope:
   private[framework] var defaultValue: Option[A] = None
-  private[framework] var cliDefaultFile: Option[String] = None
   private[framework] val constraints = ArrayBuffer.empty[Constraint[A]]
 
 final class ResponseScope private[framework] (private[framework] val gate: ConfigurationGate) extends DescriptionScope
@@ -60,7 +59,6 @@ abstract class DeclarationScope private[framework] (
     val config = new InputScope[A](gate)
     val handle = new Input[A](new InputKey[A], config)
     inputFactories += (() =>
-      require(config.cliDefaultFile.isEmpty, "defaultFile is only supported for JSON string bodies")
       val rules = config.constraints.toVector
       config.defaultValue.foreach(value => require(rules.forall(_.accepts(value)), s"Invalid default for $name"))
       val missing = config.defaultValue.orElse(codec.missing)
@@ -88,7 +86,7 @@ abstract class DeclarationScope private[framework] (
           case RawInput.Body(Some(json)) => model.decoder.decodeJson(json).left.map(_.getMessage)
           case RawInput.Body(None) => missing.toRight("Missing required request body")
           case _ => Left("Expected a JSON body")
-        }, config.cliDefaultFile)
+        })
     )
     handle
 

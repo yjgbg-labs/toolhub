@@ -15,7 +15,7 @@ object CommandLine:
     var operation: Option[Operation] = None
     var description: String = ""
 
-  def run(program: String, args: Vector[String], send: HttpRequest => HttpResponse, readText: String => String): Result =
+  def run(program: String, args: Vector[String], send: HttpRequest => HttpResponse, readText: String => String, cwd: String): Result =
     // Consume option values before recognizing help: --name -h is a literal value.
     val rest = Vector.newBuilder[String]
     var showHelp = false
@@ -61,7 +61,7 @@ object CommandLine:
       Result.Text(help(node, path, program))
     else
       val operation = node.operation.get
-      val request = try catalog.request(operation, input(catalog, operation, remaining.drop(offset), readText))
+      val request = try catalog.request(operation, input(catalog, operation, remaining.drop(offset), readText, cwd))
       catch
         case error: IllegalArgumentException =>
           throw new IllegalArgumentException(s"${error.getMessage}\n${usage(node, path, program)}\nRun '$program ${path.mkString(" ")} --help' for details.")
@@ -87,7 +87,7 @@ object CommandLine:
     else param.name
 
   private def usage(node: Node, path: Vector[String], program: String): String =
-    val positional = node.operation.toVector.flatMap(_.parameters.filter(_.location == "path").map(p => s"<${p.name}>"))
+    val positional = node.operation.toVector.flatMap(_.parameters.filter(p => p.location == "path" && p.name != "cwd").map(p => s"<${p.name}>"))
     val suffix = if node.children.nonEmpty then Vector("<command>") else positional
     s"Usage: ${(Vector(program) ++ path ++ suffix).mkString(" ")} [options]"
 
@@ -96,14 +96,13 @@ object CommandLine:
     if node.description.nonEmpty then lines ++= Vector("", node.description)
     node.operation.foreach { operation =>
       lines ++= Vector("", operation.description, s"${operation.method} ${operation.path}", "", "Parameters (location-qualified flags are always available):")
-      operation.parameters.foreach { param =>
+      operation.parameters.filterNot(_.name == "cwd").foreach { param =>
         val default = Catalog.field(param.schema, "default").fold("")(v => s"; default ${v.noSpaces}")
         val description = if param.description.isEmpty then "" else s"; ${param.description}"
         lines += s"  --${flagName(operation, param)} <${Catalog.types(param.schema).mkString("|")}>  ${param.location}; ${if param.required then "required" else "optional"}$default$description"
       }
       operation.body.foreach { body =>
-        val requirement = body.defaultFile.fold(if body.required then "required" else "optional")(path => s"optional; default text file: $path (cwd)")
-        lines += s"  --body <json|@file|->  JSON body; $requirement"
+        lines += s"  --body <json|@file|->  JSON body; ${if body.required then "required" else "optional"}"
         lines += "  --body-text <text|@file|->  Text encoded as a JSON string body"
       }
       lines += "  --input <json|@file|->  Complete {path, query, header, cookie, body} input"
@@ -137,10 +136,11 @@ object CommandLine:
         value
       case _ => throw new IllegalArgumentException("Unsupported flag type; use --input")
 
-  private def input(catalog: Catalog, operation: Operation, args: Vector[String], readText: String => String): Json =
-    val flags = operation.parameters.map(p => flagName(operation, p) -> p).toMap ++
-      operation.parameters.map(p => s"${p.location}.${p.name}" -> p).toMap
-    val positional = operation.parameters.filter(_.location == "path")
+  private def input(catalog: Catalog, operation: Operation, args: Vector[String], readText: String => String, cwd: String): Json =
+    val (implicitParams, explicitParams) = operation.parameters.partition(_.name == "cwd")
+    val flags = explicitParams.map(p => flagName(operation, p) -> p).toMap ++
+      explicitParams.map(p => s"${p.location}.${p.name}" -> p).toMap
+    val positional = explicitParams.filter(_.location == "path")
     var position = 0
     var values = JsonObject.empty
     var index = 0
@@ -168,6 +168,7 @@ object CommandLine:
             require(!values.contains("body"), "Duplicate --body")
             values = values.add("body", if name == "body-text" then Json.fromString(readText(raw)) else Catalog.parse(readText(raw)))
           case _ =>
+            require(!implicitParams.exists(p => name == p.name || name == s"${p.location}.${p.name}"), "cwd is supplied automatically by the CLI")
             val param = flags.getOrElse(name, throw new IllegalArgumentException(s"Unknown option --$name for ${operation.id}"))
             if Catalog.types(param.schema).contains("array") then
               val itemSchema = catalog.resolve(Catalog.field(param.schema, "items").get)
@@ -175,7 +176,8 @@ object CommandLine:
               require(items.isArray, s"Expected array for --$name")
               put(param, items, append = true)
             else put(param, scalar(raw, param.schema))
-    if !values.contains("body") then operation.body.flatMap(_.defaultFile).foreach { path =>
-      values = values.add("body", Json.fromString(readText("@" + path)))
+    implicitParams.foreach { param =>
+      require(values(param.location).flatMap(_.asObject).forall(!_.contains(param.name)), "cwd is supplied automatically by the CLI")
+      put(param, Json.fromString(cwd))
     }
     Json.fromJsonObject(values)

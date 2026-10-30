@@ -100,13 +100,6 @@ object httpDsl:
     scope.gate.check()
     scope.defaultValue = Some(value)
 
-  /** CLI-local text file used when the caller omits a JSON string request body. */
-  def defaultFile(path: String)(using scope: InputScope[String]): Unit =
-    scope.gate.check()
-    require(path.nonEmpty && !path.contains('\u0000') && !java.nio.file.Path.of(path).isAbsolute,
-      "Default file must be a non-empty relative path")
-    scope.cliDefaultFile = Some(path)
-
   def constraint[A](message: String)(accepts: A => Boolean)(using scope: InputScope[A]): Unit =
     scope.gate.check()
     scope.constraints += Constraint(accepts, message)

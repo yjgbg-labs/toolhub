@@ -3,7 +3,7 @@ package sprout.cli
 import io.circe.{Json, JsonObject}
 
 final case class Parameter(name: String, location: String, required: Boolean, schema: Json, explode: Boolean, description: String)
-final case class Body(schema: Json, required: Boolean, defaultFile: Option[String])
+final case class Body(schema: Json, required: Boolean)
 final case class Operation(id: String, method: String, path: String, description: String, parameters: Vector[Parameter], body: Option[Body]):
   val segments: Vector[String] = id.split('.').toVector
 
@@ -56,6 +56,7 @@ final class Catalog(document: Json):
         val schema = resolve(field(param, "schema").getOrElse(throw new IllegalArgumentException(s"Missing schema for $name")))
         val supported = types(schema).filterNot(_ == "null")
         require(supported.size == 1 && Set("string", "integer", "number", "boolean", "array")(supported.head), s"Unsupported parameter schema: $name")
+        require(name != "cwd" || supported.head == "string", "Implicit cwd parameter must be a string")
         if supported.head == "array" then
           val items = resolve(field(schema, "items").getOrElse(Json.Null))
           require(location == "query" && types(items).size == 1 && Set("string", "integer", "number", "boolean")(types(items).head), s"Only primitive query arrays are supported: $name")
@@ -72,14 +73,7 @@ final class Catalog(document: Json):
         val request = resolve(raw)
         val schema = request.hcursor.downField("content").downField("application/json").downField("schema").focus
           .getOrElse(throw new IllegalArgumentException(s"$id: only JSON request bodies are supported"))
-        val defaultFile = field(request, "x-cli-default-file").map { value =>
-          val path = value.asString.getOrElse(throw new IllegalArgumentException(s"$id: x-cli-default-file must be a string"))
-          require(path.nonEmpty && !path.contains('\u0000') && !new java.io.File(path).isAbsolute,
-            s"$id: x-cli-default-file must be a non-empty relative path")
-          require(types(resolve(schema)).contains("string"), s"$id: x-cli-default-file requires a string body")
-          path
-        }
-        Body(schema, bool(request, "required"), defaultFile)
+        Body(schema, bool(request, "required"))
       }
       Operation(id, method.toUpperCase, path, Vector(optionalText(declaration, "summary"), optionalText(declaration, "description")).filter(_.nonEmpty).mkString("\n"), parameters, body)
     }

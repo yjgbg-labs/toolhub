@@ -17,7 +17,7 @@ object NativeCli:
         })
         // Scala Native preserves argv[0], including the name of an invoked symlink.
         val program = new java.io.File(scala.scalanative.runtime.filename).getName
-        CommandLine.run(program, args.toVector, transport, readArgument)
+        CommandLine.run(program, args.toVector, transport, readArgument, new java.io.File(".").getCanonicalPath)
       finally backend.close()
       result match
         case CommandLine.Result.Text(value) =>

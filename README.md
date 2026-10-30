@@ -71,6 +71,9 @@ groot-cli jobs --job build --parallel 2
 `SPROUT_BASE_URL` 指定完整的 HTTP(S) 地址。CLI 每次从服务端加载 `/openapi.json`，帮助中的程序名
 取调用文件/软链接的原始名称。
 
+CLI 对服务端声明的字符串参数 `cwd` 自动传入本机当前目录的绝对路径，并隐藏对应的命令行参数。
+该机制适用于任意命令；用户无需提供 `cwd`，也不能通过参数或 `--input` 覆盖它。
+
 CLI 遇到成功响应的 `Content-Type: text/event-stream` 时，会像 `tail -f` 一样
 持续打印每个 SSE 事件的 `data` 内容，并立即刷新控制台，支持管道与重定向。
 JSON 数据保持原文，多行 `data:` 合并为多行文本；心跳注释和 `event`、`id`、
@@ -87,12 +90,13 @@ OpenCode 插件在 setup 时发现命令并注册 Code Mode 工具及 namespace�
 
 ### 本地 jobs
 
-在项目目录执行 `groot-cli jobs --job <任务>`；默认读取 cwd 下的 `jobs.yaml`，`--parallel` 默认 `5`。
+在项目目录执行 `groot-cli jobs --job <任务>`；服务端根据隐式传入的 cwd 读取 `jobs.yaml`，`--parallel` 默认 `5`。
 可用 `--body-text @other.yaml` 或 `--body-text -` 覆盖配置来源。`groot-cli jobs --help` 显示参数说明。
 
-CLI 将单个 YAML 文件内容作为 JSON 字符串上传。服务端用 Scala 解析 YAML、校验完整依赖图，
+服务端用 Scala 读取单个 YAML 文件、解析并校验完整依赖图，
 再将目标及其传递依赖编译为 `Shell` 响应。客户端执行生成的 `/bin/sh` 脚本，使用 Linux
 常用工具 `mktemp`、`mkfifo`、`date` 和 `rm`；无需 Bun 或客户端 YAML 解析器。
+默认配置路径是服务端可访问的 `<cwd>/jobs.yaml`；显式 `--body-text` 会将指定内容上传作为覆盖配置。
 
 ```yaml
 version: 1
@@ -116,6 +120,4 @@ jobs:
 - 重复名称、无效配置、缺失依赖和循环由服务端返回 HTTP 400，客户端不执行任何任务。
 
 `--body-text <文本|@文件|->` 是通用 CLI 选项，将原始文本编码为 JSON 字符串请求体，
-适用于任意接收字符串 body 的命令。未指定 body 时，CLI 按服务端声明的
-`requestBody.x-cli-default-file` 从 cwd 读取默认文件。默认文件及 `@文件` 保留 stdin 给任务读取；
-`-` 则从 stdin 读取配置。
+适用于任意接收字符串 body 的命令。默认调用和 `@文件` 保留 stdin 给任务读取；`-` 则从 stdin 读取配置。

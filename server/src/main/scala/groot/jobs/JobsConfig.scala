@@ -1,5 +1,7 @@
 package groot.jobs
 
+import java.io.IOException
+import java.nio.file.{Files, InvalidPathException, Path}
 import org.snakeyaml.engine.v2.api.{Load, LoadSettings}
 import org.snakeyaml.engine.v2.exceptions.YamlEngineException
 import scala.collection.mutable
@@ -9,6 +11,14 @@ final class InvalidJobs(message: String) extends RuntimeException(message)
 final case class Job(name: String, needs: Vector[String], run: String)
 
 object JobsConfig:
+  def read(cwd: String): String =
+    val root = try Path.of(cwd)
+    catch case error: InvalidPathException => throw new InvalidJobs(s"invalid cwd: ${error.getMessage}")
+    check(root.isAbsolute, "cwd must be an absolute path")
+    val path = root.resolve("jobs.yaml")
+    try Files.readString(path)
+    catch case error: IOException => throw new InvalidJobs(s"cannot read $path: ${error.getMessage}")
+
   private def check(condition: Boolean, message: => String): Unit =
     if !condition then throw new InvalidJobs(message)
 

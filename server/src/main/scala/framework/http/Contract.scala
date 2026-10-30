@@ -29,8 +29,7 @@ private[framework] final case class InputSpec[A](
     default: Option[Json],
     repeated: Boolean,
     constraints: Vector[Constraint[A]],
-    decodeRaw: RawInput => Either[String, A],
-    cliDefaultFile: Option[String] = None
+    decodeRaw: RawInput => Either[String, A]
 ):
   def decode(raw: RawInput): Either[FieldError, A] =
     decodeRaw(raw).flatMap { value =>

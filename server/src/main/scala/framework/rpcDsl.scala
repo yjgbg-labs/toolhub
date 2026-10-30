@@ -10,7 +10,7 @@ object rpcDsl:
   export framework.rpc.{PlainText, Shell, SSE, SuccessResponse}
   export framework.http.{ParamCodec, RequestContext, EndpointResult, Handler, Input, Output}
   export httpDsl.{server, host, port, maxBodyBytes, openapi, endpoint, info, title, version,
-    default, defaultFile, constraint, minimum, maximum, minLength, maxLength, pattern, value}
+    default, constraint, minimum, maximum, minLength, maxLength, pattern, value}
 
   private def group(scope: CommandsScope): CommandGroup = scope match
     case group: CommandGroup => group

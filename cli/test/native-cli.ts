@@ -47,9 +47,12 @@ const document = {
     "/exact": { get: { operationId: "numbers", responses } },
     "/text-body": { post: { operationId: "configuration", responses,
       parameters: [parameter("body-text", "query")],
-      requestBody: { required: true, "x-cli-default-file": "configuration.yaml",
-        content: { "application/json": { schema: { $ref: "#/components/schemas/TextBody" } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/TextBody" } } } },
     } },
+    "/context/{cwd}": { get: { operationId: "context", responses, parameters: [
+      parameter("cwd", "path", string, true), parameter("cwd", "query", { ...string, default: "/server/default" }),
+      parameter("cwd", "header", string, true), parameter("cwd", "cookie"),
+    ] } },
   },
 };
 let served: unknown = document;
@@ -74,6 +77,7 @@ const handler = async (request: Request) => {
   if (path === "/missing") return Response.json({ error: "fixture missing" }, { status: 404 });
   if (path === "/exact") return new Response('{"serial":9223372036854775807}', { headers: { "Content-Type": "application/problem+json" } });
   if (path === "/text-body") return Response.json(received);
+  if (path.startsWith("/context/")) return Response.json({ ...received, cwdHeader: request.headers.get("cwd") });
   if (path === "/new-endpoint") return new Response("discovered after compilation", { headers: { "Content-Type": "text/plain" } });
   return new Response("unknown", { status: 404 });
 };
@@ -146,15 +150,10 @@ try {
     for (const source of [`@${directory}/body.json`, "-"]) {
       assert.equal(JSON.parse(await ok([...command, "body", "--header.token", "secret", "--body", source], body)).body, body);
     }
-    const yaml = 'version: 1\njobs:\n  - name: "空 \\"quoted\\""\n    run: |\n      printf "$HOME"\n';
-    if (baseUrl === "") await invalid(["configuration"], /configuration.yaml/);
-    await Bun.write(`${directory}/configuration.yaml`, "default configuration\n");
-    const defaultBody = JSON.parse(await ok(["configuration"]));
-    assert.equal(JSON.parse(defaultBody.body), "default configuration\n", "Default files must be read from the caller cwd");
-    assert.equal(JSON.parse(JSON.parse(await ok(["configuration", "--input", "{}"])).body), "default configuration\n");
-    assert.match(await ok(["configuration", "--help"]), /optional; default text file: configuration.yaml \(cwd\)/);
-    await Bun.write(`${directory}/jobs.yaml`, yaml);
-    for (const source of [yaml, `@${directory}/jobs.yaml`, "-"]) {
+    const yaml = 'title: "空 \\"quoted\\""\nscript: |\n  printf "$HOME"\n';
+    await invalid(["configuration"], /Missing required argument.*--body/);
+    await Bun.write(`${directory}/payload.yaml`, yaml);
+    for (const source of [yaml, `@${directory}/payload.yaml`, "-"]) {
       const text = JSON.parse(await ok(["configuration", "--body-text", source, "--query.body-text", "literal"], source === "-" ? yaml : undefined));
       assert.equal(JSON.parse(text.body), yaml, "Text bodies must preserve the exact file contents");
       assert.deepEqual(text.query, [["body-text", "literal"]]);
@@ -164,6 +163,21 @@ try {
     await invalid(["configuration", "--body-text", yaml, "--body", '"duplicate"'], /Duplicate --body/);
     await invalid([...command, "part", "--header.token", "secret", "--body-text", yaml], /expected object/);
     await invalid(["greeting", "--body-text", yaml], /has no body/);
+    for (const args of [["context"], ["context", "--input", "{}"]]) {
+      const context = JSON.parse(await ok(args));
+      assert.equal(decodeURIComponent(context.path), `/context/${directory}`);
+      assert.equal(context.path.split("/").length, 3);
+      assert.deepEqual(context.query, [["cwd", directory]]);
+      assert.equal(context.cwdHeader, directory);
+      assert.equal(context.cookie, `cwd=${encodeURIComponent(directory)}`);
+    }
+    assert.doesNotMatch(await ok(["context", "--help"]), /--(?:(?:query|path|header|cookie)\.)?cwd|<cwd>/);
+    for (const flag of ["cwd", "query.cwd", "path.cwd", "header.cwd", "cookie.cwd"]) {
+      await invalid(["context", `--${flag}`, "/override"], /cwd is supplied automatically/);
+    }
+    for (const location of ["query", "path", "header", "cookie"]) {
+      await invalid(["context", "--input", JSON.stringify({ [location]: { cwd: "/override" } })], /cwd is supplied automatically/);
+    }
     await invalid([...command, ...required], /Missing required argument.*path.part/);
     await invalid([...command, "part", "--body", body], /Missing required argument.*header.token/);
     await invalid([...command, "part", "--header.token", "secret"], /Missing required argument.*--body/);
@@ -184,12 +198,15 @@ try {
     assert.equal(failure.code, 1);
     assert.match(failure.stderr, /HTTP 404.*fixture missing/);
 
-    served = { ...document, info: { title: "Fresh HTTP API", version: "2" }, paths: { "/new-endpoint": { put: { operationId: "fresh.deep.command", responses } } } };
+    served = { ...document, info: { title: "Fresh HTTP API", version: "2" }, paths: { "/new-endpoint": { put: {
+      operationId: "fresh.deep.command", parameters: [parameter("cwd", "query", string, true)], responses,
+    } } } };
     const refreshed = await ok(["--help"]);
     assert.match(refreshed, /fresh/);
     assert.doesNotMatch(refreshed, /inventory|greeting/);
     assert.equal(await ok(["fresh", "deep", "command"]), "discovered after compilation\n");
     assert.equal(requests.at(-1)!.method, "PUT");
+    assert.deepEqual(requests.at(-1)!.query, [["cwd", directory]]);
     await invalid(["inventory", "parts"], /Unknown command/);
 
     served = { error: "discovery unavailable" };
