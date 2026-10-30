@@ -9,13 +9,13 @@ object CommandLine:
     case Text(value: String)
     case Shell(script: String)
 
-  private val reserved = Set("body", "input", "help")
+  private val reserved = Set("body", "body-text", "input", "help")
   private final class Node:
     val children = mutable.LinkedHashMap.empty[String, Node]
     var operation: Option[Operation] = None
     var description: String = ""
 
-  def run(program: String, args: Vector[String], send: HttpRequest => HttpResponse, readJson: String => Json): Result =
+  def run(program: String, args: Vector[String], send: HttpRequest => HttpResponse, readText: String => String): Result =
     // Consume option values before recognizing help: --name -h is a literal value.
     val rest = Vector.newBuilder[String]
     var showHelp = false
@@ -61,7 +61,7 @@ object CommandLine:
       Result.Text(help(node, path, program))
     else
       val operation = node.operation.get
-      val request = try catalog.request(operation, input(catalog, operation, remaining.drop(offset), readJson))
+      val request = try catalog.request(operation, input(catalog, operation, remaining.drop(offset), readText))
       catch
         case error: IllegalArgumentException =>
           throw new IllegalArgumentException(s"${error.getMessage}\n${usage(node, path, program)}\nRun '$program ${path.mkString(" ")} --help' for details.")
@@ -101,7 +101,11 @@ object CommandLine:
         val description = if param.description.isEmpty then "" else s"; ${param.description}"
         lines += s"  --${flagName(operation, param)} <${Catalog.types(param.schema).mkString("|")}>  ${param.location}; ${if param.required then "required" else "optional"}$default$description"
       }
-      operation.body.foreach(body => lines += s"  --body <json|@file|->  JSON body; ${if body.required then "required" else "optional"}")
+      operation.body.foreach { body =>
+        val requirement = body.defaultFile.fold(if body.required then "required" else "optional")(path => s"optional; default text file: $path (cwd)")
+        lines += s"  --body <json|@file|->  JSON body; $requirement"
+        lines += "  --body-text <text|@file|->  Text encoded as a JSON string body"
+      }
       lines += "  --input <json|@file|->  Complete {path, query, header, cookie, body} input"
     }
     if node.children.nonEmpty then
@@ -133,7 +137,7 @@ object CommandLine:
         value
       case _ => throw new IllegalArgumentException("Unsupported flag type; use --input")
 
-  private def input(catalog: Catalog, operation: Operation, args: Vector[String], readJson: String => Json): Json =
+  private def input(catalog: Catalog, operation: Operation, args: Vector[String], readText: String => String): Json =
     val flags = operation.parameters.map(p => flagName(operation, p) -> p).toMap ++
       operation.parameters.map(p => s"${p.location}.${p.name}" -> p).toMap
     val positional = operation.parameters.filter(_.location == "path")
@@ -158,11 +162,11 @@ object CommandLine:
         name match
           case "input" =>
             require(values.isEmpty && index == args.size, "--input must be used alone")
-            values = Catalog.obj(readJson(raw), "--input")
-          case "body" =>
+            values = Catalog.obj(Catalog.parse(readText(raw)), "--input")
+          case "body" | "body-text" =>
             require(operation.body.nonEmpty, s"${operation.id} has no body")
             require(!values.contains("body"), "Duplicate --body")
-            values = values.add("body", readJson(raw))
+            values = values.add("body", if name == "body-text" then Json.fromString(readText(raw)) else Catalog.parse(readText(raw)))
           case _ =>
             val param = flags.getOrElse(name, throw new IllegalArgumentException(s"Unknown option --$name for ${operation.id}"))
             if Catalog.types(param.schema).contains("array") then
@@ -171,4 +175,7 @@ object CommandLine:
               require(items.isArray, s"Expected array for --$name")
               put(param, items, append = true)
             else put(param, scalar(raw, param.schema))
+    if !values.contains("body") then operation.body.flatMap(_.defaultFile).foreach { path =>
+      values = values.add("body", Json.fromString(readText("@" + path)))
+    }
     Json.fromJsonObject(values)

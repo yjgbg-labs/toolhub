@@ -4,7 +4,6 @@ jobs:
     run: |
       set -eu
       . ./config.env
-      bun build server/src/main/typescript/jobs/main.ts --target=bun --outfile server/dist/resources/groot/jobs.js
       export COURSIER_REPOSITORIES=https://repo.maven.apache.org/maven2
       groot use-jdk "$JDK_MAJOR" -- scala-cli test server/project.scala server/src --jvm system --server=false
       bun test server/test

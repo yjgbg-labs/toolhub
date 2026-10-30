@@ -5,8 +5,7 @@
 ```text
 server/                 Scala/JVM HTTP 服务端
   src/                  业务与 HTTP 框架、Scala 测试
-  src/main/typescript/  随 Shell 响应下发的本地 jobs 运行器
-  test/                 jobs 运行器与服务部署检查
+  test/                 服务部署检查
 cli/                    Scala Native 命令行程序
   src/main/scala/       动态 OpenAPI 命令、同步 HTTP
   test/                 命令行与安装检查
@@ -26,7 +25,7 @@ CLI 的动态协议实现直接编入 Native 可执行文件；插件打成独�
 
 | 命令 | 操作 |
 | --- | --- |
-| `groot jobs server-test` | 打包本地 jobs 运行器 → Scala/运行器测试和服务部署检查 |
+| `groot jobs server-test` | Scala 服务端测试和服务部署检查 |
 | `groot jobs server-deploy` | 服务端测试 → JAR 构建 → S3 上传 → 下载校验 → user service 安装及健康检查 |
 | `groot jobs cli-deploy` | Native 编译 → CLI/安装检查 → S3 上传 → 下载校验 → 安装 `groot-cli` |
 | `groot jobs pluging-deploy` | 插件依赖安装 → 类型检查 → bundle 构建 → 测试 → S3 上传 → 下载校验 → 安装 OpenCode 插件 |
@@ -88,26 +87,35 @@ OpenCode 插件在 setup 时发现命令并注册 Code Mode 工具及 namespace�
 
 ### 本地 jobs
 
-在含 `jobs.yaml` 的项目目录执行 `groot-cli jobs --job <任务>`；`--parallel` 默认 `5`。
-目标也可以是 `build@common` 或 `build@pipeline.common`。`groot-cli jobs --help` 显示参数说明。
+在项目目录执行 `groot-cli jobs --job <任务>`；默认读取 cwd 下的 `jobs.yaml`，`--parallel` 默认 `5`。
+可用 `--body-text @other.yaml` 或 `--body-text -` 覆盖配置来源。`groot-cli jobs --help` 显示参数说明。
 
-`jobs` 通过 Shell 响应携带独立的 Bun 运行器，执行机需要 PATH 中有 `bun`。
-运行器随服务端 JAR 发布，从调用者的当前目录加载 `jobs.yaml`，递归解析 imports 并在本机执行任务：
+CLI 将单个 YAML 文件内容作为 JSON 字符串上传。服务端用 Scala 解析 YAML、校验完整依赖图，
+再将目标及其传递依赖编译为 `Shell` 响应。客户端执行生成的 `/bin/sh` 脚本，使用 Linux
+常用工具 `mktemp`、`mkfifo`、`date` 和 `rm`；无需 Bun 或客户端 YAML 解析器。
 
 ```yaml
 version: 1
-imports:
-  - path: ./jobs/common.yaml
-    namespace: common
 jobs:
+  - name: install
+    run: echo preparing
+  - name: test
+    needs: [install]
+    run: echo testing
   - name: build
-    needs: [install@common, test@common]
+    needs: [install, test]
     run: |
-      bun run build
+      echo building
 ```
 
-- 导入文件使用相同的 `version: 1` 格式，路径相对导入它的文件；嵌套 namespace 用 `.` 连接。
+- 仅支持一个 `version: 1` 文件；`imports` 和 namespace 不受支持。
 - 执行目标及其传递依赖，共享依赖只执行一次；就绪任务按并发上限运行。
-- 每个 `run` 用 `/bin/sh -e -c` 执行，工作目录始终是根 `jobs.yaml` 所在目录，继承环境和标准输入输出。
+- 每个 `run` 用 `/bin/sh -e -c` 执行，继承 CLI 的当前目录、环境和标准输入输出。
+- Shell 通过后台进程和 FIFO 完成通知调度；任意任务结束即可释放并发名额。
 - 保留 `[jobs] start/done/fail/skip` 日志。失败跳过所有下游任务，独立分支继续完成；整体成功退出 `0`，失败退出 `1`。
-- 重复名称、无效配置、缺失依赖和循环在运行任何任务前报错。
+- 重复名称、无效配置、缺失依赖和循环由服务端返回 HTTP 400，客户端不执行任何任务。
+
+`--body-text <文本|@文件|->` 是通用 CLI 选项，将原始文本编码为 JSON 字符串请求体，
+适用于任意接收字符串 body 的命令。未指定 body 时，CLI 按服务端声明的
+`requestBody.x-cli-default-file` 从 cwd 读取默认文件。默认文件及 `@文件` 保留 stdin 给任务读取；
+`-` 则从 stdin 读取配置。

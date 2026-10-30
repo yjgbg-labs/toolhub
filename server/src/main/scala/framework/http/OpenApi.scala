@@ -105,6 +105,7 @@ private[framework] object OpenApi:
       }.toList
       val body = endpoint.inputs.find(_.location == InputLocation.Body).map { input =>
         Right(RequestBody(description = input.description, required = Some(input.required),
+          extensions = ListMap.from(input.cliDefaultFile.map(path => "x-cli-default-file" -> ExtensionValue(Json.fromString(path).noSpaces))),
           content = ListMap("application/json" -> MediaType(schema = Some(schemas.input(input))))))
       }
       Operation(tags = endpoint.tags.toList, summary = endpoint.summary, description = endpoint.description,

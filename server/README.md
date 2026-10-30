@@ -161,6 +161,17 @@ command[String]("label") { handle { IO.pure("ok") } }
 
 ### Client-side shell scripts
 
+String request bodies can declare a CLI-local default file:
+
+```scala
+val yaml = body[String]("Job configuration") { defaultFile("jobs.yaml") }
+```
+
+This emits `requestBody.x-cli-default-file`. When no body is supplied, the CLI
+reads the file relative to its current working directory and uploads the contents
+as a JSON string. `--body-text` or `--body` overrides this default. The HTTP body
+remains required; the server never reads the client's path itself.
+
 `Shell` is an explicitly constructed opaque `String` subtype:
 `opaque type Shell <: String = String`. It is exported by `framework.rpcDsl.*`.
 
