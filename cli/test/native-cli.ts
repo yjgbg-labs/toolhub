@@ -17,7 +17,6 @@ const document = {
     parameters: { Part: parameter("part", "path", string, true) },
     schemas: {
       Tag: string,
-      TextBody: string,
       Update: {
         type: "object", required: ["serial", "note"], additionalProperties: false,
         properties: { serial: { type: "integer", format: "int64" }, note: { type: ["string", "null"] } },
@@ -45,10 +44,6 @@ const document = {
     "/message": { get: { operationId: "greeting", responses } },
     "/missing": { get: { operationId: "inventory.missing", responses } },
     "/exact": { get: { operationId: "numbers", responses } },
-    "/text-body": { post: { operationId: "configuration", responses,
-      parameters: [parameter("body-text", "query")],
-      requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/TextBody" } } } },
-    } },
     "/context/{cwd}": { get: { operationId: "context", responses, parameters: [
       parameter("cwd", "path", string, true), parameter("cwd", "query", { ...string, default: "/server/default" }),
       parameter("cwd", "header", string, true), parameter("cwd", "cookie"),
@@ -76,7 +71,6 @@ const handler = async (request: Request) => {
   if (path === "/message") return Response.json("hello from an unrelated API");
   if (path === "/missing") return Response.json({ error: "fixture missing" }, { status: 404 });
   if (path === "/exact") return new Response('{"serial":9223372036854775807}', { headers: { "Content-Type": "application/problem+json" } });
-  if (path === "/text-body") return Response.json(received);
   if (path.startsWith("/context/")) return Response.json({ ...received, cwdHeader: request.headers.get("cwd") });
   if (path === "/new-endpoint") return new Response("discovered after compilation", { headers: { "Content-Type": "text/plain" } });
   return new Response("unknown", { status: 404 });
@@ -150,19 +144,6 @@ try {
     for (const source of [`@${directory}/body.json`, "-"]) {
       assert.equal(JSON.parse(await ok([...command, "body", "--header.token", "secret", "--body", source], body)).body, body);
     }
-    const yaml = 'title: "空 \\"quoted\\""\nscript: |\n  printf "$HOME"\n';
-    await invalid(["configuration"], /Missing required argument.*--body/);
-    await Bun.write(`${directory}/payload.yaml`, yaml);
-    for (const source of [yaml, `@${directory}/payload.yaml`, "-"]) {
-      const text = JSON.parse(await ok(["configuration", "--body-text", source, "--query.body-text", "literal"], source === "-" ? yaml : undefined));
-      assert.equal(JSON.parse(text.body), yaml, "Text bodies must preserve the exact file contents");
-      assert.deepEqual(text.query, [["body-text", "literal"]]);
-    }
-    assert.equal(JSON.parse(JSON.parse(await ok(["configuration", "--body", JSON.stringify(yaml)])).body), yaml);
-    assert.match(await ok(["configuration", "--help"]), /--body-text <text\|@file\|->/);
-    await invalid(["configuration", "--body-text", yaml, "--body", '"duplicate"'], /Duplicate --body/);
-    await invalid([...command, "part", "--header.token", "secret", "--body-text", yaml], /expected object/);
-    await invalid(["greeting", "--body-text", yaml], /has no body/);
     for (const args of [["context"], ["context", "--input", "{}"]]) {
       const context = JSON.parse(await ok(args));
       assert.equal(decodeURIComponent(context.path), `/context/${directory}`);
@@ -170,8 +151,11 @@ try {
       assert.deepEqual(context.query, [["cwd", directory]]);
       assert.equal(context.cwdHeader, directory);
       assert.equal(context.cookie, `cwd=${encodeURIComponent(directory)}`);
+      assert.equal(context.body, "");
     }
-    assert.doesNotMatch(await ok(["context", "--help"]), /--(?:(?:query|path|header|cookie)\.)?cwd|<cwd>/);
+    assert.doesNotMatch(await ok(["context", "--help"]), /--(?:(?:query|path|header|cookie)\.)?cwd|<cwd>|--body\b/);
+    await invalid(["context", "--body", '"override"'], /has no body/);
+    await invalid(["context", "--input", '{"body":"override"}'], /has no body/);
     for (const flag of ["cwd", "query.cwd", "path.cwd", "header.cwd", "cookie.cwd"]) {
       await invalid(["context", `--${flag}`, "/override"], /cwd is supplied automatically/);
     }

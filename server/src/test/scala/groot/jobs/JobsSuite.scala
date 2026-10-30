@@ -45,19 +45,20 @@ class JobsSuite extends CatsEffectSuite:
         child.destroyForcibly()
   }
 
-  private def request(yaml: String, job: String, parallel: Int = 5): Request[IO] =
-    Request[IO](Method.POST, endpoint.withQueryParam("job", job).withQueryParam("parallel", parallel)
-      .withQueryParam("cwd", "/client-only/project")).withEntity(Json.fromString(yaml))
+  private def request(root: Path, job: String, parallel: Int = 5): Request[IO] =
+    Request[IO](Method.GET, endpoint.withQueryParam("job", job).withQueryParam("parallel", parallel)
+      .withQueryParam("cwd", root.toString))
 
-  private def script(yaml: String, job: String, parallel: Int = 5): IO[String] =
-    app.httpApp(request(yaml, job, parallel)).flatMap { response =>
-      assertEquals(response.status, Status.Ok)
-      assertEquals(response.headers.get[`Content-Type`].map(_.mediaType), org.http4s.MediaType.parse("application/x-sh").toOption)
-      response.as[String]
-    }
+  private def script(root: Path, yaml: String, job: String, parallel: Int = 5): IO[String] =
+    IO.blocking(Files.writeString(root.resolve("jobs.yaml"), yaml)) *>
+      app.httpApp(request(root, job, parallel)).flatMap { response =>
+        assertEquals(response.status, Status.Ok)
+        assertEquals(response.headers.get[`Content-Type`].map(_.mediaType), org.http4s.MediaType.parse("application/x-sh").toOption)
+        response.as[String]
+      }
 
   test("jobs exposes a Shell contract with validated job and parallel parameters") {
-    val operation = io.circe.parser.parse(app.openApiJson).toOption.get.hcursor.downField("paths").downField("/jobs").downField("post")
+    val operation = io.circe.parser.parse(app.openApiJson).toOption.get.hcursor.downField("paths").downField("/jobs").downField("get")
     assertEquals(operation.get[String]("operationId"), Right("jobs"))
     assertEquals(operation.downField("responses").downField("200").downField("content")
       .downField("application/x-sh").downField("schema").get[String]("type"), Right("string"))
@@ -66,17 +67,17 @@ class JobsSuite extends CatsEffectSuite:
     assertEquals(parameters("cwd").get[Boolean]("required"), Right(true))
     assertEquals(parameters("parallel").downField("schema").get[Int]("default"), Right(5))
     assertEquals(parameters("parallel").downField("schema").get[Int]("minimum"), Right(1))
-    assertEquals(operation.downField("requestBody").downField("content").downField("application/json").downField("schema").get[List[String]]("type"), Right(List("string", "null")))
-    assertEquals(operation.downField("requestBody").get[Boolean]("required"), Right(false))
-    List("/jobs", "/jobs?job=", "/jobs?job=build&parallel=0", "/jobs?job=build&parallel=1.5").traverse_ { path =>
-      app.httpApp(Request[IO](Method.POST, Uri.unsafeFromString(path)).withEntity(Json.fromString("version: 1\njobs: []")))
+    assert(operation.downField("requestBody").focus.isEmpty)
+    List("/jobs?job=build", "/jobs?cwd=/project", "/jobs?cwd=/project&job=",
+      "/jobs?cwd=/project&job=build&parallel=0", "/jobs?cwd=/project&job=build&parallel=1.5").traverse_ { path =>
+      app.httpApp(Request[IO](Method.GET, Uri.unsafeFromString(path)))
         .map(response => assertEquals(response.status, Status.BadRequest))
     }
   }
 
-  test("the server reads jobs.yaml from cwd and recompiles the current file when the body is omitted") {
+  test("the server reads jobs.yaml from cwd and recompiles the current file") {
     temporary.use { root =>
-      val call = Request[IO](Method.POST, endpoint.withQueryParam("cwd", root.toString).withQueryParam("job", "build"))
+      val call = request(root, "build")
       List("first", "second").traverse_ { value =>
         for
           _ <- IO.blocking(Files.writeString(root.resolve("jobs.yaml"), s"version: 1\njobs: [{name: build, run: 'printf $value > result.txt'}]\n"))
@@ -94,7 +95,7 @@ class JobsSuite extends CatsEffectSuite:
   test("missing server-side configuration and invalid cwd return HTTP 400") {
     temporary.use { root =>
       List(root.toString -> "cannot read", "relative/project" -> "cwd must be an absolute path").traverse_ { (cwd, message) =>
-        val call = Request[IO](Method.POST, endpoint.withQueryParam("cwd", cwd).withQueryParam("job", "build"))
+        val call = Request[IO](Method.GET, endpoint.withQueryParam("cwd", cwd).withQueryParam("job", "build"))
         app.httpApp(call).flatMap { response =>
           assertEquals(response.status, Status.BadRequest)
           response.as[Json].map(json => assert(json.hcursor.get[String]("message").toOption.get.contains(message)))
@@ -103,7 +104,7 @@ class JobsSuite extends CatsEffectSuite:
     }
   }
 
-  test("Scala compiles uploaded YAML into shell that preserves literal scripts and inherited I/O") {
+  test("Scala compiles jobs.yaml into shell that preserves literal scripts and inherited I/O") {
     temporary.use { root =>
       val target = "build '$(touch injected)' 空"
       val yaml = s"""version: 1
@@ -120,7 +121,7 @@ jobs:
       printf built > result.txt
 """
       for
-        shell <- script(yaml, target, 2)
+        shell <- script(root, yaml, target, 2)
         _ = assert(shell.startsWith("#!/bin/sh\n"))
         _ = assert(!shell.contains("bun"))
         _ = assert(!Files.exists(root.resolve("result.txt")))
@@ -133,7 +134,7 @@ jobs:
         assert(result.stdout.contains("[jobs] start prepare"))
         assert(result.stdout.contains(s"[jobs] done  $target"))
         assertEquals(output, "built")
-        assert(!Files.exists(root.resolve("jobs.yaml")))
+        assertEquals(Files.readString(root.resolve("jobs.yaml")), yaml)
         assert(!Files.exists(root.resolve("injected")))
     }
   }
@@ -155,7 +156,7 @@ jobs:
     run: touch unrelated.txt
 """
       for
-        shell <- script(yaml, "build", 1)
+        shell <- script(root, yaml, "build", 1)
         result <- execute(shell, root)
       yield
         assertEquals(result.code, 1)
@@ -172,15 +173,16 @@ jobs:
       "version: 1\nimports: []\njobs: []" -> "imports is not supported",
       "version: 1\njobs: []" -> "no job named",
       "version: 1\njobs: [{name: build, run: echo, needs: [missing]}]" -> "missing job"
-    ).traverse_ { (yaml, message) =>
-      app.httpApp(request(yaml, "build")).flatMap { response =>
-        assertEquals(response.status, Status.BadRequest)
-        response.as[Json].map { json =>
-          assertEquals(json.hcursor.get[String]("code"), Right("invalid_jobs"))
-          assert(json.hcursor.get[String]("message").toOption.get.contains(message))
+    ).traverse_ { (yaml, message) => temporary.use { root =>
+      IO.blocking(Files.writeString(root.resolve("jobs.yaml"), yaml)) *>
+        app.httpApp(request(root, "build")).flatMap { response =>
+          assertEquals(response.status, Status.BadRequest)
+          response.as[Json].map { json =>
+            assertEquals(json.hcursor.get[String]("code"), Right("invalid_jobs"))
+            assert(json.hcursor.get[String]("message").toOption.get.contains(message))
+          }
         }
-      }
-    }
+    } }
   }
 
   test("a finished job immediately frees a slot even when an earlier job is still running") {
@@ -207,7 +209,7 @@ jobs:
     run: test -f long-done
 """
       for
-        shell <- script(yaml, "build", 2)
+        shell <- script(root, yaml, "build", 2)
         result <- execute(shell, root)
       yield
         assertEquals(result.code, 0, result.stderr)
@@ -228,7 +230,7 @@ printf -- '-\n' >> events
     val yaml = Json.obj("version" -> Json.fromInt(1), "jobs" -> Json.fromValues(jobs)).noSpaces
     List(1, 2, 5).traverse_ { parallel => temporary.use { root =>
       for
-        shell <- script(yaml, "build", parallel)
+        shell <- script(root, yaml, "build", parallel)
         result <- execute(shell, root)
       yield
         assertEquals(result.code, 0, result.stderr)

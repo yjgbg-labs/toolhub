@@ -169,8 +169,7 @@ val cwd = param[String]("cwd", "Caller working directory")
 ```
 
 This uses ordinary OpenAPI parameters. File discovery and parsing belong to the
-server-side command handler. `--body-text <text|@file|->` supplies an explicit
-JSON string body when a command accepts one.
+server-side command handler.
 
 `Shell` is an explicitly constructed opaque `String` subtype:
 `opaque type Shell <: String = String`. It is exported by `framework.rpcDsl.*`.

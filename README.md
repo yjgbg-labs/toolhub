@@ -91,12 +91,12 @@ OpenCode 插件在 setup 时发现命令并注册 Code Mode 工具及 namespace�
 ### 本地 jobs
 
 在项目目录执行 `groot-cli jobs --job <任务>`；服务端根据隐式传入的 cwd 读取 `jobs.yaml`，`--parallel` 默认 `5`。
-可用 `--body-text @other.yaml` 或 `--body-text -` 覆盖配置来源。`groot-cli jobs --help` 显示参数说明。
+`groot-cli jobs --help` 显示参数说明。
 
 服务端用 Scala 读取单个 YAML 文件、解析并校验完整依赖图，
 再将目标及其传递依赖编译为 `Shell` 响应。客户端执行生成的 `/bin/sh` 脚本，使用 Linux
 常用工具 `mktemp`、`mkfifo`、`date` 和 `rm`；无需 Bun 或客户端 YAML 解析器。
-默认配置路径是服务端可访问的 `<cwd>/jobs.yaml`；显式 `--body-text` 会将指定内容上传作为覆盖配置。
+配置路径是服务端可访问的 `<cwd>/jobs.yaml`，jobs 不使用请求体。
 
 ```yaml
 version: 1
@@ -118,6 +118,3 @@ jobs:
 - Shell 通过后台进程和 FIFO 完成通知调度；任意任务结束即可释放并发名额。
 - 保留 `[jobs] start/done/fail/skip` 日志。失败跳过所有下游任务，独立分支继续完成；整体成功退出 `0`，失败退出 `1`。
 - 重复名称、无效配置、缺失依赖和循环由服务端返回 HTTP 400，客户端不执行任何任务。
-
-`--body-text <文本|@文件|->` 是通用 CLI 选项，将原始文本编码为 JSON 字符串请求体，
-适用于任意接收字符串 body 的命令。默认调用和 `@文件` 保留 stdin 给任务读取；`-` 则从 stdin 读取配置。

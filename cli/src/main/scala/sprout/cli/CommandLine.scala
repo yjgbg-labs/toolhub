@@ -9,7 +9,7 @@ object CommandLine:
     case Text(value: String)
     case Shell(script: String)
 
-  private val reserved = Set("body", "body-text", "input", "help")
+  private val reserved = Set("body", "input", "help")
   private final class Node:
     val children = mutable.LinkedHashMap.empty[String, Node]
     var operation: Option[Operation] = None
@@ -103,7 +103,6 @@ object CommandLine:
       }
       operation.body.foreach { body =>
         lines += s"  --body <json|@file|->  JSON body; ${if body.required then "required" else "optional"}"
-        lines += "  --body-text <text|@file|->  Text encoded as a JSON string body"
       }
       lines += "  --input <json|@file|->  Complete {path, query, header, cookie, body} input"
     }
@@ -163,10 +162,10 @@ object CommandLine:
           case "input" =>
             require(values.isEmpty && index == args.size, "--input must be used alone")
             values = Catalog.obj(Catalog.parse(readText(raw)), "--input")
-          case "body" | "body-text" =>
+          case "body" =>
             require(operation.body.nonEmpty, s"${operation.id} has no body")
             require(!values.contains("body"), "Duplicate --body")
-            values = values.add("body", if name == "body-text" then Json.fromString(readText(raw)) else Catalog.parse(readText(raw)))
+            values = values.add("body", Catalog.parse(readText(raw)))
           case _ =>
             require(!implicitParams.exists(p => name == p.name || name == s"${p.location}.${p.name}"), "cwd is supplied automatically by the CLI")
             val param = flags.getOrElse(name, throw new IllegalArgumentException(s"Unknown option --$name for ${operation.id}"))
