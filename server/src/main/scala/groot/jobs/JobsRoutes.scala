@@ -14,8 +14,7 @@ object JobsRoutes:
     val invalid = response.json[ErrorBody](400) { description("Invalid job configuration or target") }
     recover { case error: InvalidJobs => invalid(ErrorBody("invalid_jobs", error.getMessage)) }
     handle {
-      IO.blocking {
-        val source = JobsConfig.read(cwd.value)
+      IO.blocking(JobsConfig.read(cwd.value)).map { source =>
         Shell(ShellCompiler.compile(JobsConfig.plan(source, job.value), parallel.value))
       }
     }
