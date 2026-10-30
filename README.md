@@ -5,7 +5,8 @@
 ```text
 server/                 Scala/JVM HTTP 服务端
   src/                  业务与 HTTP 框架、Scala 测试
-  test/                 服务部署检查
+  src/main/typescript/  随 Shell 响应下发的本地 jobs 运行器
+  test/                 jobs 运行器与服务部署检查
 cli/                    Scala Native 命令行程序
   src/main/scala/       动态 OpenAPI 命令、同步 HTTP
   test/                 命令行与安装检查
@@ -25,7 +26,7 @@ CLI 的动态协议实现直接编入 Native 可执行文件；插件打成独�
 
 | 命令 | 操作 |
 | --- | --- |
-| `groot jobs server-test` | Scala 服务端测试和服务部署检查 |
+| `groot jobs server-test` | 打包本地 jobs 运行器 → Scala/运行器测试和服务部署检查 |
 | `groot jobs server-deploy` | 服务端测试 → JAR 构建 → S3 上传 → 下载校验 → user service 安装及健康检查 |
 | `groot jobs cli-deploy` | Native 编译 → CLI/安装检查 → S3 上传 → 下载校验 → 安装 `groot-cli` |
 | `groot jobs pluging-deploy` | 插件依赖安装 → 类型检查 → bundle 构建 → 测试 → S3 上传 → 下载校验 → 安装 OpenCode 插件 |
@@ -63,6 +64,7 @@ Scala CLI、curl 和 mc；Native 编译还需要 Clang 和 libcurl 等开发库�
 groot-cli --help
 groot-cli health
 groot-cli schedule new --name hello --body '{"command":["echo","hi"],"every":"1h"}'
+groot-cli jobs --job build --parallel 2
 ```
 
 服务端固定监听 `0.0.0.0:18080`，不读取端口环境变量；CLI 和插件默认连接
@@ -83,3 +85,29 @@ JSON 数据保持原文，多行 `data:` 合并为多行文本；心跳注释和
 OpenCode 插件在 setup 时发现命令并注册 Code Mode 工具及 namespace，返回清理函数。
 支持通过插件 options 配置 `baseUrl`、`schemaUrl`、`headers`、`tokenEnv`、`timeoutMs`。
 安装后的入口由 OpenCode 自动发现，文件变更自动加载。
+
+### 本地 jobs
+
+在含 `jobs.yaml` 的项目目录执行 `groot-cli jobs --job <任务>`；`--parallel` 默认 `5`。
+目标也可以是 `build@common` 或 `build@pipeline.common`。`groot-cli jobs --help` 显示参数说明。
+
+`jobs` 通过 Shell 响应携带独立的 Bun 运行器，执行机需要 PATH 中有 `bun`。
+运行器随服务端 JAR 发布，从调用者的当前目录加载 `jobs.yaml`，递归解析 imports 并在本机执行任务：
+
+```yaml
+version: 1
+imports:
+  - path: ./jobs/common.yaml
+    namespace: common
+jobs:
+  - name: build
+    needs: [install@common, test@common]
+    run: |
+      bun run build
+```
+
+- 导入文件使用相同的 `version: 1` 格式，路径相对导入它的文件；嵌套 namespace 用 `.` 连接。
+- 执行目标及其传递依赖，共享依赖只执行一次；就绪任务按并发上限运行。
+- 每个 `run` 用 `/bin/sh -e -c` 执行，工作目录始终是根 `jobs.yaml` 所在目录，继承环境和标准输入输出。
+- 保留 `[jobs] start/done/fail/skip` 日志。失败跳过所有下游任务，独立分支继续完成；整体成功退出 `0`，失败退出 `1`。
+- 重复名称、无效配置、缺失依赖和循环在运行任何任务前报错。

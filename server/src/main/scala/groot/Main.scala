@@ -2,6 +2,7 @@ package groot
 
 import cats.effect.{IO, IOApp}
 import framework.rpcDsl.*
+import groot.jobs.JobsRoutes
 import groot.schedule.{Scheduler, ScheduleRoutes}
 
 object Main extends IOApp.Simple:
@@ -21,6 +22,7 @@ object Main extends IOApp.Simple:
       }
 
       ScheduleRoutes.register(scheduler)
+      JobsRoutes.register()
       command[PlainText]("health") {
         handle { IO.pure(PlainText("ok")) }
       }

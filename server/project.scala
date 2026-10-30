@@ -1,6 +1,7 @@
 //> using scala 3.3.8
 //> using options -deprecation -feature -unchecked
 //> using javaOpt -XX:ActiveProcessorCount=4
+//> using resourceDir dist/resources
 //> using dep org.typelevel::cats-effect:3.7.1
 //> using dep org.http4s::http4s-ember-server:0.23.37
 //> using dep org.http4s::http4s-circe:0.23.37
