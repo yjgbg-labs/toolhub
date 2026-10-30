@@ -76,6 +76,10 @@ JSON 数据保持原文，多行 `data:` 合并为多行文本；心跳注释和
 `retry` 字段不打印。流结束时退出，按 `Ctrl+C` 可中断；连接断开后不自动重连。
 命令请求不设置总传输时限，以支持长时间、间歇性事件流；OpenAPI 发现仍限时 30 秒。
 
+服务端可返回 `Shell("...")`（`application/x-sh`）。`groot-cli` 完整接收成功响应后，
+在本机用 `/bin/sh -c` 执行脚本，继承当前目录、环境及标准输入/输出/错误，
+并使用脚本的退出码退出。示例见 [服务端 Shell 返回类型](server/README.md#client-side-shell-scripts)。
+
 OpenCode 插件在 setup 时发现命令并注册 Code Mode 工具及 namespace，返回清理函数。
 支持通过插件 options 配置 `baseUrl`、`schemaUrl`、`headers`、`tokenEnv`、`timeoutMs`。
 安装后的入口由 OpenCode 自动发现，文件变更自动加载。

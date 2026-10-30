@@ -9,7 +9,7 @@ object NativeCli:
       val base = sys.env.get("SPROUT_BASE_URL").filter(_.nonEmpty)
         .getOrElse("http://127.0.0.1:" + sys.env.get("SPROUT_PORT").filter(_.nonEmpty).getOrElse("18080"))
       val backend = DefaultSyncBackend()
-      try
+      val result = try
         val transport = new HttpTransport(backend, base, event => {
           System.out.println(event)
           System.out.flush()
@@ -17,10 +17,14 @@ object NativeCli:
         })
         // Scala Native preserves argv[0], including the name of an invoked symlink.
         val program = new java.io.File(scala.scalanative.runtime.filename).getName
-        val result = CommandLine.run(program, args.toVector, transport, readJsonArgument)
-        if result.nonEmpty then println(result)
-        0
+        CommandLine.run(program, args.toVector, transport, readJsonArgument)
       finally backend.close()
+      result match
+        case CommandLine.Result.Text(value) =>
+          if value.nonEmpty then println(value)
+          0
+        case CommandLine.Result.Shell(script) =>
+          new ProcessBuilder("/bin/sh", "-c", script).inheritIO().start().waitFor()
     catch
       case error: Exception =>
         System.err.println(error.getMessage)

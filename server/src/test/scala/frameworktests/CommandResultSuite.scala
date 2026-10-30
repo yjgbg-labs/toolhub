@@ -7,7 +7,7 @@ import munit.CatsEffectSuite
 import org.http4s.{Method, Request, Status, Uri}
 import org.http4s.circe.*
 import org.http4s.headers.`Content-Type`
-import scala.compiletime.testing.typeCheckErrors
+import scala.compiletime.testing.{typeCheckErrors, typeChecks}
 import framework.rpcDsl.*
 
 class CommandResultSuite extends CatsEffectSuite:
@@ -73,6 +73,34 @@ class CommandResultSuite extends CatsEffectSuite:
       assertEquals(empty.headers.get[`Content-Type`], None)
       assertEquals(nullable, Json.Null)
       assertEquals(count, Json.fromInt(7))
+  }
+
+  test("Shell explicitly wraps a String and returns an unquoted script with its own media type and schema") {
+    assert(typeChecks("""
+      import framework.rpcDsl.*
+      val script: Shell = Shell("printf 'hello\\n'")
+      val text: String = script
+      summon[SuccessResponse[Shell]]
+    """))
+    assert(typeCheckErrors("""
+      import framework.rpcDsl.*
+      val script: Shell = "requires explicit construction"
+    """).nonEmpty)
+    val script = "#!/bin/sh\nprintf '%s\\n' '空 \"quoted\"'\nexit 17\n"
+    val app = httpApp {
+      command[Shell]("script") { handle { IO.pure(Shell(script)) } }
+    }
+    val schema = io.circe.parser.parse(app.openApiJson).toOption.get.hcursor.downField("paths").downField("/script")
+      .downField("get").downField("responses").downField("200").downField("content")
+      .downField("application/x-sh").downField("schema")
+    assertEquals(schema.get[String]("type"), Right("string"))
+    for
+      response <- app.httpApp(request("/script"))
+      body <- response.as[String]
+    yield
+      assertEquals(response.status, Status.Ok)
+      assertEquals(response.headers.get[`Content-Type`].map(_.mediaType), org.http4s.MediaType.parse("application/x-sh").toOption)
+      assertEquals(body, script)
   }
 
   test("declared errors short-circuit typed IO handlers with their own status and schema") {

@@ -21,6 +21,11 @@ object SuccessResponse extends JsonSuccessResponses:
     private[framework] val schema = Some(JsonModel[String].schema)
     private[framework] def encode(value: PlainText) = Some(ResponseBody.Text(value))
 
+  given SuccessResponse[Shell] with
+    private[framework] val mediaType = Some("application/x-sh")
+    private[framework] val schema = Some(JsonModel[String].schema)
+    private[framework] def encode(value: Shell) = Some(ResponseBody.Text(value))
+
   given SuccessResponse[Unit] with
     private[framework] val mediaType = None
     private[framework] val schema = None
