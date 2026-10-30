@@ -20,6 +20,7 @@ jobs.yaml               四个任务，内联构建、测试和交付流程
 
 CLI 与插件各自拥有实现与依赖，没有共享代码或 workspace 包引用。
 CLI 的动态协议实现直接编入 Native 可执行文件；插件打成独立 JS bundle。
+服务端使用 Scala 3.9.0 LTS 和 JDK 25，编译器及依赖版本集中在 `server/project.scala`。
 
 ## 四个任务
 
@@ -37,6 +38,10 @@ CLI 的动态协议实现直接编入 Native 可执行文件；插件打成独�
 使用已有本地构建产物时，执行 `INSTALL_ONLY=1 groot-cli jobs --job <部署任务>`；
 它跳过组件构建，`server-deploy` 的 `server-test` 依赖仍会执行。
 两个开关同时设置时，只检查本地产物存在且非空，不安装；服务端依赖测试仍会执行。
+
+服务端的负向测试会故意触发 HTTP 500，并捕获、断言预期的请求错误日志。
+测试失败和非预期错误仍会正常输出；部署结果以测试汇总、`[jobs] fail` 和退出码为准。
+JDK 25 下仍可能出现 `scala.runtime.LazyVals` 的 `Unsafe` 弃用警告：MUnit、Circe 等依赖的旧式 lazy val 字节码仍调用兼容实现，该警告不表示测试或部署失败。
 
 ## 本机交付约定
 

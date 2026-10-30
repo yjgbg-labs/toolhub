@@ -133,8 +133,8 @@ object httpDsl:
       Some(SchemaConstraint("pattern", Json.fromString(value))))
 
   object body:
+    // Input.apply handles the optional configuration block without an ambiguous overload.
     def json[A: JsonModel](using scope: DeclarationScope): Input[A] = scope.jsonBody[A]
-    def json[A: JsonModel](init: InputScope[A] ?=> Unit)(using scope: DeclarationScope): Input[A] = scope.jsonBody[A].apply(init)
 
   object response:
     def json[A](status: Int)(init: ResponseScope ?=> Unit)(using model: JsonModel[A], scope: DeclarationScope): Output[A] =

@@ -45,26 +45,26 @@ object JsonModel:
   given [A](using element: => JsonModel[A]): JsonModel[Option[A]] = new JsonModel[Option[A]]:
     def typeId = s"scala.Option[${element.typeId}]"
     lazy val encoder: Encoder[Option[A]] = Encoder.instance(_.fold(Json.Null)(element.encoder.apply))
-    lazy val decoder: Decoder[Option[A]] = Decoder.decodeOption(element.decoder)
+    lazy val decoder: Decoder[Option[A]] = Decoder.decodeOption(using element.decoder)
     val schema = Schema[Option[A]](() => SchemaNode.Nullable(() => element.schema.node()))
     override val missing = Some(None)
 
   given [A](using element: => JsonModel[A]): JsonModel[List[A]] = new JsonModel[List[A]]:
     def typeId = s"scala.List[${element.typeId}]"
-    lazy val encoder: Encoder[List[A]] = Encoder.encodeList(element.encoder)
-    lazy val decoder: Decoder[List[A]] = Decoder.decodeList(element.decoder)
+    lazy val encoder: Encoder[List[A]] = Encoder.encodeList(using element.encoder)
+    lazy val decoder: Decoder[List[A]] = Decoder.decodeList(using element.decoder)
     val schema = Schema[List[A]](() => SchemaNode.ArrayOf(() => element.schema.node()))
 
   given [A](using element: => JsonModel[A]): JsonModel[Vector[A]] = new JsonModel[Vector[A]]:
     def typeId = s"scala.Vector[${element.typeId}]"
-    lazy val encoder: Encoder[Vector[A]] = Encoder.encodeVector(element.encoder)
-    lazy val decoder: Decoder[Vector[A]] = Decoder.decodeVector(element.decoder)
+    lazy val encoder: Encoder[Vector[A]] = Encoder.encodeVector(using element.encoder)
+    lazy val decoder: Decoder[Vector[A]] = Decoder.decodeVector(using element.decoder)
     val schema = Schema[Vector[A]](() => SchemaNode.ArrayOf(() => element.schema.node()))
 
   given [A](using element: => JsonModel[A]): JsonModel[Map[String, A]] = new JsonModel[Map[String, A]]:
     def typeId = s"scala.Map[scala.String,${element.typeId}]"
-    lazy val encoder: Encoder[Map[String, A]] = Encoder.encodeMap[String, A](io.circe.KeyEncoder.encodeKeyString, element.encoder)
-    lazy val decoder: Decoder[Map[String, A]] = Decoder.decodeMap[String, A](io.circe.KeyDecoder.decodeKeyString, element.decoder)
+    lazy val encoder: Encoder[Map[String, A]] = Encoder.encodeMap[String, A](using io.circe.KeyEncoder.encodeKeyString, element.encoder)
+    lazy val decoder: Decoder[Map[String, A]] = Decoder.decodeMap[String, A](using io.circe.KeyDecoder.decodeKeyString, element.decoder)
     val schema = Schema[Map[String, A]](() => SchemaNode.Dictionary(() => element.schema.node()))
 
   inline def derived[A](using mirror: Mirror.Of[A]): JsonModel[A] =

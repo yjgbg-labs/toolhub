@@ -218,14 +218,16 @@ class HttpSuite extends CatsEffectSuite:
         }
       }
     }
-    for
-      badInput <- app.httpApp(request("/bad-input"))
-      badOutput <- app.httpApp(request("/bad-output"))
-      json <- badInput.as[Json]
-    yield
-      assertEquals(badInput.status, Status.InternalServerError)
-      assertEquals(badOutput.status, Status.InternalServerError)
-      assertEquals(json.hcursor.get[String]("message"), Right("Internal server error"))
+    ExpectedRequestErrors("Input belongs to a different endpoint", "Response belongs to a different endpoint") {
+      for
+        badInput <- app.httpApp(request("/bad-input"))
+        badOutput <- app.httpApp(request("/bad-output"))
+        json <- badInput.as[Json]
+      yield
+        assertEquals(badInput.status, Status.InternalServerError)
+        assertEquals(badOutput.status, Status.InternalServerError)
+        assertEquals(json.hcursor.get[String]("message"), Right("Internal server error"))
+    }
   }
 
   test("configuration cannot be mutated from a handler after freeze") {
@@ -237,7 +239,9 @@ class HttpSuite extends CatsEffectSuite:
         }
       }
     }
-    app.httpApp(request("/")).map(result => assertEquals(result.status, Status.InternalServerError))
+    ExpectedRequestErrors("requirement failed: Application configuration is frozen") {
+      app.httpApp(request("/")).map(result => assertEquals(result.status, Status.InternalServerError))
+    }
   }
 
   test("Ember listens on all IPv4 interfaces and serves requests through loopback") {

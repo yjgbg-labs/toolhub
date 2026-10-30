@@ -338,16 +338,18 @@ class GroupMiddlewareSuite extends CatsEffectSuite:
     val doc = operationDoc(app, "/users/second")
     assert(doc.get[List[Json]]("parameters").toOption.forall(_.isEmpty))
     assert(!doc.downField("responses").downField("403").succeeded)
-    for
-      first <- app.httpApp(request("/users/first?n=7"))
-      second <- app.httpApp(request("/users/second")).flatMap(_.as[String])
-      badInput <- app.httpApp(request("/users/input"))
-      badOutput <- app.httpApp(request("/users/output"))
-    yield
-      assertEquals(first.status, Status.Forbidden)
-      assertEquals(second, Json.fromString("independent").noSpaces)
-      assertEquals(badInput.status, Status.InternalServerError)
-      assertEquals(badOutput.status, Status.InternalServerError)
+    ExpectedRequestErrors("Input belongs to a different endpoint", "Response belongs to a different endpoint") {
+      for
+        first <- app.httpApp(request("/users/first?n=7"))
+        second <- app.httpApp(request("/users/second")).flatMap(_.as[String])
+        badInput <- app.httpApp(request("/users/input"))
+        badOutput <- app.httpApp(request("/users/output"))
+      yield
+        assertEquals(first.status, Status.Forbidden)
+        assertEquals(second, Json.fromString("independent").noSpaces)
+        assertEquals(badInput.status, Status.InternalServerError)
+        assertEquals(badOutput.status, Status.InternalServerError)
+    }
   }
 
   test("inherited contracts reject duplicate parameters, bodies, statuses and HEAD bodies") {
