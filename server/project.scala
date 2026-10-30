@@ -1,6 +1,7 @@
 //> using scala 3.9.0
 //> using options -deprecation -feature -unchecked
 //> using javaOpt -XX:ActiveProcessorCount=4
+//> using javaOpt --enable-native-access=ALL-UNNAMED
 //> using dep org.typelevel::cats-effect:3.7.1
 //> using dep org.http4s::http4s-ember-server:0.23.38
 //> using dep org.http4s::http4s-circe:0.23.38
@@ -11,6 +12,9 @@
 //> using dep com.outr::scribe:3.19.0
 //> using dep com.outr::scribe-slf4j2:3.19.0
 //> using dep org.snakeyaml:snakeyaml-engine:3.2
+//> using dep org.graalvm.polyglot:polyglot:25.4.4.1.1
+//> using dep org.graalvm.js:js-isolate-linux-amd64-community:25.4.4.1.1
+//> using dep org.xerial:sqlite-jdbc:3.54.1.0
 //> using test.dep org.typelevel::munit-cats-effect:2.2.1
 //> using test.dep org.http4s::http4s-ember-client:0.23.38
 //> using test.dep io.swagger.parser.v3:swagger-parser-v3:2.1.48

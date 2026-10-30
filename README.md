@@ -97,6 +97,60 @@ OpenCode 插件在 setup 时发现命令并注册 Code Mode 工具及 namespace�
 支持通过插件 options 配置 `baseUrl`、`schemaUrl`、`headers`、`tokenEnv`、`timeoutMs`。
 安装后的入口由 OpenCode 自动发现，文件变更自动加载。
 
+### GraalJS 脚本任务
+
+```sh
+groot-cli graaljs start --script ./demo.graal.js --cpu 2s --timeout 30s
+groot-cli graaljs list
+groot-cli graaljs status --id gjs_xxx
+groot-cli graaljs logs --id gjs_xxx
+groot-cli graaljs logs-follow --id gjs_xxx
+groot-cli graaljs cancel --id gjs_xxx
+groot-cli graaljs notify-on-finish --id gjs_xxx
+```
+
+`start` 必须指定 `cpu` 和 `timeout`，支持正整数加 `ms/s/m/h/d`。`cpu` 是 GraalVM
+累计 guest CPU 时间限额；`timeout` 是开始执行后的墙钟超时，包含 Context 初始化、不包含排队。
+服务端按隐式 `cwd` 解析脚本路径，提交时读取 UTF-8 源码快照；文件须对服务端可见。
+提交后修改文件不会改变已排队的任务。返回 JSON 包含任务 ID、状态、时间限制和日志路径。
+
+- 服务全局共享一个 Engine 和 Native Image isolate，`engine.MaxIsolateMemory=64MB`（64 MiB）。
+- FIFO 队列每次原子预留 4 MiB 调度额度，额度不足则等待；最多同时运行 16 个任务。
+  这是预算记账，不是对实际空闲堆的检测或物理内存划拨。
+- 每次执行新建 Context，并设置 `sandbox.MaxHeapMemory=4MB`。它限制 JS 保留对象，是可能
+  短暂超出的软限额；运行时、GC/JIT 等仍占用共享 isolate 的堆。调度额度不保证每个任务都能达到其限额。
+- 使用 `SandboxPolicy.ISOLATED`；Context 隔离脚本状态。宿主文件、网络、Java 类、线程和进程访问受限。
+  支持单文件同步 JavaScript、`console.log/info/warn/error` 和 `print`，执行结束后释放 Context。
+- 队列最多等待 1024 个任务，满时返回 429；脚本大小上限 1 MiB。任务输出上限 8 MiB，超限记为
+  `output_limit`；错误和最终摘要另外保留。
+
+任务状态为 `queued → running → succeeded/failed`，运行时取消先进入 `cancelling`，Context
+关闭后才变为 `cancelled` 并归还额度；排队中的任务直接取消。`cancel` 幂等。
+`list` 只返回 `queued/running/cancelling`，结束任务仍能按 ID 查询。
+CPU 超限、超时、内存超限和脚本异常分别记录明确的错误码。
+
+日志写入 `$SPROUT_HOME/graaljs/logs/<id>.log`；`SPROUT_HOME` 默认是 `~/.config/sprout`。
+`logs` 返回当前快照字符串；`logs-follow` 按行通过 SSE 回放并追踪文件，结束后输出摘要并关闭流。
+UTF-8 字符跨写入块也能正确处理；断开日志连接只停止订阅，任务继续运行。
+
+```text
+你好
+[graaljs] state=succeeded cpu=18.420ms elapsed=73.810ms
+```
+
+`cpuTimeMs` 是专用执行线程从启动到 Context 清理完成的 CPU 时间，包含该线程上的初始化和宿主回调，
+不包含后台 GC/JIT 线程；它与 GraalVM 的 guest CPU 限额计量范围有所不同。
+`elapsedTimeMs` 是提交入队以来的总耗时，`runTimeMs` 是实际运行阶段耗时，正常运行中用单调时钟计时。
+未执行或异常重启后无法恢复的 CPU 数据为 `null`。
+
+任务状态、限制、时间、错误和源码快照保存到 `$SPROUT_HOME/graaljs/tasks.sqlite3`，SQLite 使用 WAL。
+退出时终止活动任务；启动时将遗留的未完成任务标记为 `interrupted`，不自动重跑。
+日志和历史记录保留在本地；同一数据目录只允许一个服务实例持有。
+`notify-on-finish` 已注册，当前返回 `501 not_implemented`。
+
+当前打包目标为 Linux AMD64，使用 GraalVM `25.4.4.1.1` Community isolate 和 SQLite JDBC
+`3.54.1.0`，原生资源随 assembly JAR 交付；JDK 25 启动参数启用 `--enable-native-access=ALL-UNNAMED`。
+
 ### 本地 jobs
 
 在项目目录执行 `groot-cli jobs --job <任务>`；服务端根据隐式传入的 cwd 读取 `jobs.yaml`，`--parallel` 默认 `5`。

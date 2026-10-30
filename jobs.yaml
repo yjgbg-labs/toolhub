@@ -20,6 +20,9 @@ jobs:
         mkdir -p server/dist
         groot use-jdk "$JDK_MAJOR" -- scala-cli --power package server/project.scala server/src/main/scala \
           --assembly --preamble=false --main-class groot.Main --jvm system --server=false -o server/dist/groot.jar --force
+        groot use-jdk "$JDK_MAJOR" -- jar --update --file server/dist/groot.jar --manifest server/assembly.mf
+        groot use-jdk "$JDK_MAJOR" -- java --enable-native-access=ALL-UNNAMED \
+          --class-path server/dist/groot.jar server/test/AssemblySmoke.java
       fi
       test -s server/dist/groot.jar
       [ "${CHECK_ONLY:-0}" != 1 ] || exit 0
@@ -49,7 +52,7 @@ jobs:
       WorkingDirectory=$(printf '%s' "$SERVER_INSTALL_ROOT/server" | sed 's/%/%%/g')
       Environment=$(quote "PATH=$(dirname "$(command -v bun)"):$(dirname "$groot"):/usr/local/bin:/usr/bin:/bin")
       Environment=$(quote "SPROUT_HOME=$SPROUT_HOME")
-      ExecStart=$(exec_quote "$groot") use-jdk "$JDK_MAJOR" -- java -XX:ActiveProcessorCount=4 -jar $(exec_quote "$target")
+      ExecStart=$(exec_quote "$groot") use-jdk "$JDK_MAJOR" -- java --enable-native-access=ALL-UNNAMED -XX:ActiveProcessorCount=4 -jar $(exec_quote "$target")
       UMask=0077
       Restart=on-failure
       RestartSec=3
