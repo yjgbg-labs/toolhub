@@ -126,7 +126,7 @@ groot-cli graaljs notify-on-finish --id gjs_xxx
 - 每次执行新建 Context，并设置 `sandbox.MaxHeapMemory=4MB`。它限制 JS 保留对象，是可能
   短暂超出的软限额；运行时、GC/JIT 等仍占用共享 isolate 的堆。调度额度不保证每个任务都能达到其限额。
 - 使用 `SandboxPolicy.ISOLATED`；Context 隔离脚本状态。宿主文件、网络、Java 类、线程和进程访问受限。
-  支持同步 JavaScript 源码、`console.log/info/warn/error` 和 `print`，执行结束后释放 Context。
+  支持 JavaScript、顶层 `await`、`console.log/info/warn/error` 和 `print`，执行结束后释放 Context。
 - 队列最多等待 1024 个任务，满时返回 429；脚本大小上限 1 MiB。任务输出上限 8 MiB，超限记为
   `output_limit`；错误和最终摘要另外保留。
 
@@ -153,6 +153,40 @@ UTF-8 字符跨写入块也能正确处理；断开日志连接只停止订阅�
 退出时终止活动任务；启动时将遗留的未完成任务标记为 `interrupted`，不自动重跑。
 日志和历史记录保留在本地；同一数据目录只允许一个服务实例持有。
 `notify-on-finish` 已注册，当前返回 `501 not_implemented`。
+
+#### 命令树 SDK
+
+每个任务的 `tools` 对象自动包含当前 Scala server 注册的完整命令树，与 Code Mode 的命名、
+输入分组和响应结构一致。命令声明增删后，SDK 随服务启动生成，无需维护独立的方法列表。
+例如 `schedule.list` 映射为 `tools.schedule.list()`，带连字符的方法使用方括号。
+参数定义沿用 `/openapi.json`；GraalJS 内不提供 `search()`。
+
+```sh
+groot-cli graaljs start --cpu 2s --timeout 30s --body '
+  const [health, jobs] = await Promise.all([
+    tools.health(),
+    tools.schedule.list()
+  ]);
+  console.log(health.body);
+  console.log(JSON.stringify(jobs.body));
+  // 带参数：await tools.schedule.log({query: {name: "example", lines: 20}})
+  // 原始文本请求体：await tools.graaljs.start({query: {cpu: "1s", timeout: "5s"}, body: "console.log(42)"})
+'
+```
+
+- 所有方法返回 `Promise<{status, headers, body}>`。参数按 `query`、`body` 等位置分组，
+  无参数命令可省略输入。JSON 响应解码为对象；文本、Shell 和 SSE 响应作为字符串返回；空响应为 `null`。
+  Shell 内容只返回文本，不自动执行；SSE 会等到流结束后返回完整文本。
+- 非 2xx 响应拒绝 Promise，错误为 `ApiError`，包含 `operationId` 和 `response`（同样的响应结构）。
+  调用经过本进程内的 HTTP 分发、参数校验和中间件，不建立额外的网络连接。
+- 源码作为 async 函数体执行，支持顶层 `await` / `return` 和 `Promise.all` 并行调用。
+  顶层 Promise 完成后结束任务；返回值不写入日志，需要输出时使用 `console.log`。
+  任务结束、超时或取消时会取消尚未完成的调用，并等待它们的清理完成后释放任务额度。
+- 每个任务最多 64 个待完成 SDK 调用；每次请求 JSON、响应正文及序列化后的响应均不超过 1 MiB。
+  等待命令不占用 guest CPU，但仍计入墙钟超时。被调用命令的 JVM/外部工作不计入 JS 的 4 MiB 堆限制。
+- `tools` 授予脚本与这些服务端命令相同的能力，包括修改定时任务、提交或取消其他 GraalJS 任务。
+  它不是只读接口。独立提交的子任务具有自己的生命周期；父任务结束不会自动取消已提交的子任务。
+  `fetch`、文件系统、Java 反射等通用宿主接口仍未开放。
 
 当前打包目标为 Linux AMD64，使用 GraalVM `25.4.4.1.1` Community isolate 和 SQLite JDBC
 `3.54.1.0`，原生资源随 assembly JAR 交付；JDK 25 启动参数启用 `--enable-native-access=ALL-UNNAMED`。

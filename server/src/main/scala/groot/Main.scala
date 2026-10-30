@@ -1,16 +1,18 @@
 package groot
 
-import cats.effect.{IO, IOApp}
+import cats.effect.{Deferred, IO, IOApp, Resource}
 import framework.rpcDsl.*
+import framework.runtime.CommandSdk
 import groot.jobs.JobsRoutes
 import groot.graaljs.{GraalJsRoutes, GraalManager}
 import groot.schedule.{Scheduler, ScheduleRoutes}
 
 object Main extends IOApp.Simple:
   def run: IO[Unit] = (for
+    commands <- Resource.eval(Deferred[IO, CommandSdk])
     scheduler <- Scheduler.resource()
-    graaljs <- GraalManager.resource()
-  yield (scheduler, graaljs)).use { (scheduler, graaljs) =>
+    graaljs <- GraalManager.resource(commands = commands.get)
+  yield (scheduler, graaljs, commands)).use { (scheduler, graaljs, commands) =>
     val app = httpApp {
       server {
         host("0.0.0.0")
@@ -32,5 +34,5 @@ object Main extends IOApp.Simple:
         handle { IO.pure(PlainText("ok")) }
       }
     }
-    app.serve
+    commands.complete(app.commandSdk) *> app.serve
   }

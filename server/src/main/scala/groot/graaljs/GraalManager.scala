@@ -4,6 +4,7 @@ import cats.effect.{Deferred, IO, Resource}
 import cats.effect.std.{Mutex, Supervisor}
 import cats.syntax.all.*
 import framework.rpc.{PlainText, SSE}
+import framework.runtime.CommandSdk
 import java.nio.file.Path
 import java.time.Instant
 import java.util.UUID
@@ -144,7 +145,8 @@ final class GraalManager private (
     }
 
 object GraalManager:
-  def resource(home: Path = GraalStore.defaultHome): Resource[IO, GraalManager] = managed(home, GraalRunner.resource)
+  def resource(home: Path = GraalStore.defaultHome, commands: IO[CommandSdk] = IO.pure(CommandSdk.empty)): Resource[IO, GraalManager] =
+    managed(home, GraalRunner.resource(commands))
 
   private[graaljs] def managed(
       home: Path,

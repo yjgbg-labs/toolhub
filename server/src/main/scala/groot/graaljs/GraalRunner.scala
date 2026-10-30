@@ -1,13 +1,15 @@
 package groot.graaljs
 
 import cats.effect.{IO, Resource}
+import cats.effect.std.Dispatcher
+import framework.runtime.CommandSdk
 import java.io.{IOException, InputStream, OutputStream}
 import java.lang.management.ManagementFactory
 import java.net.URI
 import java.nio.file.{Files, Path, StandardOpenOption}
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
-import org.graalvm.polyglot.{Context, Engine, PolyglotException, SandboxPolicy, Source}
+import org.graalvm.polyglot.{Context, Engine, HostAccess, PolyglotException, SandboxPolicy, Source}
 import scala.util.control.NonFatal
 
 private[graaljs] case class RunResult(
@@ -58,7 +60,7 @@ private[graaljs] object GraalRunner:
       case _ => "runtime_error"
     TaskError(code, message)
 
-  private final class Runner(engine: Engine) extends GraalRunner:
+  private final class Runner(engine: Engine, dispatcher: Dispatcher[IO], commands: IO[CommandSdk]) extends GraalRunner:
     private val cpu = ManagementFactory.getThreadMXBean
     if cpu.isThreadCpuTimeSupported && !cpu.isThreadCpuTimeEnabled then cpu.setThreadCpuTimeEnabled(true)
 
@@ -66,10 +68,11 @@ private[graaljs] object GraalRunner:
       if !cpu.isCurrentThreadCpuTimeSupported then None
       else Option(cpu.getCurrentThreadCpuTime).filter(_ >= 0)
 
-    def start(task: GraalTask, source: String, log: Path): IO[GraalExecution] = IO {
+    def start(task: GraalTask, source: String, log: Path): IO[GraalExecution] = commands.flatMap { sdk => IO {
       val context = new AtomicReference[Context]()
       val stop = new AtomicReference[TaskError]()
       val completed = new CompletableFuture[RunResult]()
+      val session = new GraalSdkSession(sdk, dispatcher)
       val execution = new GraalExecution:
         // Cancelling an observer never cancels the worker or its completion signal.
         def result: IO[RunResult] = IO.async_ { callback =>
@@ -81,6 +84,7 @@ private[graaljs] object GraalRunner:
         def cancel(reason: TaskError): IO[Unit] = IO.blocking {
           if !completed.isDone then
             stop.compareAndSet(null, reason)
+            session.wake()
             val current = context.get()
             if current != null then current.close(true)
         }
@@ -95,6 +99,7 @@ private[graaljs] object GraalRunner:
           output = new LogOutput(log)
           if stop.get() == null then
             val current = Context.newBuilder("js").engine(engine).sandbox(SandboxPolicy.ISOLATED)
+              .allowHostAccess(HostAccess.ISOLATED)
               .in(InputStream.nullInputStream()).out(output).err(output)
               .option("js.console", "true")
               .option("sandbox.MaxHeapMemory", s"${Limits.taskBytes}B")
@@ -102,12 +107,27 @@ private[graaljs] object GraalRunner:
               .build()
             context.set(current)
             if stop.get() == null then
+              session.install(current)
               val name = s"${task.id}.graal.js"
-              val code = Source.newBuilder("js", source, name).uri(URI.create(s"graaljs:/$name")).cached(false).buildLiteral()
-              current.eval(code)
+              val code = Source.newBuilder("js", s"(async () => {\n$source\n})()", name)
+                .uri(URI.create(s"graaljs:/$name")).cached(false).buildLiteral()
+              var settled = false
+              val success = GraalSdkSession.callback { _ => settled = true; null }
+              val rejected = GraalSdkSession.callback { arguments =>
+                val value = arguments(0)
+                val detail = if value.hasMember("stack") then value.getMember("stack") else value
+                val message = if detail.isString then detail.asString() else detail.toString
+                error = Some(TaskError("script_error", message.take(8192)))
+                settled = true
+                null
+              }
+              current.eval(code).invokeMember("then", success, rejected)
+              while !settled && stop.get() == null do session.next()
           returned = true
         catch case NonFatal(cause) => error = Some(failure(cause))
         finally
+          try session.close()
+          catch case NonFatal(cause) => if error.isEmpty then error = Some(failure(cause))
           val current = context.get()
           if current != null then
             try current.close(true)
@@ -127,11 +147,13 @@ private[graaljs] object GraalRunner:
           completed.complete(RunResult(state, usedCpu, (System.nanoTime() - started).toDouble / 1000000d, error))
       })
       execution
-    }
+    } }
 
-  def resource: Resource[IO, GraalRunner] =
-    Resource.make(IO.blocking {
+  def resource(commands: IO[CommandSdk] = IO.pure(CommandSdk.empty)): Resource[IO, GraalRunner] = for
+    dispatcher <- Dispatcher.parallel[IO]
+    engine <- Resource.make(IO.blocking {
       Engine.newBuilder("js").sandbox(SandboxPolicy.ISOLATED).spawnIsolate(true)
         .out(OutputStream.nullOutputStream()).err(OutputStream.nullOutputStream())
         .option("engine.MaxIsolateMemory", s"${Limits.engineBytes}B").build()
-    })(engine => IO.blocking(engine.close(true))).map(new Runner(_))
+    })(engine => IO.blocking(engine.close(true)))
+  yield new Runner(engine, dispatcher, commands)

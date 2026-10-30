@@ -38,6 +38,8 @@ final class Application private[framework] (
     }
   }
 
+  lazy val commandSdk: CommandSdk = new CommandSdk(endpoints, httpApp)
+
   def resource: Resource[IO, org.http4s.server.Server] =
     EmberServerBuilder.default[IO]
       .withHost(Host.fromString(serverSettings.host).get)
