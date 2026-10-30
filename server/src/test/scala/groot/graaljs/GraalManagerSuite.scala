@@ -6,10 +6,13 @@ import framework.rpcDsl.*
 import io.circe.Json
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path, StandardOpenOption}
+import java.sql.DriverManager
 import munit.CatsEffectSuite
-import org.http4s.{MediaType, Request, Status, Uri}
+import org.http4s.{Header, MediaType, Method, Request, Status, Uri}
 import org.http4s.circe.*
+import org.typelevel.ci.CIString
 import scala.concurrent.duration.*
+import scala.util.Using
 import GraalTestSupport.*
 
 class GraalManagerSuite extends CatsEffectSuite:
@@ -30,28 +33,27 @@ class GraalManagerSuite extends CatsEffectSuite:
     def finish(id: String): IO[Unit] = invocation(id).flatMap(_.done.complete(RunResult("succeeded", Some(1d), 2d, None))).void
 
   private def stub(cleanup: IO[Unit] = IO.unit): IO[StubRunner] = Ref.of[IO, Vector[Invocation]](Vector.empty).map(new StubRunner(_, cleanup))
-  private def submit(manager: GraalManager, home: Path, timeout: String = "30s") = manager.start(home.toString, "script.graal.js", "10s", timeout)
+  private val source = "  const message = '中文🙂';\nconsole.log(message, \"quoted\");\n"
+  private def submit(manager: GraalManager, timeout: String = "30s") = manager.start(source, "10s", timeout)
   private def append(path: Path, text: String): IO[Unit] = IO.blocking { Files.writeString(path, text, StandardOpenOption.APPEND); () }
 
   test("concurrent admissions reserve exactly sixteen slots and release them in FIFO order") {
     temporary.use { home =>
       for
-        _ <- script(home, "original source")
         runner <- stub()
         _ <- GraalManager.managed(home.resolve("data"), Resource.pure(runner)).use { manager =>
           for
-            _ <- (1 to 19).toList.parTraverse(_ => submit(manager, home))
+            _ <- (1 to 19).toList.parTraverse(_ => submit(manager))
             active <- manager.list
             _ = assertEquals(active.count(_.state == "running"), 16)
             queued = active.filter(_.state == "queued")
             _ = assertEquals(queued.size, 3)
-            _ <- script(home, "changed after submission")
             cancelled <- manager.cancel(queued(1).id)
             _ = assertEquals(cancelled.state, "cancelled")
             _ <- runner.finish(active.head.id)
             _ <- awaitUntil(manager.status(queued.head.id))(_.state == "running")
             first <- runner.invocation(queued.head.id)
-            _ = assertEquals(first.source, "original source")
+            _ = assertEquals(first.source, source)
             _ <- runner.finish(active(1).id)
             _ <- awaitUntil(manager.status(queued(2).id))(_.state == "running")
             calls <- runner.calls.get
@@ -69,11 +71,10 @@ class GraalManagerSuite extends CatsEffectSuite:
       for
         release <- Deferred[IO, Unit]
         runner <- stub(release.get)
-        _ <- script(home, "held")
         _ <- GraalManager.managed(home.resolve("data"), Resource.pure(runner), Limits.taskBytes).use { manager =>
           (for
-            first <- submit(manager, home)
-            second <- submit(manager, home, "50ms")
+            first <- submit(manager)
+            second <- submit(manager, "50ms")
             _ <- IO.sleep(100.millis)
             waiting <- manager.status(second.id)
             _ = assertEquals(waiting.state, "queued")
@@ -97,10 +98,9 @@ class GraalManagerSuite extends CatsEffectSuite:
     temporary.use { home =>
       for
         runner <- stub()
-        _ <- script(home, "output")
         _ <- GraalManager.managed(home.resolve("data"), Resource.pure(runner)).use { manager =>
           for
-            task <- submit(manager, home)
+            task <- submit(manager)
             path = Path.of(task.logPath)
             _ <- append(path, "first\n")
             short <- manager.follow(task.id)
@@ -134,12 +134,11 @@ class GraalManagerSuite extends CatsEffectSuite:
       val data = home.resolve("data")
       for
         runner <- stub()
-        _ <- script(home, "persistent source")
         id <- GraalManager.managed(data, Resource.pure(runner)).use { manager =>
           for
             second <- GraalManager.managed(data, Resource.pure(runner)).use(_ => IO.unit).attempt
             _ = assert(second.isLeft)
-            task <- submit(manager, home)
+            task <- submit(manager)
             _ <- runner.finish(task.id)
             _ <- awaitUntil(manager.status(task.id))(_.terminal)
           yield task.id
@@ -148,11 +147,19 @@ class GraalManagerSuite extends CatsEffectSuite:
           for
             saved <- store.get(id)
             _ = assertEquals(saved.state, "succeeded")
-            source <- store.source(id)
-            _ = assertEquals(source, "persistent source")
+            savedSource <- store.source(id)
+            _ = assertEquals(savedSource, source)
             _ <- store.save(saved.copy(state = "running", finishedAt = None, cpuTimeMs = None))
             _ <- IO.blocking(Files.write(store.logPath(id), Array(0xe4.toByte), StandardOpenOption.APPEND))
           yield ()
+        }
+        // Older task JSON includes file metadata. It must remain readable after the API change.
+        _ <- IO.blocking {
+          Using.resource(DriverManager.getConnection(s"jdbc:sqlite:${data.resolve("tasks.sqlite3")}")) { db =>
+            Using.resource(db.createStatement()) { statement =>
+              statement.executeUpdate("UPDATE tasks SET task_json = json_set(task_json, '$.script', '/old/script.js', '$.cwd', '/old')")
+            }
+          }
         }
         _ <- GraalManager.managed(data, Resource.pure(runner)).use { manager =>
           for
@@ -175,21 +182,40 @@ class GraalManagerSuite extends CatsEffectSuite:
     temporary.use { home =>
       for
         runner <- stub()
-        _ <- script(home, "route source")
         _ <- GraalManager.managed(home.resolve("data"), Resource.pure(runner)).use { manager =>
           val app = httpApp { GraalJsRoutes.register(manager) }
           def request(path: String, query: (String, String)*) =
             Request[IO](uri = Uri.unsafeFromString(path).withQueryParams(query.toMap))
-          val input = Seq("cwd" -> home.toString, "script" -> "script.graal.js", "cpu" -> "1s", "timeout" -> "10s")
+          val input = Seq("cpu" -> "1s", "timeout" -> "10s")
+          def start(query: Seq[(String, String)] = input, code: String = source) =
+            request("/graaljs/start", query*).withMethod(Method.POST).withEntity(code)
           for
-            created <- app.httpApp(request("/graaljs/start", input*))
+            created <- app.httpApp(start())
             json <- created.as[Json]
             _ = assertEquals(created.status, Status.Ok)
             id = json.hcursor.get[String]("id").toOption.get
-            missingCpu <- app.httpApp(request("/graaljs/start", input.filterNot(_._1 == "cpu")*))
+            call <- runner.invocation(id)
+            _ = assertEquals(call.source, source)
+            _ = assert(!json.asObject.get.contains("script") && !json.asObject.get.contains("cwd"))
+            missingCpu <- app.httpApp(start(input.filterNot(_._1 == "cpu")))
             _ = assertEquals(missingCpu.status, Status.BadRequest)
-            badCpu <- app.httpApp(request("/graaljs/start", (input.filterNot(_._1 == "cpu") :+ ("cpu" -> "0s"))*))
+            missingTimeout <- app.httpApp(start(input.filterNot(_._1 == "timeout")))
+            _ = assertEquals(missingTimeout.status, Status.BadRequest)
+            badCpu <- app.httpApp(start(input.filterNot(_._1 == "cpu") :+ ("cpu" -> "0s")))
             _ = assertEquals(badCpu.status, Status.BadRequest)
+            missingBody <- app.httpApp(request("/graaljs/start", input*).withMethod(Method.POST))
+            _ = assertEquals(missingBody.status, Status.BadRequest)
+            _ <- List("", " \n\t").traverse_ { code =>
+              app.httpApp(start(code = code)).map(response => assertEquals(response.status, Status.BadRequest))
+            }
+            unsupported <- app.httpApp(start().putHeaders(Header.Raw(CIString("Content-Type"), "application/json")))
+            _ = assertEquals(unsupported.status, Status.UnsupportedMediaType)
+            oversized <- app.httpApp(start(code = "中" * (Limits.maxSourceBytes / 3 + 1)))
+            _ = assertEquals(oversized.status, Status.PayloadTooLarge)
+            invalidUtf8 <- app.httpApp(start().withBodyStream(fs2.Stream.emits(Array[Byte](0xc3.toByte, 0x28)).covary[IO]))
+            _ = assertEquals(invalidUtf8.status, Status.BadRequest)
+            calls <- runner.calls.get
+            _ = assertEquals(calls.size, 1)
             absent <- app.httpApp(request("/graaljs/logs-follow", "id" -> "../../outside"))
             _ = assertEquals(absent.status, Status.NotFound)
             notify <- app.httpApp(request("/graaljs/notify-on-finish", "id" -> id))
@@ -203,7 +229,12 @@ class GraalManagerSuite extends CatsEffectSuite:
             wire <- sse.as[String]
             _ = assert(wire.contains("data: [graaljs] state=succeeded"))
             openapi <- app.httpApp(request("/openapi.json")).flatMap(_.as[Json])
-          yield assertEquals(openapi.hcursor.downField("paths").focus.get.asObject.get.size, 7)
+          yield
+            assertEquals(openapi.hcursor.downField("paths").focus.get.asObject.get.size, 7)
+            val operation = openapi.hcursor.downField("paths").downField("/graaljs/start").downField("post")
+            assertEquals(operation.downField("requestBody").get[Boolean]("required"), Right(true))
+            assertEquals(operation.downField("requestBody").downField("content").downField("text/plain").downField("schema").get[String]("type"), Right("string"))
+            assertEquals(operation.get[List[Json]]("parameters").toOption.get.map(_.hcursor.get[String]("name").toOption.get), List("cpu", "timeout"))
         }
       yield ()
     }

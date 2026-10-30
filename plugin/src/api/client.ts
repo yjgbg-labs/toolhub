@@ -101,8 +101,8 @@ export class ApiClient {
     if (cookies.length) headers.set("Cookie", [headers.get("Cookie"), ...cookies].filter(Boolean).join("; "));
     let body: string | undefined;
     if (Object.hasOwn(args, "body")) {
-      body = JSON.stringify(args.body);
-      headers.set("Content-Type", "application/json");
+      body = operation.body!.mediaType === "text/plain" ? args.body as string : JSON.stringify(args.body);
+      headers.set("Content-Type", operation.body!.mediaType);
     }
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const response = await this.fetch(url, {

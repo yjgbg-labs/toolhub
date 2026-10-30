@@ -31,10 +31,10 @@ final class GraalManager private (
       )(start => (now - start).toNanos.toDouble / 1000000d))
     }
 
-  def start(cwd: String, script: String, cpu: String, timeout: String): IO[GraalTask] =
+  def start(source: String, cpu: String, timeout: String): IO[GraalTask] =
     for
       limits <- IO((Validation.durationMs("cpu", cpu), Validation.durationMs("timeout", timeout)))
-      source <- IO.blocking(Validation.source(cwd, script))
+      _ <- IO(Validation.source(source))
       task <- serial {
         for
           _ <- IO.raiseUnless(accepting)(GraalStopping())
@@ -43,10 +43,10 @@ final class GraalManager private (
           now <- IO.realTimeInstant
           clock <- IO.monotonic
           id = "gjs_" + UUID.randomUUID().toString.replace("-", "")
-          task = GraalTask(id, source._1.toString, Path.of(cwd).normalize().toString, "queued", limits._1, limits._2,
+          task = GraalTask(id, "queued", limits._1, limits._2,
             Limits.taskBytes, now.toString, None, None, None, 0d, None, store.logPath(id).toAbsolutePath.toString, None)
           _ <- store.createLog(id)
-          _ <- store.insert(task, source._2)
+          _ <- store.insert(task, source)
           _ <- IO { submitted += id -> clock }
           _ <- dispatch
           current <- store.get(id).flatMap(elapsed)

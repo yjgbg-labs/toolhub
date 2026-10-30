@@ -3,7 +3,7 @@ package sprout.cli
 import io.circe.{Json, JsonObject}
 
 final case class Parameter(name: String, location: String, required: Boolean, schema: Json, explode: Boolean, description: String)
-final case class Body(schema: Json, required: Boolean)
+final case class Body(schema: Json, required: Boolean, mediaType: String)
 final case class Operation(id: String, method: String, path: String, description: String, parameters: Vector[Parameter], body: Option[Body]):
   val segments: Vector[String] = id.split('.').toVector
 
@@ -71,9 +71,12 @@ final class Catalog(document: Json):
       val body = field(declaration, "requestBody").map { raw =>
         require(method != "get" && method != "head", s"$id: GET/HEAD cannot have a body")
         val request = resolve(raw)
-        val schema = request.hcursor.downField("content").downField("application/json").downField("schema").focus
-          .getOrElse(throw new IllegalArgumentException(s"$id: only JSON request bodies are supported"))
-        Body(schema, bool(request, "required"))
+        val content = request.hcursor.downField("content")
+        val mediaType = Vector("application/json", "text/plain").find(media => content.downField(media).downField("schema").focus.nonEmpty)
+          .getOrElse(throw new IllegalArgumentException(s"$id: only JSON and text/plain request bodies are supported"))
+        val schema = content.downField(mediaType).downField("schema").focus.get
+        require(mediaType != "text/plain" || types(resolve(schema)) == Vector("string"), s"$id: text/plain body must have a string schema")
+        Body(schema, bool(request, "required"), mediaType)
       }
       Operation(id, method.toUpperCase, path, Vector(optionalText(declaration, "summary"), optionalText(declaration, "description")).filter(_.nonEmpty).mkString("\n"), parameters, body)
     }
@@ -160,4 +163,6 @@ final class Catalog(document: Json):
     }
     val cookies = pairs("cookie")
     val cookieHeader = if cookies.isEmpty then Vector.empty else Vector("Cookie" -> cookies.map((k, v) => s"${Wire.encode(k)}=${Wire.encode(v)}").mkString("; "))
-    HttpRequest(operation.method, path, pairs("query"), pairs("header") ++ cookieHeader ++ body.toVector.map(_ => "Content-Type" -> "application/json"), body.map(_.noSpaces))
+    val mediaType = operation.body.map(_.mediaType)
+    val payload = body.map(value => if mediaType.contains("text/plain") then value.asString.get else value.noSpaces)
+    HttpRequest(operation.method, path, pairs("query"), pairs("header") ++ cookieHeader ++ body.toVector.map(_ => "Content-Type" -> mediaType.get), payload)

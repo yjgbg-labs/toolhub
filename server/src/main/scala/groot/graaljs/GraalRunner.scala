@@ -3,6 +3,7 @@ package groot.graaljs
 import cats.effect.{IO, Resource}
 import java.io.{IOException, InputStream, OutputStream}
 import java.lang.management.ManagementFactory
+import java.net.URI
 import java.nio.file.{Files, Path, StandardOpenOption}
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
@@ -101,7 +102,8 @@ private[graaljs] object GraalRunner:
               .build()
             context.set(current)
             if stop.get() == null then
-              val code = Source.newBuilder("js", source, task.script).uri(Path.of(task.script).toUri).cached(false).buildLiteral()
+              val name = s"${task.id}.graal.js"
+              val code = Source.newBuilder("js", source, name).uri(URI.create(s"graaljs:/$name")).cached(false).buildLiteral()
               current.eval(code)
           returned = true
         catch case NonFatal(cause) => error = Some(failure(cause))

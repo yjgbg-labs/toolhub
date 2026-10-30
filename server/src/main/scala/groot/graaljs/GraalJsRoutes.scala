@@ -7,7 +7,7 @@ import framework.rpcDsl.*
 object GraalJsRoutes:
   def register(manager: GraalManager)(using CommandsScope): Unit = commands("graaljs") {
     description("Run isolated JavaScript tasks with CPU, timeout and memory limits")
-    val invalid = response.json[ErrorBody](400) { description("Invalid task, limits or script file") }
+    val invalid = response.json[ErrorBody](400) { description("Invalid task, limits or JavaScript source") }
     val missing = response.json[ErrorBody](404) { description("Task not found") }
     val full = response.json[ErrorBody](429) { description("Task queue is full") }
     val stopping = response.json[ErrorBody](503) { description("Runner is stopping") }
@@ -19,12 +19,11 @@ object GraalJsRoutes:
     }
 
     command[GraalTask]("start") {
-      description("Snapshot a server-accessible script and enqueue it; reserve 4 MiB from the 64 MiB budget before execution")
-      val cwd = param[String]("cwd", "Caller working directory, supplied automatically by the CLI") { minLength(1) }
-      val script = param[String]("script", "JavaScript file, absolute or relative to cwd") { minLength(1) }
+      description("Enqueue JavaScript source from the UTF-8 text body; reserve 4 MiB from the 64 MiB budget before execution")
+      val source = body.text("JavaScript source code, sent directly as text/plain") { minLength(1) }
       val cpu = param[String]("cpu", "Cumulative guest CPU time limit, e.g. 500ms or 2s") { minLength(1) }
       val timeout = param[String]("timeout", "Wall-clock execution timeout, excluding queue time, e.g. 30s") { minLength(1) }
-      handle { manager.start(cwd.value, script.value, cpu.value, timeout.value) }
+      handle { manager.start(source.value, cpu.value, timeout.value) }
     }
 
     command[List[GraalTask]]("list") {

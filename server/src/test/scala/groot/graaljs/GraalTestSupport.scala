@@ -17,6 +17,3 @@ private[graaljs] object GraalTestSupport:
   def awaitUntil[A](io: IO[A])(check: A => Boolean): IO[A] =
     def loop: IO[A] = io.flatMap(value => if check(value) then IO.pure(value) else IO.sleep(10.millis) *> IO.defer(loop))
     loop.timeout(10.seconds)
-
-  def script(home: Path, code: String, name: String = "script.graal.js"): IO[Path] =
-    IO.blocking(Files.writeString(home.resolve(name), code))

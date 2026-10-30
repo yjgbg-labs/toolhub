@@ -83,6 +83,11 @@ groot-cli jobs --job build --parallel 2
 CLI 对服务端声明的字符串参数 `cwd` 自动传入本机当前目录的绝对路径，并隐藏对应的命令行参数。
 该机制适用于任意命令；用户无需提供 `cwd`，也不能通过参数或 `--input` 覆盖它。
 
+请求体按 OpenAPI 选择格式：`application/json` 使用 JSON，`text/plain` 使用 UTF-8 原文。
+`--body` 直接传对应内容，也支持 `@文件` 或 `-` 从本机文件/标准输入读取。
+`--input` 始终是完整参数的 JSON 对象，纯文本请求体放在字符串 `body` 字段中。
+CLI 与插件在同时声明两种格式时优先选择 JSON；纯文本请求体要求 string schema。
+
 CLI 遇到成功响应的 `Content-Type: text/event-stream` 时，会像 `tail -f` 一样
 持续打印每个 SSE 事件的 `data` 内容，并立即刷新控制台，支持管道与重定向。
 JSON 数据保持原文，多行 `data:` 合并为多行文本；心跳注释和 `event`、`id`、
@@ -100,7 +105,7 @@ OpenCode 插件在 setup 时发现命令并注册 Code Mode 工具及 namespace�
 ### GraalJS 脚本任务
 
 ```sh
-groot-cli graaljs start --script ./demo.graal.js --cpu 2s --timeout 30s
+groot-cli graaljs start --body 'console.log("hello")' --cpu 2s --timeout 30s
 groot-cli graaljs list
 groot-cli graaljs status --id gjs_xxx
 groot-cli graaljs logs --id gjs_xxx
@@ -111,8 +116,9 @@ groot-cli graaljs notify-on-finish --id gjs_xxx
 
 `start` 必须指定 `cpu` 和 `timeout`，支持正整数加 `ms/s/m/h/d`。`cpu` 是 GraalVM
 累计 guest CPU 时间限额；`timeout` 是开始执行后的墙钟超时，包含 Context 初始化、不包含排队。
-服务端按隐式 `cwd` 解析脚本路径，提交时读取 UTF-8 源码快照；文件须对服务端可见。
-提交后修改文件不会改变已排队的任务。返回 JSON 包含任务 ID、状态、时间限制和日志路径。
+`--body` 直接传入 JavaScript 源码，通过 `POST /graaljs/start?cpu=2s&timeout=30s` 的
+`text/plain` UTF-8 请求体发送，提交后保留源码快照。返回 JSON 包含任务 ID、状态、时间限制和日志路径。
+源码必须非空白，换行、引号和 Unicode 原样保留；错误定位使用 `<任务 ID>.graal.js`。
 
 - 服务全局共享一个 Engine 和 Native Image isolate，`engine.MaxIsolateMemory=64MB`（64 MiB）。
 - FIFO 队列每次原子预留 4 MiB 调度额度，额度不足则等待；最多同时运行 16 个任务。
@@ -120,7 +126,7 @@ groot-cli graaljs notify-on-finish --id gjs_xxx
 - 每次执行新建 Context，并设置 `sandbox.MaxHeapMemory=4MB`。它限制 JS 保留对象，是可能
   短暂超出的软限额；运行时、GC/JIT 等仍占用共享 isolate 的堆。调度额度不保证每个任务都能达到其限额。
 - 使用 `SandboxPolicy.ISOLATED`；Context 隔离脚本状态。宿主文件、网络、Java 类、线程和进程访问受限。
-  支持单文件同步 JavaScript、`console.log/info/warn/error` 和 `print`，执行结束后释放 Context。
+  支持同步 JavaScript 源码、`console.log/info/warn/error` 和 `print`，执行结束后释放 Context。
 - 队列最多等待 1024 个任务，满时返回 429；脚本大小上限 1 MiB。任务输出上限 8 MiB，超限记为
   `output_limit`；错误和最终摘要另外保留。
 

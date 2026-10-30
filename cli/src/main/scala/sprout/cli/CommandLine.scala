@@ -102,7 +102,9 @@ object CommandLine:
         lines += s"  --${flagName(operation, param)} <${Catalog.types(param.schema).mkString("|")}>  ${param.location}; ${if param.required then "required" else "optional"}$default$description"
       }
       operation.body.foreach { body =>
-        lines += s"  --body <json|@file|->  JSON body; ${if body.required then "required" else "optional"}"
+        val format = if body.mediaType == "text/plain" then "text" else "json"
+        val label = if body.mediaType == "text/plain" then "UTF-8 text" else "JSON"
+        lines += s"  --body <$format|@file|->  $label body; ${if body.required then "required" else "optional"}"
       }
       lines += "  --input <json|@file|->  Complete {path, query, header, cookie, body} input"
     }
@@ -165,7 +167,8 @@ object CommandLine:
           case "body" =>
             require(operation.body.nonEmpty, s"${operation.id} has no body")
             require(!values.contains("body"), "Duplicate --body")
-            values = values.add("body", Catalog.parse(readText(raw)))
+            val text = readText(raw)
+            values = values.add("body", if operation.body.get.mediaType == "text/plain" then Json.fromString(text) else Catalog.parse(text))
           case _ =>
             require(!implicitParams.exists(p => name == p.name || name == s"${p.location}.${p.name}"), "cwd is supplied automatically by the CLI")
             val param = flags.getOrElse(name, throw new IllegalArgumentException(s"Unknown option --$name for ${operation.id}"))
