@@ -37,9 +37,24 @@ final class WidgetApp: NSObject, NSApplicationDelegate {
         // The panel never becomes key; keep its backdrop blurred while other apps have focus.
         container.state = .active
         container.appearance = NSAppearance(named: .darkAqua)
+        let cornerRadius: CGFloat = 16
         container.wantsLayer = true
-        container.layer?.cornerRadius = 10
+        container.layer?.cornerRadius = cornerRadius
         container.layer?.masksToBounds = true
+        // Behind-window blur is composited separately; explicitly mask that backdrop as well.
+        let mask = NSImage(size: NSSize(width: cornerRadius * 2 + 1, height: cornerRadius * 2 + 1), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius).fill()
+            return true
+        }
+        mask.capInsets = NSEdgeInsets(top: cornerRadius, left: cornerRadius, bottom: cornerRadius, right: cornerRadius)
+        mask.resizingMode = .stretch
+        container.maskImage = mask
+        let tint = NSView(frame: container.bounds)
+        tint.autoresizingMask = [.width, .height]
+        tint.wantsLayer = true
+        tint.layer?.backgroundColor = NSColor(srgbRed: 13/255, green: 17/255, blue: 20/255, alpha: 0.4).cgColor
+        container.addSubview(tint)
         scroll.frame = container.bounds
         scroll.autoresizingMask = [.width, .height]
         scroll.drawsBackground = false
@@ -108,6 +123,7 @@ final class WidgetApp: NSObject, NSApplicationDelegate {
         panel.setFrame(NSRect(x: min(max(x, visible.minX), visible.maxX - actualWidth),
                               y: min(max(top - height, visible.minY), visible.maxY - height),
                               width: actualWidth, height: height), display: true)
+        panel.invalidateShadow()
         canvas.frame = NSRect(x: 0, y: 0, width: scroll.contentSize.width, height: contentHeight)
         panel.level = settings.topMost ? .floating : .normal
         panel.alphaValue = settings.opacity
