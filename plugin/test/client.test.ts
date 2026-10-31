@@ -8,12 +8,12 @@ const client = await ApiClient.connect({ baseUrl: api.baseUrl, headers: { Author
 
 test("HTTP execution preserves base paths, escaping, all parameter locations and repeated query values", async () => {
   const result = await client.call("admin.users.get", {
-    path: { id: "a/b +?" }, query: { id: 7, tag: ["a&b", "c+d"], active: false },
-    header: { "X-Trace": "trace" }, cookie: { session: "a=b" },
+    id: "a/b +?", revision: 7, tag: ["a&b", "c+d"], active: false,
+    "X-Trace": "trace", session: "a=b",
   });
   expect(result.status).toBe(200);
   expect(result.body).toEqual({
-    path: "/api/admin/users/get/a%2Fb%20%2B%3F", query: [["id", "7"], ["tag", "a&b"], ["tag", "c+d"], ["active", "false"]],
+    path: "/api/admin/users/get/a%2Fb%20%2B%3F", query: [["revision", "7"], ["tag", "a&b"], ["tag", "c+d"], ["active", "false"]],
     method: "POST", trace: "trace", cookie: "session=a=b", auth: "Bearer test",
   });
 });
@@ -21,8 +21,9 @@ test("HTTP execution preserves base paths, escaping, all parameter locations and
 test("missing, mistyped, unknown and constrained inputs fail before sending HTTP", async () => {
   const before = api.requests.length;
   for (const input of [
-    {}, { path: { id: "a" }, header: { "X-Trace": "t" }, cookie: { session: "s" }, query: { limit: 0 } },
-    { path: { id: "a" }, header: { "X-Trace": "t" }, cookie: { session: "s" }, query: { active: "false" } },
+    {}, { id: "a", "X-Trace": "t", session: "s", limit: 0 },
+    { id: "a", "X-Trace": "t", session: "s", active: "false" },
+    { id: "a", "X-Trace": "t", session: "s", query: { limit: 1 } },
     { surprise: true },
   ]) await expect(client.call("admin.users.get", input)).rejects.toThrow("Invalid input");
   expect(api.requests.length).toBe(before);
@@ -30,8 +31,9 @@ test("missing, mistyped, unknown and constrained inputs fail before sending HTTP
 
 test("recursive body references validate while server-side defaults remain omitted", async () => {
   const body = { name: "root", children: [{ name: "leaf" }] };
-  expect((await client.call("users.create", { body })).body).toEqual(body);
-  await expect(client.call("users.create", { body: { name: "a", children: [{}] } })).rejects.toThrow("Invalid input");
+  expect((await client.call("users.create", body)).body).toEqual(body);
+  await expect(client.call("users.create", { name: "a", children: [{}] })).rejects.toThrow("Invalid input");
+  await expect(client.call("users.create", { body })).rejects.toThrow("Invalid input");
   expect(client.catalog.byId.get("users.create")!.inputSchema.$defs.Tree.properties.children.items.$ref).toBe("#/$defs/Tree");
 });
 
@@ -64,8 +66,8 @@ test("text request bodies are sent verbatim with string schema validation; JSON 
   try {
     const client = await ApiClient.connect({ baseUrl: server.url.toString() });
     const source = "  const text = '中文🙂';\r\nconsole.log(\"quoted\\n\", text);\n";
-    expect((await client.call("notes.save", { body: source })).body).toEqual({ body: source, contentType: "text/plain" });
-    for (const input of [{}, { body: 42 }, { body: {} }, { body: "" }]) {
+    expect((await client.call("notes.save", source)).body).toEqual({ body: source, contentType: "text/plain" });
+    for (const input of [undefined, null, {}, 42, "", { body: source }]) {
       await expect(client.call("notes.save", input)).rejects.toThrow("Invalid input");
     }
     expect(sent).toHaveLength(1);
@@ -74,10 +76,10 @@ test("text request bodies are sent verbatim with string schema validation; JSON 
     textSchema.type = "string";
     doc.paths["/notes"] = operation({ "text/plain": { schema: textSchema }, "application/json": { schema: textSchema } });
     const jsonClient = await ApiClient.connect({ baseUrl: server.url.toString() });
-    expect((await jsonClient.call("notes.save", { body: source })).body).toEqual({ body: JSON.stringify(source), contentType: "application/json" });
+    expect((await jsonClient.call("notes.save", source)).body).toEqual({ body: JSON.stringify(source), contentType: "application/json" });
     doc.paths["/notes"] = operation({ "application/json": { schema: true } });
     const anyJsonClient = await ApiClient.connect({ baseUrl: server.url.toString() });
-    expect((await anyJsonClient.call("notes.save", { body: 42 })).body).toEqual({ body: "42", contentType: "application/json" });
+    expect((await anyJsonClient.call("notes.save", 42)).body).toEqual({ body: "42", contentType: "application/json" });
   } finally { await server.stop(true); }
 });
 
@@ -87,6 +89,66 @@ test("ambiguous operation IDs and unsupported contracts fail catalog constructio
   expect(() => new Catalog(doc)).toThrow("Duplicate operationId");
   doc.paths["/health"].get.operationId = "users..health";
   expect(() => new Catalog(doc)).toThrow("operationId");
+});
+
+test("parameter names are unique across locations and body is reserved when a request body exists", () => {
+  const doc = document();
+  doc.paths["/admin/users/get/{id}"].post.parameters[1]!.name = "id";
+  expect(() => new Catalog(doc)).toThrow("Duplicate SDK parameter name");
+  const reserved = { ...document(), paths: { "/mixed": { post: {
+    operationId: "mixed", parameters: [{ name: "body", in: "query", schema: { type: "string" } }],
+    requestBody: { content: { "application/json": { schema: { type: "object" } } } },
+    responses: { "200": { description: "ok" } },
+  } } } };
+  expect(() => new Catalog(reserved)).toThrow("reserved body");
+  const repeated = document();
+  const params = repeated.paths["/admin/users/get/{id}"].post.parameters;
+  params.push(params[1]!);
+  expect(() => new Catalog(repeated)).toThrow("Duplicate SDK parameter name");
+  params.pop();
+  const inherited = { ...repeated, paths: { "/health": {
+    parameters: [{ name: "limit", in: "query", schema: { type: "integer", minimum: 1 } }],
+    get: { ...repeated.paths["/health"].get, parameters: [
+      { name: "limit", in: "query", schema: { type: "integer", minimum: 2 } },
+    ] },
+  } } };
+  expect(new Catalog(inherited).byId.get("health")!.inputSchema.properties.limit.minimum).toBe(2);
+});
+
+test("mixed inputs retain body even when optional parameters are omitted, and body-only values are never reinterpreted", async () => {
+  const sent: { url: string; body: string | undefined; type: string | null }[] = [];
+  const body = { content: { "application/json": { schema: { type: ["object", "array", "null", "boolean", "number"] } } } };
+  const responses = { "200": { description: "ok" } };
+  const catalog = new Catalog({ openapi: "3.1.2", paths: {
+    "/mixed": { post: { operationId: "mixed", parameters: [
+      { name: "name", in: "query", schema: { type: "string" } },
+    ], requestBody: { ...body, required: true }, responses } },
+    "/only": { post: { operationId: "only", requestBody: body, responses } },
+    "/named": { get: { operationId: "named", parameters: [
+      { name: "body", in: "query", required: true, schema: { type: "string" } },
+    ], responses } },
+  } });
+  const client = new ApiClient(catalog, { baseUrl: "http://example.com", fetch: async (url, init) => {
+    sent.push({ url: String(url), body: init?.body as string | undefined, type: new Headers(init?.headers).get("content-type") });
+    return Response.json({ ok: true });
+  } });
+  expect(catalog.byId.get("mixed")!.inputSchema.required).toEqual(["body"]);
+  expect(catalog.byId.get("mixed")!.inputSchema.properties.name.type).toBe("string");
+  await client.call("mixed", { name: "a&b", body: { value: 1 } });
+  await client.call("mixed", { body: { name: "inside" } });
+  await expect(client.call("mixed", { name: "missing body" })).rejects.toThrow("Invalid input");
+  await expect(client.call("mixed", { query: { name: "old" }, body: {} })).rejects.toThrow("Invalid input");
+  const values = [{ body: "business field", query: { name: "nested" } }, null, [], [1, 2], false, 0];
+  for (const value of values) await client.call("only", value);
+  await client.call("only");
+  await client.call("named", { body: "query value" });
+  expect(sent).toEqual([
+    { url: "http://example.com/mixed?name=a%26b", body: '{"value":1}', type: "application/json" },
+    { url: "http://example.com/mixed", body: '{"name":"inside"}', type: "application/json" },
+    ...values.map(value => ({ url: "http://example.com/only", body: JSON.stringify(value), type: "application/json" })),
+    { url: "http://example.com/only", body: undefined, type: null },
+    { url: "http://example.com/named?body=query+value", body: undefined, type: null },
+  ]);
 });
 
 test("RPC group descriptions are independent of tags and optional for command discovery", () => {

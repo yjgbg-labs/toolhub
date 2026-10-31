@@ -102,6 +102,31 @@ OpenCode 插件在 setup 时发现命令并注册 Code Mode 工具及 namespace�
 支持通过插件 options 配置 `baseUrl`、`schemaUrl`、`headers`、`tokenEnv`、`timeoutMs`。
 安装后的入口由 OpenCode 自动发现，文件变更自动加载。
 
+#### JavaScript 调用参数
+
+Code Mode 和 GraalJS 使用相同的参数规则，由命令声明自动映射：
+
+```js
+// 普通参数直接放在顶层；混合参数时保留 body。
+await tools.schedule.new({
+  name: "example",
+  body: {every: "5m", command: ["echo", "hello"], enabled: false}
+});
+await tools.schedule.log({name: "example", lines: 20});
+
+// 命令只声明请求体时，直接传入请求体对象。
+const config = (await tools.schedule.config.read()).body;
+await tools.schedule.config.write(config);
+```
+
+- `path`、`query`、`header`、`cookie` 参数都按名称放在顶层，SDK 根据声明还原 HTTP 位置。
+  同一命令的参数名必须唯一；有请求体时，`body` 保留给请求体，不能再用作普通参数名。
+- 是否直接接收请求体由完整声明决定；即使普通参数全是可选参数、调用时全部省略，仍使用 `{body: ...}`。
+  仅请求体命令也支持直接传原始文本字符串或声明允许的其他 JSON 值，不会特殊解释业务字段 `body`。
+- 无参数命令可省略输入；省略参数或传 `undefined` 表示未提供输入，显式 `null` 则作为实际值校验。
+- 旧调用需去掉参数位置包装；仅请求体命令还需去掉外层 `body`。返回仍为 `{status, headers, body}`。
+  CLI 参数与 HTTP/OpenAPI 契约保持原有格式。
+
 ### 客户端暴露范围
 
 `framework.rpcDsl.*` 提供 `exposeOn(cli, codemode, graaljs)`，可在 `commands` 或
@@ -176,9 +201,12 @@ UTF-8 字符跨写入块也能正确处理；断开日志连接只停止订阅�
 #### 命令树 SDK
 
 每个任务的 `tools` 对象自动包含当前 Scala server 暴露给 `graaljs` 的命令树，与 Code Mode 的命名、
-输入分组和响应结构一致。命令声明增删后，SDK 随服务启动生成，无需维护独立的方法列表。
+参数格式和响应结构一致。命令声明增删后，SDK 随服务启动生成，无需维护独立的方法列表。
 工具树由 Scala `ProxyObject` / `ProxyExecutable` 直接注入每个 Context；Promise、JSON 对象和错误
 使用该 Context 的原生构造器创建，不加载额外的 JavaScript SDK 包装代码。
+框架通过只读 `app.endpoints` 列表公开端点声明、`exposedOn` 和各端点绑定的 HTTP 调用入口。
+`groot.graaljs.GraalCommandSdk(app)` 自行筛选暴露给 GraalJS 的端点，实现参数映射、同名校验、响应包装及 SDK 大小限制；
+这些 SDK 规则全部位于 `groot/graaljs`，框架继续负责 HTTP 校验、中间件和执行。
 例如 `schedule.list` 映射为 `tools.schedule.list()`，带连字符的方法使用方括号。
 参数定义沿用 `/openapi.json`；GraalJS 内不提供 `search()`。
 
@@ -190,12 +218,12 @@ groot-cli graaljs start --cpu 2s --timeout 30s --body '
   ]);
   console.log(health.body);
   console.log(JSON.stringify(jobs.body));
-  // 带参数：await tools.schedule.log({query: {name: "example", lines: 20}})
-  // 原始文本请求体：await tools.graaljs.start({query: {cpu: "1s", timeout: "5s"}, body: "console.log(42)"})
+   // 带参数：await tools.schedule.log({name: "example", lines: 20})
+   // 原始文本请求体：await tools.graaljs.start({cpu: "1s", timeout: "5s", body: "console.log(42)"})
 '
 ```
 
-- 所有方法返回 `Promise<{status, headers, body}>`。参数按 `query`、`body` 等位置分组，
+- 所有方法返回 `Promise<{status, headers, body}>`。普通参数放在顶层，混合参数保留 `body`，仅请求体命令直接接收请求体。
   无参数命令可省略输入。JSON 响应解码为对象；文本、Shell 和 SSE 响应作为字符串返回；空响应为 `null`。
   Shell 内容只返回文本，不自动执行；SSE 会等到流结束后返回完整文本。
 - 非 2xx 响应拒绝 Promise，错误为 `ApiError`，包含 `operationId` 和 `response`（同样的响应结构）。
@@ -275,11 +303,11 @@ groot-cli sqlite env delete --name scratch
 Code Mode 和 GraalJS 使用相同的调用：
 
 ```js
-await tools.sqlite.env.add({query: {name: "scratch"}});
-const result = await tools.sqlite.execute({query: {
+await tools.sqlite.env.add({name: "scratch"});
+const result = await tools.sqlite.execute({
   env: "scratch",
   sql: "SELECT 42 AS answer, 'hello' AS text"
-}});
+});
 console.log(result.body.results[0]);
 // {columns: ["answer", "text"], rows: [[42, "hello"]], changes: 0}
 ```

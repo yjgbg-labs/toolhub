@@ -3,7 +3,6 @@ package groot.graaljs
 import cats.effect.{Deferred, IO, Ref}
 import cats.syntax.all.*
 import framework.rpcDsl.*
-import framework.runtime.CommandSdk
 import munit.CatsEffectSuite
 import scala.concurrent.duration.*
 import GraalTestSupport.*
@@ -54,7 +53,7 @@ class GraalSdkSuite extends CatsEffectSuite:
             }
           }
         }
-        _ <- GraalManager.resource(home.resolve("data"), IO.pure(app.commandSdk)).use { manager =>
+        _ <- GraalManager.resource(home.resolve("data"), IO.pure(GraalCommandSdk(app))).use { manager =>
           run(manager, """
             if (typeof search !== "undefined" || typeof Java !== "undefined" || typeof fetch !== "undefined") throw Error("unexpected SDK");
             const originalTools = tools, health = tools.health;
@@ -69,20 +68,20 @@ class GraalSdkSuite extends CatsEffectSuite:
             if (!(promise instanceof Promise) || (await promise).body !== "ok") throw Error("expected native Promise");
             console.log((await tools.health()).body, (await tools.sample()).body);
             console.log((await tools.sample.name()).body, (await tools.sample.length()).body, (await tools.sample.prototype()).body);
-            console.log((await tools.sample.deep["echo-text"]({query: {words: ["a&b", "中文/🙂"]}, body: "raw\ntext"})).body);
-            const result = await tools.sample.json({query: {scale: 3}, body: {text: "你好", values: [2, 4]}});
+            console.log((await tools.sample.deep["echo-text"]({words: ["a&b", "中文/🙂"], body: "raw\ntext"})).body);
+            const result = await tools.sample.json({scale: 3, body: {text: "你好", values: [2, 4]}});
             if (result.status !== 200 || result.headers["content-type"] !== "application/json" || result.body.text !== "你好" || result.body.values.join(',') !== "6,12") throw Error("invalid JSON response");
             console.log(JSON.stringify(result.body));
             console.log((await tools.sample.empty()).body === null);
             console.log((await tools.sample.shell()).body);
             console.log((await tools.sample.events()).body);
             for (const invoke of [() => tools.sample.denied(), () => tools.sample.json({body: {text: "missing values"}}),
-                 () => tools.sample.json({query: {scale: 0}, body: {text: "x", values: []}})]) {
+                 () => tools.sample.json({scale: 0, body: {text: "x", values: []}})]) {
               try { await invoke(); throw Error("expected rejection"); }
               catch (error) { if (!(error instanceof Error) || error.name !== "ApiError") throw error; console.log(error.operationId, error.response.status); }
             }
             const cyclic = {}; cyclic.self = cyclic;
-            for (const input of [{query: {scale: "3"}}, {query: {typo: 1}}, {unknown: true}, null, cyclic, 1n, () => {}]) {
+            for (const input of [{scale: "3"}, {typo: 1}, {query: {scale: 3}}, {unknown: true}, null, cyclic, 1n, () => {}]) {
               const rejected = tools.sample.empty(input);
               if (!(rejected instanceof Promise)) throw Error("validation did not return a Promise");
               try { await rejected; throw Error("accepted invalid input"); }
@@ -119,7 +118,7 @@ class GraalSdkSuite extends CatsEffectSuite:
         }
         command[Int]("shared") { handle { IO.pure(5) } }
       }
-      GraalManager.resource(home.resolve("data"), IO.pure(app.commandSdk)).use { manager =>
+      GraalManager.resource(home.resolve("data"), IO.pure(GraalCommandSdk(app))).use { manager =>
         run(manager, """
           if (tools.external !== undefined || tools.mixed.hidden !== undefined) throw Error("leaked command");
           if (typeof tools.mixed === "function") throw Error("leaked callable namespace");
@@ -133,27 +132,87 @@ class GraalSdkSuite extends CatsEffectSuite:
     }
   }
 
+  test("body-only commands accept JSON values and text directly, distinguishing omitted input from null") {
+    temporary.use { home =>
+      val app = httpApp {
+        command[io.circe.Json]("json") {
+          val input = body[io.circe.Json]("JSON") { default(io.circe.Json.fromString("omitted")) }
+          handle { IO.pure(input.value) }
+        }
+        command[String]("text") {
+          val input = body.text("Text")
+          handle { IO.pure(input.value) }
+        }
+        command[String]("namedBody") {
+          val input = param[String]("body", "A parameter named body without a request body")
+          handle { IO.pure(input.value) }
+        }
+      }
+      GraalManager.resource(home.resolve("tasks"), IO.pure(GraalCommandSdk(app))).use { manager =>
+        run(manager, """
+          for (const input of [{url:"https://example.com", body:"payload", query:{x:1}}, [], [1,"x"], null, false, 0, ""]) {
+            const result = await tools.json(input);
+            if (JSON.stringify(result.body) !== JSON.stringify(input)) throw Error("JSON body changed");
+          }
+          for (const promise of [tools.json(), tools.json(undefined)]) {
+            if ((await promise).body !== "omitted") throw Error("missing body default");
+          }
+          for (const text of ["", "中文🙂\r\nraw text"]) {
+            if ((await tools.text(text)).body !== text) throw Error("text changed");
+          }
+          for (const invoke of [() => tools.text(), () => tools.text({body:"wrapped"})]) {
+            try { await invoke(); throw Error("expected rejection"); }
+            catch (e) { if (e.message === "expected rejection") throw e; }
+          }
+          if ((await tools.namedBody({body:"parameter"})).body !== "parameter") throw Error("parameter consumed as body");
+        """).map { (task, log) => assertEquals(task.state, "succeeded", s"${task.error}\n$log") }
+      }
+    }
+  }
+
+  test("schedule new uses flat name plus body while config write accepts the config directly") {
+    temporary.use { home =>
+      groot.schedule.Scheduler.resource(home.resolve("schedule"), startLoop = false).use { scheduler =>
+        val app = httpApp { groot.schedule.ScheduleRoutes.register(scheduler) }
+        GraalManager.resource(home.resolve("tasks"), IO.pure(GraalCommandSdk(app))).use { manager =>
+          run(manager, """
+            const body = {every:"5m", command:["echo","hello"], enabled:false};
+            const created = await tools.schedule.new({name:"example", body});
+            if (created.body.every !== "5m") throw Error("wrong creation result");
+            const config = (await tools.schedule.config.read()).body;
+            if (config.jobs.example.enabled !== false) throw Error("job missing");
+            config.jobs.example.every = "10m";
+            await tools.schedule.config.write(config);
+            const jobs = (await tools.schedule.list()).body;
+            if (jobs.length !== 1 || jobs[0].name !== "example" || jobs[0].every !== "10m") throw Error("config not written");
+            await tools.schedule.delete({name:"example"});
+          """).map { (task, log) => assertEquals(task.state, "succeeded", s"${task.error}\n$log") }
+        }
+      }
+    }
+  }
+
   test("SQLite environments and SQL are available through the actual GraalJS command SDK") {
     temporary.use { home =>
       groot.sqlite.SqliteService.resource(home.resolve("sqlite")).use { sqlite =>
         val app = httpApp { groot.sqlite.SqliteRoutes.register(sqlite) }
-        GraalManager.resource(home.resolve("tasks"), IO.pure(app.commandSdk)).use { manager =>
+        GraalManager.resource(home.resolve("tasks"), IO.pure(GraalCommandSdk(app))).use { manager =>
           run(manager, """
-            const env = await tools.sqlite.env.add({query: {name: "from-js"}});
-            const result = await tools.sqlite.execute({query: {env: "from-js", sql:
+            const env = await tools.sqlite.env.add({name: "from-js"});
+            const result = await tools.sqlite.execute({env: "from-js", sql:
               "CREATE TABLE values_table(id INTEGER PRIMARY KEY, value); INSERT INTO values_table VALUES (1, 'hello'); SELECT value, 9223372036854775807 FROM values_table"
-            }});
+            });
             if (result.body.results[1].changes !== 1) throw Error("missing write count");
             const row = result.body.results[2].rows[0];
             if (row[0] !== "hello" || row[1] !== "9223372036854775807") throw Error("invalid SQL values");
             try {
-              await tools.sqlite.execute({query: {env: "from-js", sql: "INSERT INTO values_table VALUES (1, 'duplicate')"}});
+              await tools.sqlite.execute({env: "from-js", sql: "INSERT INTO values_table VALUES (1, 'duplicate')"});
               throw Error("expected constraint failure");
             } catch (error) {
               if (error.name !== "ApiError" || error.response.status !== 409) throw error;
             }
-            await tools.sqlite.env.delete({query: {name: "from-js"}});
-            await tools.sqlite.env.import({query: {name: "imported", path: env.body.path}});
+            await tools.sqlite.env.delete({name: "from-js"});
+            await tools.sqlite.env.import({name: "imported", path: env.body.path});
             const entries = (await tools.sqlite.env.list()).body;
             if (entries.length !== 1 || entries[0].name !== "imported" || entries[0].managed) throw Error("invalid environments");
             console.log(JSON.stringify(row));
@@ -178,7 +237,7 @@ class GraalSdkSuite extends CatsEffectSuite:
             } }
           }
         }
-        _ <- GraalManager.resource(home.resolve("data"), IO.pure(app.commandSdk)).use { manager =>
+        _ <- GraalManager.resource(home.resolve("data"), IO.pure(GraalCommandSdk(app))).use { manager =>
           run(manager, "const results = await Promise.all([tools.arrive(), tools.arrive()]); console.log(results.map(r => r.body).sort().join(','));")
             .map { (task, log) => assertEquals(task.state, "succeeded", log); assert(log.contains("1,2"), log) }
         }
@@ -197,7 +256,7 @@ class GraalSdkSuite extends CatsEffectSuite:
             handle { (started.complete(()) *> IO.never[Unit]).onCancel(finalizing.complete(()) *> release.get) }
           }
         }
-        _ <- GraalManager.managed(home.resolve("data"), GraalRunner.resource(IO.pure(app.commandSdk)), Limits.taskBytes).use { manager =>
+        _ <- GraalManager.managed(home.resolve("data"), GraalRunner.resource(IO.pure(GraalCommandSdk(app))), Limits.taskBytes).use { manager =>
           (for
             first <- manager.start("await tools.wait();", "5s", "10s")
             _ <- started.get.timeout(5.seconds)
@@ -226,7 +285,7 @@ class GraalSdkSuite extends CatsEffectSuite:
           command[Unit]("wait") { handle { IO.never[Unit].onCancel(cancelled.complete(()).void) } }
           command[PlainText]("health") { handle { IO.pure(PlainText("ok")) } }
         }
-        _ <- GraalManager.resource(home.resolve("data"), IO.pure(app.commandSdk)).use { manager =>
+        _ <- GraalManager.resource(home.resolve("data"), IO.pure(GraalCommandSdk(app))).use { manager =>
           for
             timed <- run(manager, "await tools.wait();", timeout = "500ms")
             _ = assertEquals(timed._1.error.map(_.code), Some("timeout"), timed._2)
@@ -248,10 +307,10 @@ class GraalSdkSuite extends CatsEffectSuite:
       for
         active <- Ref.of[IO, Int](0)
         app = httpApp {
-          command[PlainText]("large") { handle { IO.pure(PlainText("x" * (CommandSdk.maxBytes + 1))) } }
+          command[PlainText]("large") { handle { IO.pure(PlainText("x" * (GraalCommandSdk.maxBytes + 1))) } }
           command[Unit]("wait") { handle { active.update(_ + 1).bracket(_ => IO.never[Unit])(_ => active.update(_ - 1)) } }
         }
-        _ <- GraalManager.resource(home.resolve("data"), IO.pure(app.commandSdk)).use { manager =>
+        _ <- GraalManager.resource(home.resolve("data"), IO.pure(GraalCommandSdk(app))).use { manager =>
           for
             bounded <- run(manager, """
               try { await tools.large(); throw Error("missing response bound"); }
@@ -271,19 +330,19 @@ class GraalSdkSuite extends CatsEffectSuite:
   test("the complete live registry includes GraalJS itself and handles nested tasks through text bodies and SSE") {
     temporary.use { home =>
       for
-        commands <- Deferred[IO, CommandSdk]
+        commands <- Deferred[IO, GraalCommandSdk]
         _ <- GraalManager.resource(home.resolve("data"), commands.get).use { manager =>
           val app = httpApp {
             GraalJsRoutes.register(manager)
             command[PlainText]("health") { handle { IO.pure(PlainText("ok")) } }
           }
-          commands.complete(app.commandSdk) *> run(manager, """
-            const child = await tools.graaljs.start({query: {cpu: "1s", timeout: "5s"}, body: 'console.log((await tools.health()).body)'});
-            const logs = await tools.graaljs["logs-follow"]({query: {id: child.body.id}});
-            const status = await tools.graaljs.status({query: {id: child.body.id}});
+          commands.complete(GraalCommandSdk(app)) *> run(manager, """
+            const child = await tools.graaljs.start({cpu: "1s", timeout: "5s", body: 'console.log((await tools.health()).body)'});
+            const logs = await tools.graaljs["logs-follow"]({id: child.body.id});
+            const status = await tools.graaljs.status({id: child.body.id});
             if (status.body.state !== "succeeded" || !logs.body.includes("data: ok")) throw Error(JSON.stringify(status));
             console.log("nested task succeeded");
-            try { await tools.graaljs["notify-on-finish"]({query: {id: child.body.id}}); }
+            try { await tools.graaljs["notify-on-finish"]({id: child.body.id}); }
             catch (e) { if (e.response.status !== 501) throw e; console.log("501 preserved"); }
           """).map { (task, log) =>
             assertEquals(task.state, "succeeded", log)

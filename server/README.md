@@ -378,6 +378,31 @@ Code Mode tools use the command path directly: `schedule.config.read` becomes
 `tools.health()`. The plugin preserves dotted namespaces and their descriptions,
 with no additional prefix or namespace override.
 
+GraalJS and Code Mode flatten all non-body parameters into the input object,
+using the declaration to serialize each value to its HTTP location. Parameter
+names must be unique across locations. For mixed inputs, `body` is reserved for
+the request body: `tools.schedule.new({name: "example", body: {...}})`.
+If the operation declares only a request body, pass that value directly:
+`tools.schedule.config.write(config)`. This also applies to text and other JSON
+body types. Body-only detection uses the declaration, not the fields present in
+a call; optional or inherited parameters still require the mixed-input shape.
+SDK/catalog construction rejects ambiguous names. CLI arguments and the
+HTTP/OpenAPI contract retain their original formats.
+
+### In-process clients
+
+`app.endpoints` is an immutable vector of endpoint declarations. Each endpoint
+exposes its operation ID, method, path, inputs, `exposedOn`, and an `HttpApp[IO]`
+bound to that endpoint. Handlers, input slots and codecs remain private to the
+framework. Requests use ordinary HTTP locations and raw HTTP responses, with the
+same validation, middleware and error recovery. A bound entry point checks its
+own method/path and cannot dispatch to a different endpoint or the OpenAPI route.
+
+`groot.graaljs.GraalCommandSdk(app)` filters this list by `exposedOn` itself and
+invokes the selected endpoint directly, avoiding competing HTTP routes. Flattened
+arguments, direct body inputs, SDK name checks, response envelopes and the 1 MiB
+SDK limits belong to `groot/graaljs`. The framework has no dependency on that SDK.
+
 ## Middleware and errors
 
 Both DSLs retain `middleware(Handler => Handler)`, shared declarations and
@@ -467,7 +492,7 @@ to RPC `commands`.
 
 Scheduled job names now use `?name=...` instead of a path segment. Consequently,
 CLI calls use `groot-cli schedule log --name example`, and Code Mode/client inputs
-use `{ query: { name: "example" } }`. The health endpoint is now `GET /health`.
+use `{ name: "example" }`. The health endpoint is now `GET /health`.
 
 Run server checks from the repository root with `groot jobs server-test` and
 deploy with `groot jobs server-deploy`. See [the project README](../README.md)

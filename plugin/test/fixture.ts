@@ -17,7 +17,7 @@ export function document() {
         operationId: "admin.users.get", summary: "Get a user",
         parameters: [
           { name: "id", in: "path", required: true, schema: { type: "string" } },
-          { name: "id", in: "query", schema: { type: "integer" } },
+          { name: "revision", in: "query", schema: { type: "integer" } },
           { name: "tag", in: "query", explode: true, schema: { type: "array", items: { type: "string" } } },
           { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100, default: 20 } },
           { name: "active", in: "query", schema: { type: "boolean" } },

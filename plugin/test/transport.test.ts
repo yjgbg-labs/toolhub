@@ -28,7 +28,7 @@ test("plugin clients use the local TCP port and support independent URL override
 
 test("HTTP discovery and requests preserve JSON bodies, HTTP errors and cancellation", async () => {
   const client = await ApiClient.connect({ baseUrl: first.url.href });
-  expect((await client.call("users.create", { body: { name: "Ada" } })).body).toEqual({ name: "Ada" });
+  expect((await client.call("users.create", { name: "Ada" })).body).toEqual({ name: "Ada" });
   await expect(client.call("users.fail")).rejects.toThrow("HTTP 400");
   const controller = new AbortController();
   controller.abort();

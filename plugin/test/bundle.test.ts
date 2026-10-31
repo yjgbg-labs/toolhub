@@ -26,7 +26,7 @@ test("the installed bundle loads outside the repository and executes dynamically
     } });
     expect(tools).toHaveLength(5);
     expect((await tools.find(tool => tool.name === "health").execute({}, {})).output.body).toBe("ok");
-    expect((await tools.find(tool => tool.name === "create").execute({ body: { name: "Ada" } }, {})).output.body).toEqual({ name: "Ada" });
+    expect((await tools.find(tool => tool.name === "create").execute({ name: "Ada" }, {})).output.body).toEqual({ name: "Ada" });
     await cleanup();
     expect(disposed).toBe(true);
   } finally { await api.server.stop(true); await rm(directory, { recursive: true, force: true }); }

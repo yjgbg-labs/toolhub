@@ -2,7 +2,6 @@ package groot.graaljs
 
 import cats.effect.{IO, Resource}
 import cats.effect.std.Dispatcher
-import framework.runtime.CommandSdk
 import java.io.{IOException, InputStream, OutputStream}
 import java.lang.management.ManagementFactory
 import java.net.URI
@@ -60,7 +59,7 @@ private[graaljs] object GraalRunner:
       case _ => "runtime_error"
     TaskError(code, message)
 
-  private final class Runner(engine: Engine, dispatcher: Dispatcher[IO], commands: IO[CommandSdk]) extends GraalRunner:
+  private final class Runner(engine: Engine, dispatcher: Dispatcher[IO], commands: IO[GraalCommandSdk]) extends GraalRunner:
     private val cpu = ManagementFactory.getThreadMXBean
     if cpu.isThreadCpuTimeSupported && !cpu.isThreadCpuTimeEnabled then cpu.setThreadCpuTimeEnabled(true)
 
@@ -149,7 +148,7 @@ private[graaljs] object GraalRunner:
       execution
     } }
 
-  def resource(commands: IO[CommandSdk] = IO.pure(CommandSdk.empty)): Resource[IO, GraalRunner] = for
+  def resource(commands: IO[GraalCommandSdk] = IO.pure(GraalCommandSdk.empty)): Resource[IO, GraalRunner] = for
     dispatcher <- Dispatcher.parallel[IO]
     engine <- Resource.make(IO.blocking {
       Engine.newBuilder("js").sandbox(SandboxPolicy.ISOLATED).spawnIsolate(true)
