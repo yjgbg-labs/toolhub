@@ -5,6 +5,8 @@
 .cache/
 target/
 .build/
+widget/**/bin/
+widget/**/obj/
 dist/
 artifacts/
 node_modules/

@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../windows/WidgetState.cs" Link="WidgetState.cs" />
+    <Compile Include="../windows/SseParser.cs" Link="SseParser.cs" />
+    <Compile Include="../windows/WidgetClient.cs" Link="WidgetClient.cs" />
+  </ItemGroup>
+</Project>

@@ -1,5 +1,31 @@
 version: 1
 jobs:
+  - name: widget-windows-test
+    run: |
+      set -eu
+      set -a
+      . ./config.env
+      set +a
+      bun widget/scripts/windows.ts test
+
+  - name: widget-windows-build
+    needs: [widget-windows-test]
+    run: |
+      set -eu
+      set -a
+      . ./config.env
+      set +a
+      bun widget/scripts/windows.ts build
+
+  - name: widget-windows-deploy
+    needs: [widget-windows-build]
+    run: |
+      set -eu
+      set -a
+      . ./config.env
+      set +a
+      bun widget/scripts/windows.ts deploy
+
   - name: widget-test
     run: |
       set -eu
