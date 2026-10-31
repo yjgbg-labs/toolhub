@@ -6,6 +6,8 @@ import framework.rpc.{Command, CommandGroup, CommandScope, CommandsScope, Metada
 import framework.runtime.Application
 
 object rpcDsl:
+  export framework.Client
+  export framework.Client.{cli, codemode, graaljs}
   export framework.model.JsonModel
   export framework.rpc.{PlainText, Shell, SSE, SuccessResponse}
   export framework.http.{ParamCodec, RequestContext, EndpointResult, Handler, Input, Output}
@@ -58,6 +60,14 @@ object rpcDsl:
   def description(value: String)(using scope: CommandsScope | DescriptionScope): Unit = scope match
     case commands: CommandsScope => httpDsl.description(value)(using commands.http)
     case description: DescriptionScope => httpDsl.description(value)(using description)
+
+  /** Ancestor declarations are upper bounds; a child may further narrow exposure. */
+  def exposeOn(first: Client, rest: Client*)(using scope: CommandsScope): Unit =
+    scope.http.gate.check()
+    require(scope.http.exposureValue.isEmpty, "Duplicate exposeOn declaration")
+    val clients = (first +: rest).toSet
+    require(clients.subsetOf(Client.all), "Invalid exposure client")
+    scope.http.exposureValue = Some(clients)
 
   object response:
     def json[A](status: Int)(init: ResponseScope ?=> Unit)(using model: JsonModel[A], scope: CommandsScope): Output[A] =

@@ -13,6 +13,7 @@ entry point. The HTTP layer does not depend on RPC scope types.
 
 ```text
 framework/
+├── Client.scala
 ├── httpDsl.scala
 ├── rpcDsl.scala
 ├── model/
@@ -40,6 +41,8 @@ framework/
 
 - `model` owns JSON codecs, schema definitions and derivation, independently of
   HTTP, RPC and the runtime.
+- `Client` defines the `cli`, `codemode` and `graaljs` exposure targets shared by
+  declarations and the runtime.
 - `http` owns configuration scopes, flat frozen declarations, endpoint contracts,
   parameter validation, middleware binding and OpenAPI generation.
   `Exchange.scala` contains the public input/output and handler types, including
@@ -146,6 +149,65 @@ val app = httpApp {
   commands. An optional/defaulted body still selects POST.
 - `CommandScope[A] extends CommandsScope`: reusable parameter and middleware
   declarations accept `CommandsScope`; only `CommandScope[A]` permits `handle`.
+
+### Client exposure
+
+`exposeOn(cli, codemode, graaljs)` is available in `httpApp`, `commands` and
+`command` scopes via `framework.rpcDsl.*`. Its arguments are typed `Client` values:
+
+```scala
+val app = httpApp {
+  commands("reports") {
+    exposeOn(cli, codemode, graaljs)
+    command[String]("list") { handle { IO.pure("all clients") } }
+    command[String]("internal") {
+      exposeOn(graaljs)
+      handle { IO.pure("GraalJS only") }
+    }
+  }
+  command[String]("terminal") {
+    exposeOn(cli)
+    handle { IO.pure("CLI only") }
+  }
+}
+```
+
+- The default is all three clients, preserving existing declarations.
+- A group's declaration applies to every descendant in that declaration scope,
+  including children declared before `exposeOn`. The root scope works the same way.
+- Effective exposure is the **intersection** of all ancestor and local sets.
+  Children may narrow a parent's set; listing additional clients cannot widen it.
+  Disjoint sets fail application construction with the command's operation ID.
+- At least one client is required. Repeated arguments are deduplicated; multiple
+  `exposeOn` declarations in one scope fail. Frozen declarations cannot be changed.
+- Reopened groups retain independent declaration scopes, just like their shared
+  parameters and middleware. A restriction in one block does not affect a sibling
+  block with the same group name.
+
+Every OpenAPI operation publishes its resolved set, in stable order:
+
+```json
+"x-expose-on": ["cli", "codemode", "graaljs"]
+```
+
+CLI and Code Mode independently filter their catalogs using this extension,
+before interpreting an operation's input/output contract. Filtered operations
+cannot be invoked through those clients; groups with no visible descendants do
+not appear in CLI help or Code Mode namespaces. Missing metadata means all
+clients for compatibility with ordinary OpenAPI services; an empty array exposes
+the operation to none. Malformed metadata is rejected, and unknown client names
+do not grant exposure to known clients. `x-rpc.commands` remains group
+documentation; the effective policy is on each operation.
+
+The GraalJS SDK is built directly from the frozen declarations and contains only
+operations exposed to `graaljs`. In-process calls still share HTTP input validation,
+middleware and response handling. The public HTTP router contains only operations
+exposed to `cli` or `codemode`: GraalJS-only routes return 404 over the network,
+regardless of request headers. The complete OpenAPI document remains available
+for documentation, including the GraalJS-only operations.
+
+CLI versus Code Mode is a client-surface selection, not authenticated caller
+identity: their HTTP routes are shared when either client is enabled.
 
 ### Plain text and JSON strings
 

@@ -24,6 +24,12 @@ final class Catalog(document: Json):
   private val methods = Set("get", "post", "put", "patch", "delete", "head", "options")
   private val locations = Set("path", "query", "header", "cookie")
 
+  private def exposed(declaration: Json): Boolean = field(declaration, "x-expose-on").forall { value =>
+    val clients = value.asArray.getOrElse(throw new IllegalArgumentException("Expected x-expose-on array"))
+    require(clients.forall(_.isString), "Expected x-expose-on client strings")
+    clients.exists(_.asString.contains("cli"))
+  }
+
   def resolve(value: Json, seen: Set[String] = Set.empty): Json = field(value, "$ref") match
     case None => value
     case Some(reference) =>
@@ -44,7 +50,7 @@ final class Catalog(document: Json):
   val operations: Vector[Operation] = obj(field(document, "paths").getOrElse(Json.obj()), "paths").toVector.flatMap { (path, rawItem) =>
     require(path.startsWith("/") && !path.exists(c => c == '?' || c == '#'), s"Invalid HTTP path: $path")
     val item = resolve(rawItem)
-    obj(item, path).toVector.filter(entry => methods(entry._1)).map { (method, declaration) =>
+    obj(item, path).toVector.filter(entry => methods(entry._1) && exposed(entry._2)).map { (method, declaration) =>
       val id = text(declaration, "operationId")
       require(id.matches(operationPattern), s"Invalid operationId: $id")
       val merged = scala.collection.mutable.LinkedHashMap.empty[(String, String), Parameter]

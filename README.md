@@ -102,6 +102,25 @@ OpenCode 插件在 setup 时发现命令并注册 Code Mode 工具及 namespace�
 支持通过插件 options 配置 `baseUrl`、`schemaUrl`、`headers`、`tokenEnv`、`timeoutMs`。
 安装后的入口由 OpenCode 自动发现，文件变更自动加载。
 
+### 客户端暴露范围
+
+`framework.rpcDsl.*` 提供 `exposeOn(cli, codemode, graaljs)`，可在 `commands` 或
+`command` 中声明，也可在根 `httpApp` 中设置。默认三端可用，分组与子命令的限制取交集：
+
+```scala
+commands("reports") {
+  exposeOn(cli, codemode, graaljs)
+  command[String]("internal") {
+    exposeOn(graaljs)
+    handle { IO.pure("GraalJS only") }
+  }
+}
+```
+
+OpenAPI 的 `x-expose-on` 标注每个操作最终的客户端集合；CLI/Code Mode 据此过滤命令及空分组，
+GraalJS 直接按服务端声明构建工具树。仅暴露给 GraalJS 的命令不开放外部 HTTP 路由。
+继承规则与协议说明见 [客户端暴露范围](server/README.md#client-exposure)。
+
 ### GraalJS 脚本任务
 
 ```sh
@@ -156,7 +175,7 @@ UTF-8 字符跨写入块也能正确处理；断开日志连接只停止订阅�
 
 #### 命令树 SDK
 
-每个任务的 `tools` 对象自动包含当前 Scala server 注册的完整命令树，与 Code Mode 的命名、
+每个任务的 `tools` 对象自动包含当前 Scala server 暴露给 `graaljs` 的命令树，与 Code Mode 的命名、
 输入分组和响应结构一致。命令声明增删后，SDK 随服务启动生成，无需维护独立的方法列表。
 工具树由 Scala `ProxyObject` / `ProxyExecutable` 直接注入每个 Context；Promise、JSON 对象和错误
 使用该 Context 的原生构造器创建，不加载额外的 JavaScript SDK 包装代码。

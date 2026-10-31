@@ -108,7 +108,9 @@ private[framework] object OpenApi:
           content = ListMap(input.bodyMediaType.get -> MediaType(schema = Some(schemas.input(input))))))
       }
       Operation(tags = endpoint.tags.toList, summary = endpoint.summary, description = endpoint.description,
-        operationId = Some(endpoint.operationId), parameters = parameters, requestBody = body, responses = responses)
+        operationId = Some(endpoint.operationId), parameters = parameters, requestBody = body, responses = responses,
+        extensions = ListMap("x-expose-on" -> ExtensionValue(
+          Json.fromValues(endpoint.exposedOn.toVector.sortBy(_.ordinal).map(client => Json.fromString(client.toString))).noSpaces)))
 
     val paths = endpoints.sortBy(e => (e.path.value, e.method)).foldLeft(Paths.Empty) { (paths, endpoint) =>
       val op = operation(endpoint)
