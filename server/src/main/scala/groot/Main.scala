@@ -8,6 +8,7 @@ import groot.schedule.{Scheduler, ScheduleRoutes}
 import groot.sqlite.{SqliteRoutes, SqliteService}
 import groot.fetch.{FetchRoutes, FetchService}
 import groot.fs.{FsRoutes, FsService}
+import groot.widget.{WidgetRoutes, WidgetService}
 
 object Main extends IOApp.Simple:
   def run: IO[Unit] = (for
@@ -15,8 +16,9 @@ object Main extends IOApp.Simple:
     scheduler <- Scheduler.resource()
     sqlite <- SqliteService.resource()
     fetch <- FetchService.resource
+    widget <- WidgetService.resource()
     graaljs <- GraalManager.resource(commands = commands.get)
-  yield (scheduler, sqlite, fetch, graaljs, commands)).use { (scheduler, sqlite, fetch, graaljs, commands) =>
+  yield (scheduler, sqlite, fetch, widget, graaljs, commands)).use { (scheduler, sqlite, fetch, widget, graaljs, commands) =>
     val app = httpApp {
       server {
         host("0.0.0.0")
@@ -37,6 +39,7 @@ object Main extends IOApp.Simple:
       SqliteRoutes.register(sqlite)
       FetchRoutes.register(fetch)
       FsRoutes.register(new FsService)
+      WidgetRoutes.register(widget)
       command[PlainText]("health") {
         handle { IO.pure(PlainText("ok")) }
       }

@@ -4,6 +4,7 @@
 .metals/
 .cache/
 target/
+.build/
 dist/
 artifacts/
 node_modules/
