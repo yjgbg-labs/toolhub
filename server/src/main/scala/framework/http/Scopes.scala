@@ -1,6 +1,7 @@
 package framework.http
 
 import cats.effect.IO
+import framework.Client
 import framework.model.{JsonModel, Schema}
 import io.circe.Json
 import scala.collection.mutable.ArrayBuffer
@@ -46,9 +47,11 @@ abstract class DeclarationScope private[framework] (
   private val outputFactories = ArrayBuffer.empty[() => ResponseSpec]
   private[framework] val middlewareValue = ArrayBuffer.empty[Handler => Handler]
   private[framework] var hasBody: Boolean = false
+  private[framework] var exposureValue: Option[Set[Client]] = None
 
   private[framework] def freezeDeclarations(): ScopeDecl =
-    ScopeDecl(inputFactories.map(_()).toVector, outputFactories.map(_()).toVector, middlewareValue.toVector, tags.toVector)
+    ScopeDecl(inputFactories.map(_()).toVector, outputFactories.map(_()).toVector, middlewareValue.toVector, tags.toVector,
+      exposureValue.getOrElse(Client.all))
 
   private[framework] def parameter[A](name: String, location: InputLocation)(using codec: ParamCodec[A]): Input[A] =
     gate.check()

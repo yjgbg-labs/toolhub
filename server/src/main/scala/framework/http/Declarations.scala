@@ -1,6 +1,7 @@
 package framework.http
 
 import cats.effect.IO
+import framework.Client
 import io.circe.Json
 
 final case class ServerSettings(host: String, port: Int, maxBodyBytes: Long)
@@ -10,13 +11,15 @@ private[framework] final case class ScopeDecl(
     inputs: Vector[InputSpec[?]],
     responses: Vector[ResponseSpec],
     middleware: Vector[Handler => Handler],
-    tags: Vector[String]
+    tags: Vector[String],
+    exposedOn: Set[Client] = Client.all
 )
 
 private[framework] object ScopeDecl:
   def combine(scopes: Vector[ScopeDecl]): ScopeDecl =
     ScopeDecl(scopes.flatMap(_.inputs), scopes.flatMap(_.responses),
-      scopes.flatMap(_.middleware), scopes.flatMap(_.tags).distinct)
+      scopes.flatMap(_.middleware), scopes.flatMap(_.tags).distinct,
+      scopes.foldLeft(Client.all)((clients, scope) => clients.intersect(scope.exposedOn)))
 
 private[framework] final case class EndpointDecl(
     method: String,

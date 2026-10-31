@@ -107,6 +107,13 @@ export class Catalog {
       for (const [method, raw] of Object.entries(item)) {
         if (!methods.has(method)) continue;
         const op = object(raw, `${method} ${path}`);
+        const clients = op["x-expose-on"];
+        if (clients !== undefined) {
+          if (!Array.isArray(clients) || clients.some(client => typeof client !== "string")) {
+            throw new Error("Expected x-expose-on array of client strings");
+          }
+          if (!clients.includes("codemode")) continue;
+        }
         const id = op.operationId;
         if (typeof id !== "string" || !operationPattern.test(id)) throw new Error(`Invalid or missing operationId: ${method} ${path}`);
         if (this.byId.has(id)) throw new Error(`Duplicate operationId: ${id}`);
@@ -191,5 +198,8 @@ export class Catalog {
       }
     }
     this.operations.sort((a, b) => a.id.localeCompare(b.id));
+    for (const name of this.groupDescriptions.keys()) {
+      if (!this.operations.some(operation => operation.id.startsWith(`${name}.`))) this.groupDescriptions.delete(name);
+    }
   }
 }

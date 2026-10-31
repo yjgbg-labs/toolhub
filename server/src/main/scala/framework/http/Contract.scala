@@ -1,6 +1,7 @@
 package framework.http
 
 import cats.effect.IO
+import framework.Client
 import framework.model.Schema
 import io.circe.Json
 
@@ -59,7 +60,8 @@ private[framework] final case class EndpointSpec(
     tags: Vector[String],
     inputs: Vector[InputSpec[?]],
     outputs: Vector[ResponseSpec],
-    responses: Vector[ResponseContract]
+    responses: Vector[ResponseContract],
+    exposedOn: Set[Client] = Client.all
 )
 
 private[framework] final case class BoundEndpoint(spec: EndpointSpec, run: RequestContext => IO[EndpointResult]):

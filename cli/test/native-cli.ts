@@ -228,13 +228,36 @@ try {
     assert.deepEqual(requests.at(-1)!.query, [["cwd", directory]]);
     await invalid(["inventory", "parts"], /Unknown command/);
 
+    served = { ...document, paths: {
+      "/message": { get: { operationId: "terminal", "x-expose-on": ["cli"], responses } },
+      "/new-endpoint": { get: { operationId: "mixed.read", "x-expose-on": ["cli", "graaljs"], responses } },
+      "/mixed": { get: { operationId: "mixed", "x-expose-on": ["codemode"], responses } },
+      "/private": { post: { operationId: "private.read", "x-expose-on": ["graaljs"], responses,
+        requestBody: { content: { "application/octet-stream": { schema: { type: "string" } } } },
+      } },
+      "/empty": { get: { operationId: "empty", "x-expose-on": [], responses } },
+      "/future": { get: { operationId: "future", "x-expose-on": ["future-client"], responses } },
+    } };
+    const exposedHelp = await ok(["--help"]);
+    assert.match(exposedHelp, /terminal/);
+    assert.match(exposedHelp, /mixed/);
+    assert.doesNotMatch(exposedHelp, /private|empty|future|inventory/);
+    assert.equal(await ok(["terminal"]), "hello from an unrelated API\n");
+    assert.equal(await ok(["mixed", "read"]), "discovered after compilation\n");
+    assert.match(await ok(["mixed"]), /<command>/);
+    for (const name of ["private", "empty", "future"]) await invalid([name], /Unknown command/);
+    for (const clients of [null, "cli", {}, [1], ["cli", null]]) {
+      served = { ...document, paths: { "/message": { get: { operationId: "terminal", "x-expose-on": clients, responses } } } };
+      await invalid(["terminal"], /x-expose-on/);
+    }
+
     served = { error: "discovery unavailable" };
     discoveryStatus = 503;
     await invalid(["--help"], /HTTP 503.*discovery unavailable/);
     discoveryStatus = 200;
     await invalid(["--help"], /Missing string: openapi/);
   }
-  console.log("Dynamic Native CLI passed: live OpenAPI replacement, nested commands, parameters, JSON/text/file/stdin, exact int64, errors, TCP defaults and URL overrides");
+  console.log("Dynamic Native CLI passed: live OpenAPI replacement, client exposure, nested commands, parameters, JSON/text/file/stdin, exact int64, errors, TCP defaults and URL overrides");
 } finally {
   await tcp.stop(true);
   await rm(directory, { recursive: true, force: true });

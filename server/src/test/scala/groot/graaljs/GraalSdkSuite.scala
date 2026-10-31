@@ -105,6 +105,34 @@ class GraalSdkSuite extends CatsEffectSuite:
     }
   }
 
+  test("exposure removes unavailable commands and namespaces while retaining callable namespace children") {
+    temporary.use { home =>
+      val app = httpApp {
+        commands("external") {
+          exposeOn(cli, codemode)
+          command[Int]("read") { handle { IO.pure(1) } }
+        }
+        command[Int]("mixed") { exposeOn(cli); handle { IO.pure(2) } }
+        commands("mixed") {
+          command[Int]("read") { exposeOn(framework.Client.graaljs); handle { IO.pure(3) } }
+          command[Int]("hidden") { exposeOn(codemode); handle { IO.pure(4) } }
+        }
+        command[Int]("shared") { handle { IO.pure(5) } }
+      }
+      GraalManager.resource(home.resolve("data"), IO.pure(app.commandSdk)).use { manager =>
+        run(manager, """
+          if (tools.external !== undefined || tools.mixed.hidden !== undefined) throw Error("leaked command");
+          if (typeof tools.mixed === "function") throw Error("leaked callable namespace");
+          if (Object.keys(tools).sort().join(",") !== "mixed,shared") throw Error("leaked namespace");
+          console.log((await tools.mixed.read()).body, (await tools.shared()).body);
+        """).map { (task, log) =>
+          assertEquals(task.state, "succeeded", log)
+          assert(log.contains("3 5"), log)
+        }
+      }
+    }
+  }
+
   test("Promise.all starts independent command IO concurrently and resumes on the guest thread") {
     temporary.use { home =>
       for
