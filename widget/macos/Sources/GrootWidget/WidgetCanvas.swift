@@ -35,10 +35,13 @@ final class WidgetCanvas: NSView {
                 text(value, rect: NSRect(x: left.maxX + 16, y: y, width: max(0, bounds.width - left.maxX - 32), height: rowHeight),
                      font: font, color: tone(item.color), alignment: .right)
             } else {
+                let diameter: CGFloat = 16
+                let gap: CGFloat = 8
+                let lampsWidth = diameter * 3 + gap * 2
                 for (lamp, color) in [WidgetColor.red, .yellow, .green].enumerated() {
                     (item.color == color ? tone(color) : offColor).setFill()
-                    NSBezierPath(ovalIn: NSRect(x: bounds.width - 16 - 42 + CGFloat(lamp) * 16,
-                                               y: y + (rowHeight - 10)/2, width: 10, height: 10)).fill()
+                    NSBezierPath(ovalIn: NSRect(x: bounds.width - 16 - lampsWidth + CGFloat(lamp) * (diameter + gap),
+                                               y: y + (rowHeight - diameter)/2, width: diameter, height: diameter)).fill()
                 }
             }
         }
