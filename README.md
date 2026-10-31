@@ -210,9 +210,27 @@ groot-cli graaljs start --cpu 2s --timeout 30s --body '
 
 #### HTTP `fetch`
 
-GraalJS 全局提供 `fetch(url, {method, headers, body})`，使用与
+`fetch` 在 `server/src/main/scala/groot/fetch/FetchRoutes.scala` 中通过
+`command[FetchResponse]("fetch")` 和 `exposeOn(graaljs)` 声明。它进入 GraalJS 的命令树，
+OpenAPI 标记为 `x-expose-on: ["graaljs"]`；CLI、Code Mode 目录及公共 HTTP 路由均按该声明过滤。
+网络客户端由应用管理，执行经过统一 SDK 的参数校验、中间件、错误恢复和取消流程。
+
+可以直接使用标准命令接口，响应体中的 HTTP 状态是目标网站的状态，原始字节以 base64 返回：
+
+```js
+const reply = await tools.fetch({body: {
+  url: "https://example.com/api/notes",
+  method: "POST",
+  headers: {"Content-Type": "application/json"},
+  body: JSON.stringify({text: "hello"}),
+  bodyEncoding: "utf8" // 二进制可传 base64 字符串并设置为 "base64"
+}});
+console.log(reply.body.status, reply.body.ok, reply.body.bodyBase64);
+```
+
+当 `fetch` 命令对 GraalJS 可见时，同时安装全局 `fetch(url, {method, headers, body})` 适配器，使用与
 [Code Mode fetch](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/codemode/fetch.ts)
-一致的缓冲式响应接口，由 Scala proxy 注入。
+一致的缓冲式响应接口。适配器由 Scala proxy 注入，只做参数和响应转换，实际调用 `tools.fetch`。
 
 ```js
 const response = await fetch("https://example.com/api/notes", {
@@ -239,6 +257,7 @@ const value = await response.json();
   拒绝 Promise。自动跟随最多 20 次重定向，跨源跳转移除认证与 Cookie 请求头；支持 gzip/deflate 解压。
 - 每次请求默认 30 秒墙钟超时，覆盖重定向及响应体读取；与 Code Mode 一样只读取 `method/headers/body`
   这三个选项。请求数据和解压后的响应体各限制为 1 MiB，超限拒绝为 `RangeError`。
+  命令的序列化请求与响应还受统一 SDK 的 1 MiB 限制；base64 与 JSON 开销也计入，因此可传输的原始字节数会更小。
   任务结束、取消或超时会取消在途请求，等待连接资源清理后释放任务额度。
 
 当前打包目标为 Linux AMD64，使用 GraalVM `25.4.4.1.1` Community isolate 和 SQLite JDBC

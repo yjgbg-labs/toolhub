@@ -7,9 +7,6 @@ import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.SandboxPolicy;
 import groot.graaljs.GraalSdkBindings;
 import groot.graaljs.GraalFetchBindings;
-import groot.graaljs.FetchResponse;
-import java.util.concurrent.atomic.AtomicReference;
-import scala.util.Right;
 import scala.collection.immutable.Vector$;
 import scala.jdk.javaapi.CollectionConverters;
 import scala.runtime.BoxedUnit;
@@ -25,23 +22,20 @@ public class AssemblySmoke {
                 .in(InputStream.nullInputStream()).out(OutputStream.nullOutputStream()).err(OutputStream.nullOutputStream())
                 .option("sandbox.MaxHeapMemory", "4MB").option("sandbox.MaxCPUTime", "2s").build()) {
             if (context.eval("js", "6 * 7").asInt() != 42) throw new AssertionError("GraalJS evaluation failed");
-            var sdk = new GraalSdkBindings(context, Vector$.MODULE$.from(CollectionConverters.asScala(List.of("health"))),
+            var sdk = new GraalSdkBindings(context, Vector$.MODULE$.from(CollectionConverters.asScala(List.of("health", "fetch"))),
                 (id, input, resolve, reject) -> {
+                    var body = id.equals("fetch")
+                        ? "{\"url\":\"http://example.com\",\"status\":200,\"statusText\":\"OK\",\"ok\":true,\"redirected\":false,\"headers\":{},\"bodyBase64\":\"AH//\"}"
+                        : "\"ok\"";
                     var response = context.getBindings("js").getMember("JSON").getMember("parse")
-                        .execute("{\"status\":200,\"headers\":{},\"body\":\"ok\"}");
+                        .execute("{\"status\":200,\"headers\":{},\"body\":" + body + "}");
                     resolve.execute(response);
                     return BoxedUnit.UNIT;
                 });
             sdk.install();
             context.eval("js", "tools.health().then(r => globalThis.sdkResult = r.body)");
             if (!context.eval("js", "sdkResult").asString().equals("ok")) throw new AssertionError("Command SDK failed");
-            var fetch = new AtomicReference<GraalFetchBindings>();
-            fetch.set(new GraalFetchBindings(context, (request, resolve, reject) -> {
-                fetch.get().deliver(resolve, reject, new Right<>(new FetchResponse(
-                    request.url(), 200, "OK", false, Vector$.MODULE$.empty(), new byte[] {0, 127, (byte) 255})));
-                return BoxedUnit.UNIT;
-            }));
-            fetch.get().install();
+            new GraalFetchBindings(context).install();
             context.eval("js", "fetch('http://example.com').then(r => r.bytes()).then(b => globalThis.fetchResult = [...b].join(','))");
             if (!context.eval("js", "fetchResult").asString().equals("0,127,255")) throw new AssertionError("Fetch SDK failed");
         }

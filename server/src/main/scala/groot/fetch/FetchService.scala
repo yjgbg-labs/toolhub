@@ -1,36 +1,54 @@
-package groot.graaljs
+package groot.fetch
 
 import cats.effect.{IO, Resource}
 import cats.syntax.all.*
 import fs2.{Chunk, Stream}
 import fs2.compression.{Compression, InflateParams}
+import java.nio.charset.StandardCharsets.UTF_8
+import java.util.Base64
 import org.http4s.{Header, Headers, Method, Request, Response, Uri}
 import org.http4s.client.Client
 import org.http4s.ember.client.EmberClientBuilder
 import org.typelevel.ci.CIString
 import scala.concurrent.duration.*
 
-private[graaljs] case class FetchRequest(url: String, method: String, headers: Vector[(String, String)], body: Option[Array[Byte]])
-private[graaljs] case class FetchResponse(url: String, status: Int, statusText: String, redirected: Boolean, headers: Vector[(String, String)], body: Array[Byte])
-private[graaljs] case class FetchFailure(name: String, message: String) extends RuntimeException(message)
-
 /** Buffered HTTP fetch. All transport IO belongs to the task session and is cancelled with it. */
-private[graaljs] final class GraalFetch(client: Client[IO], timeout: FiniteDuration = 30.seconds):
-  import GraalFetch.*
+final class FetchService(client: Client[IO], timeout: FiniteDuration = 30.seconds):
+  import FetchService.*
 
   def apply(input: FetchRequest): IO[FetchResponse] = IO.defer {
     val uri = parseUrl(input.url)
-    val method = Method.fromString(input.method).fold(error => throw error, identity)
+    val upper = input.method.toUpperCase(java.util.Locale.ROOT)
+    val normalized = if Set("DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT").contains(upper) then upper else input.method
+    val method = Method.fromString(normalized).fold(error => throw error, identity)
     if Set("CONNECT", "TRACE", "TRACK").contains(method.name.toUpperCase(java.util.Locale.ROOT)) then
       throw FetchFailure("TypeError", s"fetch() does not support method ${method.name}")
     if (method == Method.GET || method == Method.HEAD) && input.body.nonEmpty then
       throw FetchFailure("TypeError", "fetch() request with GET/HEAD method cannot have body")
+    val body = input.body.map { text => input.bodyEncoding match
+      case BodyEncoding.utf8 => text.getBytes(UTF_8)
+      case BodyEncoding.base64 => Base64.getDecoder.decode(text)
+    }
+    if input.headers.size > 1024 then throw FetchFailure("TypeError", "fetch() accepts at most 1024 headers")
+    val fields = input.headers.toVector.map { (rawName, rawValue) =>
+      val name = rawName.toLowerCase(java.util.Locale.ROOT)
+      val value = rawValue.dropWhile(c => c == ' ' || c == '\t' || c == '\r' || c == '\n')
+        .reverse.dropWhile(c => c == ' ' || c == '\t' || c == '\r' || c == '\n').reverse
+      if !name.matches("[!#$%&'*+.^_`|~0-9a-z-]+") || value.exists(c => c == 0 || c == '\r' || c == '\n' || c > 255) then
+        throw FetchFailure("TypeError", "fetch() has an invalid header name or value")
+      name -> value
+    }.groupMap(_._1)(_._2).toVector.map((name, values) => name -> values.mkString(", "))
+    val size = input.url.getBytes(UTF_8).length.toLong + input.method.length +
+      fields.map((k, v) => k.length.toLong + v.getBytes(UTF_8).length).sum + body.fold(0)(_.length)
+    if size > maxBytes then throw FetchFailure("RangeError", "fetch() request exceeds 1 MiB")
+    val typed = if input.body.nonEmpty && input.bodyEncoding == BodyEncoding.utf8 && !fields.exists(_._1 == "content-type") then
+      fields :+ ("content-type" -> "text/plain;charset=UTF-8") else fields
     // Framing is computed from the buffered body, including when callers reuse response headers.
-    val headers = Headers(input.headers.filterNot { (name, _) =>
+    val headers = Headers(typed.filterNot { (name, _) =>
       name.equalsIgnoreCase("content-length") || name.equalsIgnoreCase("transfer-encoding")
     }.map { (name, value) => Header.Raw(CIString(name), value) })
     val request = Request[IO](method, uri, headers = headers)
-    val encoded = input.body.fold(request)(bytes => request.withBodyStream(Stream.chunk(Chunk.array(bytes)))
+    val encoded = body.fold(request)(bytes => request.withBodyStream(Stream.chunk(Chunk.array(bytes)))
       .putHeaders(Header.Raw(CIString("Content-Length"), bytes.length.toString)))
     val accepted = if header(encoded.headers, "accept").isDefined then encoded else encoded.putHeaders(Header.Raw(CIString("Accept"), "*/*"))
     val compressed = if header(accepted.headers, "accept-encoding").isDefined then accepted
@@ -60,7 +78,8 @@ private[graaljs] final class GraalFetch(client: Client[IO], timeout: FiniteDurat
       else readBody(request, response).map { bytes =>
         val headers = response.headers.headers.groupMap(_.name.toString.toLowerCase(java.util.Locale.ROOT))(_.value)
           .toVector.sortBy(_._1).map { (name, values) => name -> values.mkString(", ") }
-        Right(FetchResponse(request.uri.renderString, response.status.code, response.status.reason, redirects > 0, headers, bytes))
+        Right(FetchResponse(request.uri.renderString, response.status.code, response.status.reason,
+          response.status.isSuccess, redirects > 0, headers.toMap, Base64.getEncoder.encodeToString(bytes)))
       }
     }.flatMap {
       case Left(next) => follow(next, redirects + 1)
@@ -79,10 +98,10 @@ private[graaljs] final class GraalFetch(client: Client[IO], timeout: FiniteDurat
       else IO.pure(body)
     }
 
-private[graaljs] object GraalFetch:
+object FetchService:
   val maxBytes = 1024 * 1024
 
-  def resource: Resource[IO, GraalFetch] = EmberClientBuilder.default[IO].withTimeout(30.seconds).build.map(new GraalFetch(_))
+  def resource: Resource[IO, FetchService] = EmberClientBuilder.default[IO].withTimeout(30.seconds).build.map(new FetchService(_))
 
   private def header(headers: Headers, name: String): Option[String] = headers.headers.find(_.name == CIString(name)).map(_.value)
 

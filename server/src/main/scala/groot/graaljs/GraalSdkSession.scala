@@ -12,43 +12,39 @@ import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.Duration
 
 /** Guest Values are only touched by the task's execution thread. IO callbacks only enqueue immutable replies. */
-private[graaljs] final class GraalSdkSession(sdk: CommandSdk, dispatcher: Dispatcher[IO], fetch: GraalFetch):
+private[graaljs] final class GraalSdkSession(sdk: CommandSdk, dispatcher: Dispatcher[IO]):
   private given ExecutionContext = ExecutionContext.parasitic
-  private case class Pending(cancel: () => Future[Unit])
-  private case class Reply(id: Long, deliver: () => Unit)
+  private case class Pending(command: String, resolve: Value, reject: Value, cancel: () => Future[Unit])
+  private case class Reply(id: Long, result: Either[Throwable, String])
   private val replies = new LinkedBlockingQueue[Option[Reply]]()
   private val pending = mutable.Map.empty[Long, Pending]
   private var sequence = 0L
   private var bindings: GraalSdkBindings = null
-  private var fetchBindings: GraalFetchBindings = null
 
   def install(context: Context): Unit =
     bindings = new GraalSdkBindings(context, sdk.commands, submit)
     bindings.install()
-    fetchBindings = new GraalFetchBindings(context, (input, resolve, reject) =>
-      enqueue(fetch(input))(result => fetchBindings.deliver(resolve, reject, result)))
-    fetchBindings.install()
+    if sdk.commands.contains("fetch") then new GraalFetchBindings(context).install()
 
   private def submit(id: String, input: String, resolve: Value, reject: Value): Unit =
+    require(pending.size < GraalSdkSession.maxPending, "At most 64 SDK calls may be pending per task")
     require(input.getBytes(UTF_8).length <= CommandSdk.maxBytes, "SDK input exceeds 1 MiB")
     val action = IO.fromEither(io.circe.parser.parse(input)).flatMap(sdk.call(id, _)).map { result =>
       val json = result.noSpaces
       require(json.getBytes(UTF_8).length <= CommandSdk.maxBytes, "SDK response exceeds 1 MiB")
       json
     }
-    enqueue(action)(result => bindings.deliver(id, resolve, reject, result))
-
-  private def enqueue[A](action: IO[A])(deliver: Either[Throwable, A] => Unit): Unit =
-    require(pending.size < GraalSdkSession.maxPending, "At most 64 SDK/fetch calls may be pending per task")
     sequence += 1
     val callId = sequence
     val (result, cancel) = dispatcher.unsafeToFutureCancelable(action)
-    pending(callId) = Pending(cancel)
-    result.onComplete(value => replies.offer(Some(Reply(callId, () => deliver(value.toEither)))))
+    pending(callId) = Pending(id, resolve, reject, cancel)
+    result.onComplete(value => replies.offer(Some(Reply(callId, value.toEither))))
 
   /** Blocks without consuming guest CPU while command IO is in progress. */
   def next(): Unit = replies.take().foreach { reply =>
-    pending.remove(reply.id).foreach(_ => reply.deliver())
+    pending.remove(reply.id).foreach { call =>
+      bindings.deliver(call.command, call.resolve, call.reject, reply.result)
+    }
   }
 
   def wake(): Unit = { replies.offer(None); () }

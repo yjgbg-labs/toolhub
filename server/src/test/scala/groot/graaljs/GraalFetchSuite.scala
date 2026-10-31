@@ -4,14 +4,17 @@ import cats.effect.{Deferred, IO, Ref, Resource}
 import cats.syntax.all.*
 import com.comcast.ip4s.*
 import framework.rpcDsl.*
+import framework.rpc.CommandsScope
 import framework.runtime.CommandSdk
+import groot.fetch.{FetchRoutes, FetchService}
 import fs2.{Chunk, Stream}
 import io.circe.Json
 import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets.UTF_8
+import java.nio.file.Path
 import java.util.zip.{DeflaterOutputStream, GZIPOutputStream}
 import munit.CatsEffectSuite
-import org.http4s.{Header, Headers, HttpApp, Request, Response, Status}
+import org.http4s.{Header, HttpApp, Method, Request, Response, Status, Uri}
 import org.http4s.client.Client
 import org.http4s.ember.server.EmberServerBuilder
 import org.typelevel.ci.CIString
@@ -29,8 +32,14 @@ class GraalFetchSuite extends CatsEffectSuite:
     _ = assertEquals(task.state, "succeeded", s"${task.error}\n$log")
   yield log
 
-  private def manager(fetch: GraalFetch, sdk: CommandSdk = CommandSdk.empty): Resource[IO, GraalManager] =
-    temporary.flatMap(home => GraalManager.managed(home, GraalRunner.resource(IO.pure(sdk), Resource.pure(fetch)), Limits.taskBytes))
+  private def manager(fetch: FetchService, register: CommandsScope ?=> Unit = ()): Resource[IO, GraalManager] =
+    val app = httpApp { FetchRoutes.register(fetch); register }
+    temporary.flatMap(home => GraalManager.managed(home, GraalRunner.resource(IO.pure(app.commandSdk)), Limits.taskBytes))
+
+  private def liveManager(home: Path): Resource[IO, GraalManager] = FetchService.resource.flatMap { fetch =>
+    val app = httpApp { FetchRoutes.register(fetch) }
+    GraalManager.resource(home, IO.pure(app.commandSdk))
+  }
 
   private val echo = HttpApp[IO] { request => request.body.compile.to(Array).map { body =>
     val values = request.headers.headers.groupMap(_.name.toString.toLowerCase(java.util.Locale.ROOT))(_.value)
@@ -41,7 +50,7 @@ class GraalFetchSuite extends CatsEffectSuite:
   } }
 
   test("real HTTP fetch preserves the Code Mode response surface, UTF-8 and repeated body reads") {
-    (serve(echo), temporary).tupled.use { (url, home) => GraalManager.resource(home).use { manager =>
+    (serve(echo), temporary).tupled.use { (url, home) => liveManager(home).use { manager =>
       run(manager, s"""
         const original = fetch;
         try { globalThis.fetch = null; } catch (_) {}
@@ -77,7 +86,7 @@ class GraalFetchSuite extends CatsEffectSuite:
         case "/loop" => IO.pure(Response[IO](Status.Found).putHeaders(header("Location", "/loop")))
         case _ => echo(request)
       }
-      (serve(app), temporary).tupled.use { (url, home) => GraalManager.resource(home).use { manager =>
+      (serve(app), temporary).tupled.use { (url, home) => liveManager(home).use { manager =>
         run(manager, s"""
           const post = await fetch("$url/post", {method:"POST", body:"data", headers:{"Content-Type":"application/json"}});
           const rewritten = await post.json();
@@ -106,7 +115,7 @@ class GraalFetchSuite extends CatsEffectSuite:
       case "/binary" => Response[IO](Status.Ok).withBodyStream(Stream.chunk(Chunk.array(Array[Byte](0, 127, -128, -1))))
       case path => Response[IO](Status.Ok).withBodyStream(Stream.chunk(Chunk.array(compressed(path == "/gzip"))))
         .putHeaders(header("Content-Encoding", if path == "/gzip" then "gzip" else "deflate"))) }
-    (serve(app), temporary).tupled.use { (url, home) => GraalManager.resource(home).use { manager =>
+    (serve(app), temporary).tupled.use { (url, home) => liveManager(home).use { manager =>
       run(manager, s"""
         const missing = await fetch("$url/missing");
         if (missing.ok || missing.status !== 404 || await missing.text() !== "missing") throw Error("HTTP error rejected");
@@ -130,7 +139,7 @@ class GraalFetchSuite extends CatsEffectSuite:
 
   test("validation and network failures are native rejected Promises") {
     val client = Client[IO](_ => Resource.eval(IO.raiseError(new java.io.IOException("connection failed"))))
-    manager(new GraalFetch(client)).use { manager => run(manager, """
+    manager(new FetchService(client)).use { manager => run(manager, """
       const calls = [() => fetch(), () => fetch("relative"), () => fetch("file:///tmp/file"),
         () => fetch("ftp://example.com"), () => fetch("http://user:pass@example.com"),
         () => fetch("http://example.com", {method:"GET", body:""}),
@@ -151,11 +160,13 @@ class GraalFetchSuite extends CatsEffectSuite:
   test("response limits and deadlines cover the streamed body and release the client resource") {
     Ref.of[IO, Int](0).flatMap { active =>
       val client = Client[IO](request => Resource.make(active.update(_ + 1))(_ => active.update(_ - 1)).as(
-        Response[IO](Status.Ok).withBodyStream(if request.uri.path.renderString == "/large" then
-          Stream.chunk(Chunk.array(Array.fill[Byte](GraalFetch.maxBytes + 1)(65))) else Stream.eval(IO.never[Byte]))))
-      manager(new GraalFetch(client, 150.millis)).use { manager =>
+        Response[IO](Status.Ok).withBodyStream(request.uri.path.renderString match
+          case "/large" => Stream.chunk(Chunk.array(Array.fill[Byte](FetchService.maxBytes + 1)(65)))
+          case "/encoded" => Stream.chunk(Chunk.array(Array.fill[Byte](FetchService.maxBytes * 3 / 4)(65)))
+          case _ => Stream.eval(IO.never[Byte]))))
+      manager(new FetchService(client, 150.millis)).use { manager =>
         run(manager, """
-          for (const [path, name] of [["large", "RangeError"], ["slow", "TimeoutError"]]) {
+          for (const [path, name] of [["large", "RangeError"], ["encoded", "RangeError"], ["slow", "TimeoutError"]]) {
             try { await fetch("http://example.com/" + path); throw Error("missing limit"); }
             catch(e) { if (!(e instanceof Error) || e.name !== name) throw e; }
           }
@@ -172,14 +183,14 @@ class GraalFetchSuite extends CatsEffectSuite:
       active <- Ref.of[IO, Int](0)
       ready <- Deferred[IO, Unit]
       arrive = arrivals.updateAndGet(_ + 1).flatMap(n => (if n == 2 then ready.complete(()).void else IO.unit) *> ready.get)
-      app = httpApp {
+      register: (CommandsScope ?=> Unit) = {
         command[String]("arrive") { handle { arrive.as("tool") } }
         command[Unit]("wait") { handle { IO.never[Unit] } }
       }
       client = Client[IO](request => Resource.make(active.update(_ + 1))(_ => active.update(_ - 1)).evalMap { _ =>
         if request.uri.path.renderString == "/arrive" then arrive.as(Response[IO](Status.Ok).withEntity("fetch")) else IO.never[Response[IO]]
       })
-      _ <- manager(new GraalFetch(client), app.commandSdk).use { manager =>
+      _ <- manager(new FetchService(client), register).use { manager =>
         run(manager, """
           const results = await Promise.all([fetch("http://example.com/arrive"), tools.arrive()]);
           if (await results[0].text() !== "fetch" || results[1].body !== "tool") throw Error("concurrency");
@@ -198,7 +209,7 @@ class GraalFetchSuite extends CatsEffectSuite:
       release <- Deferred[IO, Unit]
       client = Client[IO](_ => Resource.make(started.complete(()))(_ => finalizing.complete(()) *> release.get)
         .evalMap(_ => IO.never[Response[IO]]))
-      _ <- manager(new GraalFetch(client)).use { manager => (for
+      _ <- manager(new FetchService(client)).use { manager => (for
         first <- manager.start("await fetch('http://example.com/wait');", "5s", "10s")
         _ <- started.get.timeout(5.seconds)
         second <- manager.start("console.log('next');", "5s", "10s")
@@ -217,4 +228,52 @@ class GraalFetchSuite extends CatsEffectSuite:
         timeout <- awaitUntil(manager.status(timed.id))(_.terminal)
       yield assertEquals(timeout.error.map(_.code), Some("timeout"))).guarantee(release.complete(()).void) }
     yield ()
+  }
+
+  test("fetch is a GraalJS-only command: direct SDK and global adapter share validation and middleware, HTTP stays hidden") {
+    for
+      calls <- Ref.of[IO, Int](0)
+      sent <- Ref.of[IO, Int](0)
+      client = Client[IO](_ => Resource.eval(sent.update(_ + 1).as(Response[IO](Status.NotFound).withEntity("missing"))))
+      app = httpApp {
+        middleware { next => calls.update(_ + 1) *> next }
+        FetchRoutes.register(new FetchService(client))
+      }
+      document = io.circe.parser.parse(app.openApiJson).toOption.get
+      _ = assertEquals(document.hcursor.downField("paths").downField("/fetch").downField("post").get[List[String]]("x-expose-on"), Right(List("graaljs")))
+      _ = assertEquals(app.commandSdk.commands, Vector("fetch"))
+      _ <- serve(app.httpApp).use { url => org.http4s.ember.client.EmberClientBuilder.default[IO].build.use { external =>
+        List(Method.GET, Method.POST, Method.HEAD, Method.OPTIONS).traverse_ { method =>
+          external.run(Request[IO](method, Uri.unsafeFromString(s"$url/fetch"))).use(r => IO(assertEquals(r.status, Status.NotFound)))
+        }
+      } }
+      before <- calls.get
+      _ = assertEquals(before, 0)
+      invalid <- app.commandSdk.call("fetch", Json.obj("body" -> Json.obj("url" -> Json.fromInt(42))))
+      _ = assertEquals(invalid.hcursor.get[Int]("status"), Right(400))
+      _ <- temporary.use { home => GraalManager.resource(home, IO.pure(app.commandSdk)).use { manager => run(manager, """
+        const direct = await tools.fetch({body: {url:"http://example.com"}});
+        if (direct.status !== 200 || direct.body.status !== 404 || direct.body.ok || direct.body.bodyBase64 !== "bWlzc2luZw==") throw Error(JSON.stringify(direct));
+        const adapted = await fetch("http://example.com");
+        if (adapted.status !== 404 || await adapted.text() !== "missing") throw Error("adapter bypassed the command");
+        for (const body of [{url:"relative"}, {url:"http://example.com", headers:{"bad name":"x"}},
+          {url:"http://example.com", method:"POST", body:"!", bodyEncoding:"base64"}]) {
+          try { await tools.fetch({body}); throw Error("missing command validation"); }
+          catch(e) { if (e.name !== "ApiError" || e.response.status !== 400) throw e; }
+        }
+      """).void } }
+      after <- calls.get
+      executed <- sent.get
+    yield
+      assertEquals(after, 5)
+      assertEquals(executed, 2)
+  }
+
+  test("the global adapter is absent when fetch is missing or excluded from the GraalJS catalog") {
+    val hidden = httpApp { command[Unit]("fetch") { exposeOn(cli, codemode); handle { IO.unit } } }
+    List(CommandSdk.empty, hidden.commandSdk).traverse_ { sdk =>
+      temporary.use { home => GraalManager.resource(home, IO.pure(sdk)).use { manager =>
+        run(manager, "if (typeof fetch !== 'undefined' || typeof tools.fetch !== 'undefined') throw Error('fetch exposure bypassed');").void
+      } }
+    }
   }

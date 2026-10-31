@@ -2,13 +2,15 @@ package groot.graaljs
 
 import java.nio.charset.StandardCharsets.UTF_8
 import java.util.{Base64, Map as JavaMap}
+import framework.model.JsonModel
+import groot.fetch.{BodyEncoding, FetchFailure, FetchRequest, FetchResponse, FetchService}
 import org.graalvm.polyglot.{Context, PolyglotException, Value}
 import org.graalvm.polyglot.proxy.{ProxyArray, ProxyObject}
 import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
 
-/** Code Mode's buffered fetch surface, built from Scala proxies and native guest Promises. */
-private[graaljs] final class GraalFetchBindings(context: Context, submit: (FetchRequest, Value, Value) => Unit):
+/** Code Mode-shaped adapter over the declared tools.fetch command; owns no transport or IO. */
+private[graaljs] final class GraalFetchBindings(context: Context):
   private val global = context.getBindings("js").getMember("globalThis")
   private val promise = global.getMember("Promise")
   private val string = global.getMember("String")
@@ -16,6 +18,7 @@ private[graaljs] final class GraalFetchBindings(context: Context, submit: (Fetch
   private val uint8 = global.getMember("Uint8Array")
   private val json = global.getMember("JSON")
   private val obj = global.getMember("Object")
+  private val command = global.getMember("tools").getMember("fetch")
   private def callback(run: Seq[Value] => AnyRef) = GraalSdkSession.callback(run)
   private def text(value: Value): String = string.execute(value).asString()
   private def member(value: Value, name: String): Option[Value] =
@@ -72,26 +75,47 @@ private[graaljs] final class GraalFetchBindings(context: Context, submit: (Fetch
     val method = if Set("DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT").contains(upper) then upper else rawMethod
     val headers = readHeaders(member(init, "headers").orNull)
     var contentType: Option[String] = None
+    var encoding = BodyEncoding.utf8
     val body = member(init, "body").map { value =>
       val tag = obj.getMember("prototype").getMember("toString").invokeMember("call", value).asString()
       if tag == "[object Uint8Array]" && value.hasArrayElements then
-        if value.getArraySize > GraalFetch.maxBytes then throw FetchFailure("RangeError", "fetch() request exceeds 1 MiB")
-        Array.tabulate(value.getArraySize.toInt)(index => value.getArrayElement(index.toLong).asInt().toByte)
+        if value.getArraySize > FetchService.maxBytes then throw FetchFailure("RangeError", "fetch() request exceeds 1 MiB")
+        encoding = BodyEncoding.base64
+        Base64.getEncoder.encodeToString(Array.tabulate(value.getArraySize.toInt)(index => value.getArrayElement(index.toLong).asInt().toByte))
       else
         contentType = Some(if tag == "[object URLSearchParams]" then "application/x-www-form-urlencoded;charset=UTF-8" else "text/plain;charset=UTF-8")
-        text(value).getBytes(UTF_8)
+        text(value)
     }
     val complete = if headers.exists(_._1 == "content-type") then headers else headers ++ contentType.map("content-type" -> _)
-    val size = url.getBytes(UTF_8).length.toLong + method.length + complete.map((k, v) => k.length.toLong + v.getBytes(UTF_8).length).sum + body.fold(0)(_.length)
-    if size > GraalFetch.maxBytes then throw FetchFailure("RangeError", "fetch() request exceeds 1 MiB")
-    FetchRequest(url, method, complete, body)
+    val request = FetchRequest(url, method, complete.toMap, body, encoding)
+    if JsonModel[FetchRequest].encoder(request).noSpaces.getBytes(UTF_8).length > FetchService.maxBytes then
+      throw FetchFailure("RangeError", "fetch() request exceeds the 1 MiB SDK limit")
+    request
 
   def install(): Unit =
     val fetch = callback { arguments => async { (resolve, reject) =>
       val request = input(arguments)
       resolve.pin()
       reject.pin()
-      submit(request, resolve, reject)
+      val argumentsJson = io.circe.Json.obj("body" -> JsonModel[FetchRequest].encoder(request))
+      val pending = command.execute(json.invokeMember("parse", argumentsJson.noSpaces))
+      pending.invokeMember("then", callback { values =>
+        try
+          val body = json.invokeMember("stringify", values(0).getMember("body")).asString()
+          val response = io.circe.parser.parse(body).flatMap(JsonModel[FetchResponse].decoder.decodeJson).fold(throw _, identity)
+          deliver(resolve, response)
+        catch case NonFatal(error) => rejectWith(reject, error)
+        null
+      }, callback { values =>
+        val error = values(0)
+        val response = member(error, "response")
+        val body = response.flatMap(v => member(v, "body"))
+        val message = body.flatMap(v => member(v, "message")).orElse(member(error, "message")).fold("fetch failed")(text)
+        val name = body.flatMap(v => member(v, "name")).fold(if message.contains("1 MiB") then "RangeError" else "TypeError")(text)
+        rejectWith(reject, FetchFailure(name, message))
+        null
+      })
+      ()
     } }
     val descriptor = ProxyObject.fromMap(JavaMap.of[String, Object](
       "value", fetch, "enumerable", java.lang.Boolean.TRUE,
@@ -100,28 +124,27 @@ private[graaljs] final class GraalFetchBindings(context: Context, submit: (Fetch
     ()
 
   /** Only invoked by the task's context thread. Body methods can be called repeatedly, like Code Mode. */
-  def deliver(resolve: Value, reject: Value, result: Either[Throwable, FetchResponse]): Unit = result match
-    case Left(error) => rejectWith(reject, error)
-    case Right(response) =>
+  private def deliver(resolve: Value, response: FetchResponse): Unit =
       def objectOf(fields: (String, AnyRef)*): ProxyObject = ProxyObject.fromMap(java.util.Collections.unmodifiableMap(fields.toMap.asJava))
       def nativeJson(value: io.circe.Json): Value = json.invokeMember("parse", value.noSpaces)
-      def decoded(): String = new String(response.body, UTF_8).stripPrefix("\ufeff")
-      val headers = response.headers.toMap
+      val body = Base64.getDecoder.decode(response.bodyBase64)
+      def decoded(): String = new String(body, UTF_8).stripPrefix("\ufeff")
+      val headers = response.headers
       val headerObject = objectOf(
         "get" -> callback(args => headers.getOrElse(args.headOption.fold("undefined")(text).toLowerCase(java.util.Locale.ROOT), null)),
         "has" -> callback(args => java.lang.Boolean.valueOf(headers.contains(args.headOption.fold("undefined")(text).toLowerCase(java.util.Locale.ROOT)))),
-        "entries" -> callback(_ => nativeJson(io.circe.Json.fromValues(response.headers.map { (k, v) =>
+        "entries" -> callback(_ => nativeJson(io.circe.Json.fromValues(response.headers.toVector.sortBy(_._1).map { (k, v) =>
           io.circe.Json.arr(io.circe.Json.fromString(k), io.circe.Json.fromString(v))
         }))))
       val value = objectOf(
         "url" -> response.url, "status" -> java.lang.Integer.valueOf(response.status), "statusText" -> response.statusText,
-        "ok" -> java.lang.Boolean.valueOf(response.status >= 200 && response.status < 300),
+        "ok" -> java.lang.Boolean.valueOf(response.ok),
         "redirected" -> java.lang.Boolean.valueOf(response.redirected), "headers" -> headerObject,
         "text" -> callback(_ => async((resolve, _) => { resolve.execute(decoded()); () })),
         "json" -> callback(_ => async((resolve, _) => { resolve.execute(json.invokeMember("parse", decoded())); () })),
         "bytes" -> callback(_ => async { (resolve, _) =>
-          val bytes = if uint8.hasMember("fromBase64") then uint8.invokeMember("fromBase64", Base64.getEncoder.encodeToString(response.body))
-            else uint8.newInstance(ProxyArray.fromArray(response.body.map(b => java.lang.Integer.valueOf(b & 0xff): AnyRef)*))
+          val bytes = if uint8.hasMember("fromBase64") then uint8.invokeMember("fromBase64", response.bodyBase64)
+            else uint8.newInstance(ProxyArray.fromArray(body.map(b => java.lang.Integer.valueOf(b & 0xff): AnyRef)*))
           resolve.execute(bytes)
           ()
         }))
