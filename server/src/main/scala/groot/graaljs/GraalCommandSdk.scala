@@ -1,20 +1,21 @@
-package framework.runtime
+package groot.graaljs
 
 import cats.effect.IO
-import framework.http.*
+import framework.Client
+import framework.http.InputLocation
 import framework.model.SchemaNode
+import framework.runtime.{Application, InProcessApi}
 import io.circe.{Json, JsonObject}
 import java.nio.charset.StandardCharsets.UTF_8
 import org.http4s.{Header, HttpApp, Method, Query, Request, Uri}
 import org.typelevel.ci.CIString
 
-/** An in-process client of the frozen command declarations, using the same HTTP validation and middleware. */
-final class CommandSdk private[framework] (
-    endpoints: Vector[BoundEndpoint],
+/** GraalJS calling conventions and bounds over the framework's in-process HTTP API. */
+final class GraalCommandSdk private (
+    endpoints: Vector[InProcessApi.Endpoint],
     httpApp: HttpApp[IO]
 ):
-  private val byId = endpoints.map { endpoint =>
-    val spec = endpoint.spec
+  private val byId = endpoints.map { spec =>
     val names = spec.inputs.map(input => if input.location == InputLocation.Body then "body" else input.name)
     require(names.distinct.size == names.size, s"Duplicate SDK parameter name (including reserved body): ${spec.operationId}")
     spec.operationId -> spec
@@ -40,13 +41,13 @@ final class CommandSdk private[framework] (
       val group = JsonObject.fromIterable(declared.flatMap(parameter => args(parameter.name).map(parameter.name -> _)))
       declared.foreach { parameter =>
         group(parameter.name).foreach { value =>
-          require(matches(parameter.schema.node(), value), s"Invalid type for ${parameter.name}")
+          require(matches(parameter.schema, value), s"Invalid type for ${parameter.name}")
         }
       }
       location -> group
     }.toMap
     def scalar(value: Json): String = value.asString.getOrElse(value.noSpaces)
-    val path = spec.path.segments.map { segment =>
+    val path = spec.path.split("/").toVector.filter(_.nonEmpty).map { segment =>
       if segment.startsWith("{") then
         val name = segment.drop(1).dropRight(1)
         val value = scalar(groups(InputLocation.Path)(name).getOrElse(throw new IllegalArgumentException(s"Missing $name")))
@@ -79,8 +80,8 @@ final class CommandSdk private[framework] (
       base.withEntity(text).putHeaders(Header.Raw(CIString("Content-Type"), media))
     }
     httpApp(request).flatMap { response =>
-      response.body.take(CommandSdk.maxBytes + 1L).compile.to(Array).flatMap { bytes => IO {
-        require(bytes.length <= CommandSdk.maxBytes, "SDK response exceeds 1 MiB")
+      response.body.take(GraalCommandSdk.maxBytes + 1L).compile.to(Array).flatMap { bytes => IO {
+        require(bytes.length <= GraalCommandSdk.maxBytes, "SDK response exceeds 1 MiB")
         val text = new String(bytes, UTF_8)
         val media = response.contentType.map(value => s"${value.mediaType.mainType}/${value.mediaType.subType}").getOrElse("")
         val body = if bytes.isEmpty then Json.Null
@@ -103,6 +104,10 @@ final class CommandSdk private[framework] (
     case SchemaNode.Nullable(element) => value.isNull || matches(element(), value)
     case _ => false
 
-object CommandSdk:
+object GraalCommandSdk:
   val maxBytes = 1024 * 1024
-  val empty: CommandSdk = new CommandSdk(Vector.empty, org.http4s.HttpApp.notFound[IO])
+  val empty: GraalCommandSdk = new GraalCommandSdk(Vector.empty, org.http4s.HttpApp.notFound[IO])
+
+  def apply(app: Application): GraalCommandSdk =
+    val api = app.inProcess(Client.graaljs)
+    new GraalCommandSdk(api.endpoints, api.httpApp)

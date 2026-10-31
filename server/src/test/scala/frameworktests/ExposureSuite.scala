@@ -5,7 +5,6 @@ import cats.syntax.all.*
 import framework.rpc.CommandsScope
 import framework.rpcDsl.*
 import framework.runtime.Application
-import io.circe.Json
 import munit.CatsEffectSuite
 import org.http4s.{Header, Method, Request, Status, Uri}
 import org.http4s.ember.client.EmberClientBuilder
@@ -17,7 +16,7 @@ class ExposureSuite extends CatsEffectSuite:
     io.circe.parser.parse(app.openApiJson).toOption.get.hcursor
       .downField("paths").downField(path).downField("get").get[List[String]]("x-expose-on").toOption.get
 
-  test("default exposure and every client combination drive OpenAPI, HTTP and the GraalJS catalog") {
+  test("default exposure and every client combination drive OpenAPI, HTTP and per-client in-process views") {
     val combinations = (1 to 3).toVector.flatMap(Client.values.toVector.combinations(_)).zipWithIndex
     val app = httpApp {
       command[Int]("default") { handle { IO.pure(42) } }
@@ -32,14 +31,18 @@ class ExposureSuite extends CatsEffectSuite:
     combinations.traverse_ { (clients, index) =>
       val id = s"choice$index"
       assertEquals(exposure(app, s"/$id"), clients.map(_.toString).toList)
-      assertEquals(app.commandSdk.commands.contains(id), clients.contains(graaljs))
       for
         http <- app.httpApp(Request[IO](uri = Uri.unsafeFromString(s"/$id")))
-        sdk <- app.commandSdk.call(id, Json.obj()).attempt
-      yield
-        assertEquals(http.status, if clients.exists(_ != graaljs) then Status.Ok else Status.NotFound)
-        assertEquals(sdk.isRight, clients.contains(graaljs))
-        sdk.foreach(result => assertEquals(result.hcursor.get[Int]("body"), Right(index)))
+        _ = assertEquals(http.status, if clients.exists(_ != graaljs) then Status.Ok else Status.NotFound)
+        _ <- Client.values.toVector.traverse_ { client =>
+          val api = app.inProcess(client)
+          assertEquals(api.endpoints.exists(_.operationId == id), clients.contains(client))
+          api.httpApp(Request[IO](uri = Uri.unsafeFromString(s"/$id"))).flatMap { response =>
+            assertEquals(response.status, if clients.contains(client) then Status.Ok else Status.NotFound)
+            response.as[String].map { text => if clients.contains(client) then assertEquals(text, index.toString) }
+          }
+        }
+      yield ()
     }
   }
 
@@ -120,14 +123,17 @@ class ExposureSuite extends CatsEffectSuite:
         }
       }
       before <- calls.get
-      valid <- app.commandSdk.call("internal.read", Json.obj("number" -> Json.fromInt(1)))
-      invalid <- app.commandSdk.call("internal.read", Json.obj("number" -> Json.fromInt(0)))
-      denied <- app.commandSdk.call("internal.read", Json.obj("number" -> Json.fromInt(2)))
+      api = app.inProcess(graaljs)
+      valid <- api.httpApp(Request[IO](uri = Uri.unsafeFromString("/internal/read?number=1")))
+      text <- valid.as[String]
+      invalid <- api.httpApp(Request[IO](uri = Uri.unsafeFromString("/internal/read?number=0")))
+      denied <- api.httpApp(Request[IO](uri = Uri.unsafeFromString("/internal/read?number=2")))
       after <- calls.get
     yield
       assertEquals(before, 0)
-      assertEquals(valid.hcursor.get[Int]("body"), Right(1))
-      assertEquals(invalid.hcursor.get[Int]("status"), Right(400))
-      assertEquals(denied.hcursor.get[Int]("status"), Right(409))
+      assertEquals(valid.status, Status.Ok)
+      assertEquals(text, "1")
+      assertEquals(invalid.status, Status.BadRequest)
+      assertEquals(denied.status, Status.Conflict)
       assertEquals(after, 2)
   }

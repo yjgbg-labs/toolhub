@@ -3,7 +3,6 @@ package groot.graaljs
 import cats.effect.{Deferred, IO, Ref}
 import cats.syntax.all.*
 import framework.rpcDsl.*
-import framework.runtime.CommandSdk
 import munit.CatsEffectSuite
 import scala.concurrent.duration.*
 import GraalTestSupport.*
@@ -54,7 +53,7 @@ class GraalSdkSuite extends CatsEffectSuite:
             }
           }
         }
-        _ <- GraalManager.resource(home.resolve("data"), IO.pure(app.commandSdk)).use { manager =>
+        _ <- GraalManager.resource(home.resolve("data"), IO.pure(GraalCommandSdk(app))).use { manager =>
           run(manager, """
             if (typeof search !== "undefined" || typeof Java !== "undefined" || typeof fetch !== "undefined") throw Error("unexpected SDK");
             const originalTools = tools, health = tools.health;
@@ -119,7 +118,7 @@ class GraalSdkSuite extends CatsEffectSuite:
         }
         command[Int]("shared") { handle { IO.pure(5) } }
       }
-      GraalManager.resource(home.resolve("data"), IO.pure(app.commandSdk)).use { manager =>
+      GraalManager.resource(home.resolve("data"), IO.pure(GraalCommandSdk(app))).use { manager =>
         run(manager, """
           if (tools.external !== undefined || tools.mixed.hidden !== undefined) throw Error("leaked command");
           if (typeof tools.mixed === "function") throw Error("leaked callable namespace");
@@ -149,7 +148,7 @@ class GraalSdkSuite extends CatsEffectSuite:
           handle { IO.pure(input.value) }
         }
       }
-      GraalManager.resource(home.resolve("tasks"), IO.pure(app.commandSdk)).use { manager =>
+      GraalManager.resource(home.resolve("tasks"), IO.pure(GraalCommandSdk(app))).use { manager =>
         run(manager, """
           for (const input of [{url:"https://example.com", body:"payload", query:{x:1}}, [], [1,"x"], null, false, 0, ""]) {
             const result = await tools.json(input);
@@ -175,7 +174,7 @@ class GraalSdkSuite extends CatsEffectSuite:
     temporary.use { home =>
       groot.schedule.Scheduler.resource(home.resolve("schedule"), startLoop = false).use { scheduler =>
         val app = httpApp { groot.schedule.ScheduleRoutes.register(scheduler) }
-        GraalManager.resource(home.resolve("tasks"), IO.pure(app.commandSdk)).use { manager =>
+        GraalManager.resource(home.resolve("tasks"), IO.pure(GraalCommandSdk(app))).use { manager =>
           run(manager, """
             const body = {every:"5m", command:["echo","hello"], enabled:false};
             const created = await tools.schedule.new({name:"example", body});
@@ -197,7 +196,7 @@ class GraalSdkSuite extends CatsEffectSuite:
     temporary.use { home =>
       groot.sqlite.SqliteService.resource(home.resolve("sqlite")).use { sqlite =>
         val app = httpApp { groot.sqlite.SqliteRoutes.register(sqlite) }
-        GraalManager.resource(home.resolve("tasks"), IO.pure(app.commandSdk)).use { manager =>
+        GraalManager.resource(home.resolve("tasks"), IO.pure(GraalCommandSdk(app))).use { manager =>
           run(manager, """
             const env = await tools.sqlite.env.add({name: "from-js"});
             const result = await tools.sqlite.execute({env: "from-js", sql:
@@ -238,7 +237,7 @@ class GraalSdkSuite extends CatsEffectSuite:
             } }
           }
         }
-        _ <- GraalManager.resource(home.resolve("data"), IO.pure(app.commandSdk)).use { manager =>
+        _ <- GraalManager.resource(home.resolve("data"), IO.pure(GraalCommandSdk(app))).use { manager =>
           run(manager, "const results = await Promise.all([tools.arrive(), tools.arrive()]); console.log(results.map(r => r.body).sort().join(','));")
             .map { (task, log) => assertEquals(task.state, "succeeded", log); assert(log.contains("1,2"), log) }
         }
@@ -257,7 +256,7 @@ class GraalSdkSuite extends CatsEffectSuite:
             handle { (started.complete(()) *> IO.never[Unit]).onCancel(finalizing.complete(()) *> release.get) }
           }
         }
-        _ <- GraalManager.managed(home.resolve("data"), GraalRunner.resource(IO.pure(app.commandSdk)), Limits.taskBytes).use { manager =>
+        _ <- GraalManager.managed(home.resolve("data"), GraalRunner.resource(IO.pure(GraalCommandSdk(app))), Limits.taskBytes).use { manager =>
           (for
             first <- manager.start("await tools.wait();", "5s", "10s")
             _ <- started.get.timeout(5.seconds)
@@ -286,7 +285,7 @@ class GraalSdkSuite extends CatsEffectSuite:
           command[Unit]("wait") { handle { IO.never[Unit].onCancel(cancelled.complete(()).void) } }
           command[PlainText]("health") { handle { IO.pure(PlainText("ok")) } }
         }
-        _ <- GraalManager.resource(home.resolve("data"), IO.pure(app.commandSdk)).use { manager =>
+        _ <- GraalManager.resource(home.resolve("data"), IO.pure(GraalCommandSdk(app))).use { manager =>
           for
             timed <- run(manager, "await tools.wait();", timeout = "500ms")
             _ = assertEquals(timed._1.error.map(_.code), Some("timeout"), timed._2)
@@ -308,10 +307,10 @@ class GraalSdkSuite extends CatsEffectSuite:
       for
         active <- Ref.of[IO, Int](0)
         app = httpApp {
-          command[PlainText]("large") { handle { IO.pure(PlainText("x" * (CommandSdk.maxBytes + 1))) } }
+          command[PlainText]("large") { handle { IO.pure(PlainText("x" * (GraalCommandSdk.maxBytes + 1))) } }
           command[Unit]("wait") { handle { active.update(_ + 1).bracket(_ => IO.never[Unit])(_ => active.update(_ - 1)) } }
         }
-        _ <- GraalManager.resource(home.resolve("data"), IO.pure(app.commandSdk)).use { manager =>
+        _ <- GraalManager.resource(home.resolve("data"), IO.pure(GraalCommandSdk(app))).use { manager =>
           for
             bounded <- run(manager, """
               try { await tools.large(); throw Error("missing response bound"); }
@@ -331,13 +330,13 @@ class GraalSdkSuite extends CatsEffectSuite:
   test("the complete live registry includes GraalJS itself and handles nested tasks through text bodies and SSE") {
     temporary.use { home =>
       for
-        commands <- Deferred[IO, CommandSdk]
+        commands <- Deferred[IO, GraalCommandSdk]
         _ <- GraalManager.resource(home.resolve("data"), commands.get).use { manager =>
           val app = httpApp {
             GraalJsRoutes.register(manager)
             command[PlainText]("health") { handle { IO.pure(PlainText("ok")) } }
           }
-          commands.complete(app.commandSdk) *> run(manager, """
+          commands.complete(GraalCommandSdk(app)) *> run(manager, """
             const child = await tools.graaljs.start({cpu: "1s", timeout: "5s", body: 'console.log((await tools.health()).body)'});
             const logs = await tools.graaljs["logs-follow"]({id: child.body.id});
             const status = await tools.graaljs.status({id: child.body.id});

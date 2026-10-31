@@ -30,7 +30,6 @@ final class Application private[framework] (
     .map(b => f"${b & 0xff}%02x").mkString + "\""
   private val ordered = endpoints.sortBy(e => (e.spec.path.priority, e.spec.path.value, e.spec.method)).reverse
   private val publicEndpoints = ordered.filter(endpoint => endpoint.spec.exposedOn.exists(_ != Client.graaljs))
-  private val graalEndpoints = ordered.filter(_.spec.exposedOn.contains(Client.graaljs))
   private val docs = PathPattern.parse(openApiSettings.endpoint)
 
   private def httpClient(visible: Vector[BoundEndpoint]): HttpApp[IO] = Kleisli { request =>
@@ -43,7 +42,15 @@ final class Application private[framework] (
 
   val httpApp: HttpApp[IO] = httpClient(publicEndpoints)
 
-  lazy val commandSdk: CommandSdk = new CommandSdk(graalEndpoints, httpClient(graalEndpoints))
+  def inProcess(client: Client): InProcessApi =
+    val visible = ordered.filter(_.spec.exposedOn.contains(client))
+    val descriptions = visible.map { endpoint =>
+      val spec = endpoint.spec
+      InProcessApi.Endpoint(spec.operationId, spec.method, spec.path.value, spec.inputs.map { input =>
+        InProcessApi.Input(input.name, input.location, input.schema.node(), input.bodyMediaType)
+      })
+    }
+    new InProcessApi(descriptions, httpClient(visible))
 
   def resource: Resource[IO, org.http4s.server.Server] =
     EmberServerBuilder.default[IO]
