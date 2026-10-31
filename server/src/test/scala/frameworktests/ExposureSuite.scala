@@ -16,7 +16,7 @@ class ExposureSuite extends CatsEffectSuite:
     io.circe.parser.parse(app.openApiJson).toOption.get.hcursor
       .downField("paths").downField(path).downField("get").get[List[String]]("x-expose-on").toOption.get
 
-  test("default exposure and every client combination drive OpenAPI, HTTP and per-client in-process views") {
+  test("default exposure and every client combination appear in endpoint metadata and control public HTTP") {
     val combinations = (1 to 3).toVector.flatMap(Client.values.toVector.combinations(_)).zipWithIndex
     val app = httpApp {
       command[Int]("default") { handle { IO.pure(42) } }
@@ -30,19 +30,17 @@ class ExposureSuite extends CatsEffectSuite:
     assertEquals(exposure(app, "/default"), List("cli", "codemode", "graaljs"))
     combinations.traverse_ { (clients, index) =>
       val id = s"choice$index"
+      val endpoint = app.endpoints.find(_.operationId == id).get
       assertEquals(exposure(app, s"/$id"), clients.map(_.toString).toList)
+      assertEquals(endpoint.exposedOn, clients.toSet)
       for
         http <- app.httpApp(Request[IO](uri = Uri.unsafeFromString(s"/$id")))
-        _ = assertEquals(http.status, if clients.exists(_ != graaljs) then Status.Ok else Status.NotFound)
-        _ <- Client.values.toVector.traverse_ { client =>
-          val api = app.inProcess(client)
-          assertEquals(api.endpoints.exists(_.operationId == id), clients.contains(client))
-          api.httpApp(Request[IO](uri = Uri.unsafeFromString(s"/$id"))).flatMap { response =>
-            assertEquals(response.status, if clients.contains(client) then Status.Ok else Status.NotFound)
-            response.as[String].map { text => if clients.contains(client) then assertEquals(text, index.toString) }
-          }
-        }
-      yield ()
+        local <- endpoint.httpApp(Request[IO](uri = Uri.unsafeFromString(s"/$id")))
+        text <- local.as[String]
+      yield
+        assertEquals(http.status, if clients.exists(_ != graaljs) then Status.Ok else Status.NotFound)
+        assertEquals(local.status, Status.Ok)
+        assertEquals(text, index.toString)
     }
   }
 
@@ -123,11 +121,11 @@ class ExposureSuite extends CatsEffectSuite:
         }
       }
       before <- calls.get
-      api = app.inProcess(graaljs)
-      valid <- api.httpApp(Request[IO](uri = Uri.unsafeFromString("/internal/read?number=1")))
+      endpoint = app.endpoints.find(_.operationId == "internal.read").get
+      valid <- endpoint.httpApp(Request[IO](uri = Uri.unsafeFromString("/internal/read?number=1")))
       text <- valid.as[String]
-      invalid <- api.httpApp(Request[IO](uri = Uri.unsafeFromString("/internal/read?number=0")))
-      denied <- api.httpApp(Request[IO](uri = Uri.unsafeFromString("/internal/read?number=2")))
+      invalid <- endpoint.httpApp(Request[IO](uri = Uri.unsafeFromString("/internal/read?number=0")))
+      denied <- endpoint.httpApp(Request[IO](uri = Uri.unsafeFromString("/internal/read?number=2")))
       after <- calls.get
     yield
       assertEquals(before, 0)

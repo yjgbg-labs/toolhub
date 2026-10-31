@@ -4,17 +4,14 @@ import cats.effect.IO
 import framework.Client
 import framework.http.InputLocation
 import framework.model.SchemaNode
-import framework.runtime.{Application, InProcessApi}
+import framework.runtime.{Application, Endpoint}
 import io.circe.{Json, JsonObject}
 import java.nio.charset.StandardCharsets.UTF_8
-import org.http4s.{Header, HttpApp, Method, Query, Request, Uri}
+import org.http4s.{Header, Method, Query, Request, Uri}
 import org.typelevel.ci.CIString
 
 /** GraalJS calling conventions and bounds over the framework's in-process HTTP API. */
-final class GraalCommandSdk private (
-    endpoints: Vector[InProcessApi.Endpoint],
-    httpApp: HttpApp[IO]
-):
+final class GraalCommandSdk private (endpoints: Vector[Endpoint]):
   private val byId = endpoints.map { spec =>
     val names = spec.inputs.map(input => if input.location == InputLocation.Body then "body" else input.name)
     require(names.distinct.size == names.size, s"Duplicate SDK parameter name (including reserved body): ${spec.operationId}")
@@ -79,7 +76,7 @@ final class GraalCommandSdk private (
       val text = if media == "text/plain" then value.asString.getOrElse(throw new IllegalArgumentException("body must be a string")) else value.noSpaces
       base.withEntity(text).putHeaders(Header.Raw(CIString("Content-Type"), media))
     }
-    httpApp(request).flatMap { response =>
+    spec.httpApp(request).flatMap { response =>
       response.body.take(GraalCommandSdk.maxBytes + 1L).compile.to(Array).flatMap { bytes => IO {
         require(bytes.length <= GraalCommandSdk.maxBytes, "SDK response exceeds 1 MiB")
         val text = new String(bytes, UTF_8)
@@ -106,8 +103,7 @@ final class GraalCommandSdk private (
 
 object GraalCommandSdk:
   val maxBytes = 1024 * 1024
-  val empty: GraalCommandSdk = new GraalCommandSdk(Vector.empty, org.http4s.HttpApp.notFound[IO])
+  val empty: GraalCommandSdk = new GraalCommandSdk(Vector.empty)
 
   def apply(app: Application): GraalCommandSdk =
-    val api = app.inProcess(Client.graaljs)
-    new GraalCommandSdk(api.endpoints, api.httpApp)
+    new GraalCommandSdk(app.endpoints.filter(_.exposedOn.contains(Client.graaljs)))

@@ -204,8 +204,8 @@ UTF-8 字符跨写入块也能正确处理；断开日志连接只停止订阅�
 参数格式和响应结构一致。命令声明增删后，SDK 随服务启动生成，无需维护独立的方法列表。
 工具树由 Scala `ProxyObject` / `ProxyExecutable` 直接注入每个 Context；Promise、JSON 对象和错误
 使用该 Context 的原生构造器创建，不加载额外的 JavaScript SDK 包装代码。
-框架通过 `app.inProcess(client)` 提供按暴露范围筛选的只读端点描述和原始 HTTP 调用入口。
-`groot.graaljs.GraalCommandSdk(app)` 据此实现参数映射、同名校验、响应包装及 SDK 大小限制；
+框架通过只读 `app.endpoints` 列表公开端点声明、`exposedOn` 和各端点绑定的 HTTP 调用入口。
+`groot.graaljs.GraalCommandSdk(app)` 自行筛选暴露给 GraalJS 的端点，实现参数映射、同名校验、响应包装及 SDK 大小限制；
 这些 SDK 规则全部位于 `groot/graaljs`，框架继续负责 HTTP 校验、中间件和执行。
 例如 `schedule.list` 映射为 `tools.schedule.list()`，带连字符的方法使用方括号。
 参数定义沿用 `/openapi.json`；GraalJS 内不提供 `search()`。

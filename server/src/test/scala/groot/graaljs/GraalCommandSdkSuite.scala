@@ -57,3 +57,29 @@ class GraalCommandSdkSuite extends CatsEffectSuite:
     } } }
     assert(intercept[IllegalArgumentException](GraalCommandSdk(reserved)).getMessage.contains("reserved body"))
   }
+
+  test("SDK calls use the selected endpoint even when another route matches the generated URL") {
+    val app = httpApp { routes {
+      get("/values/{id}") {
+        operationId("values.read")
+        val id = path[String]("id")
+        val ok = response.text(200) {}
+        handle { IO.pure(ok(s"selected:${id.value}")) }
+      }
+      get("/values/fixed") {
+        operationId("values.fixed")
+        val ok = response.text(200) {}
+        handle { IO.pure(ok("static route")) }
+      }
+    } }
+    val sdk = GraalCommandSdk(app)
+    for
+      dynamic <- sdk.call("values.read", Json.obj("id" -> Json.fromString("fixed")))
+      fixed <- sdk.call("values.fixed")
+      http <- app.httpApp(org.http4s.Request[IO](uri = org.http4s.Uri.unsafeFromString("/values/fixed")))
+      text <- http.as[String]
+    yield
+      assertEquals(dynamic.hcursor.get[String]("body"), Right("selected:fixed"))
+      assertEquals(fixed.hcursor.get[String]("body"), Right("static route"))
+      assertEquals(text, "static route")
+  }

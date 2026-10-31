@@ -391,13 +391,15 @@ HTTP/OpenAPI contract retain their original formats.
 
 ### In-process clients
 
-`app.inProcess(client)` returns an immutable endpoint description vector and an
-`HttpApp[IO]` filtered by that client's exposure. Descriptions contain only the
-operation ID, method, path and input metadata; handlers, input slots and codecs
-remain private to the framework. Requests use ordinary HTTP locations and raw
-HTTP responses, with the same validation, middleware and error recovery.
+`app.endpoints` is an immutable vector of endpoint declarations. Each endpoint
+exposes its operation ID, method, path, inputs, `exposedOn`, and an `HttpApp[IO]`
+bound to that endpoint. Handlers, input slots and codecs remain private to the
+framework. Requests use ordinary HTTP locations and raw HTTP responses, with the
+same validation, middleware and error recovery. A bound entry point checks its
+own method/path and cannot dispatch to a different endpoint or the OpenAPI route.
 
-GraalJS constructs `groot.graaljs.GraalCommandSdk(app)` from that view. Flattened
+`groot.graaljs.GraalCommandSdk(app)` filters this list by `exposedOn` itself and
+invokes the selected endpoint directly, avoiding competing HTTP routes. Flattened
 arguments, direct body inputs, SDK name checks, response envelopes and the 1 MiB
 SDK limits belong to `groot/graaljs`. The framework has no dependency on that SDK.
 
