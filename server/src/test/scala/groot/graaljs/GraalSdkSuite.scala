@@ -133,6 +133,39 @@ class GraalSdkSuite extends CatsEffectSuite:
     }
   }
 
+  test("SQLite environments and SQL are available through the actual GraalJS command SDK") {
+    temporary.use { home =>
+      groot.sqlite.SqliteService.resource(home.resolve("sqlite")).use { sqlite =>
+        val app = httpApp { groot.sqlite.SqliteRoutes.register(sqlite) }
+        GraalManager.resource(home.resolve("tasks"), IO.pure(app.commandSdk)).use { manager =>
+          run(manager, """
+            const env = await tools.sqlite.env.add({query: {name: "from-js"}});
+            const result = await tools.sqlite.execute({query: {env: "from-js", sql:
+              "CREATE TABLE values_table(id INTEGER PRIMARY KEY, value); INSERT INTO values_table VALUES (1, 'hello'); SELECT value, 9223372036854775807 FROM values_table"
+            }});
+            if (result.body.results[1].changes !== 1) throw Error("missing write count");
+            const row = result.body.results[2].rows[0];
+            if (row[0] !== "hello" || row[1] !== "9223372036854775807") throw Error("invalid SQL values");
+            try {
+              await tools.sqlite.execute({query: {env: "from-js", sql: "INSERT INTO values_table VALUES (1, 'duplicate')"}});
+              throw Error("expected constraint failure");
+            } catch (error) {
+              if (error.name !== "ApiError" || error.response.status !== 409) throw error;
+            }
+            await tools.sqlite.env.delete({query: {name: "from-js"}});
+            await tools.sqlite.env.import({query: {name: "imported", path: env.body.path}});
+            const entries = (await tools.sqlite.env.list()).body;
+            if (entries.length !== 1 || entries[0].name !== "imported" || entries[0].managed) throw Error("invalid environments");
+            console.log(JSON.stringify(row));
+          """).map { (task, log) =>
+            assertEquals(task.state, "succeeded", log)
+            assert(log.contains("[\"hello\",\"9223372036854775807\"]"), log)
+          }
+        }
+      }
+    }
+  }
+
   test("Promise.all starts independent command IO concurrently and resumes on the guest thread") {
     temporary.use { home =>
       for

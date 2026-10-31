@@ -3,6 +3,7 @@ package framework.model
 final case class Schema[A](node: () => SchemaNode)
 
 enum SchemaNode:
+  case AnyValue
   case Primitive(kind: String, format: Option[String] = None)
   case ArrayOf(element: () => SchemaNode)
   case Dictionary(value: () => SchemaNode)

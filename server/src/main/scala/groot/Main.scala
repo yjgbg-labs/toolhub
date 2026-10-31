@@ -6,13 +6,15 @@ import framework.runtime.CommandSdk
 import groot.jobs.JobsRoutes
 import groot.graaljs.{GraalJsRoutes, GraalManager}
 import groot.schedule.{Scheduler, ScheduleRoutes}
+import groot.sqlite.{SqliteRoutes, SqliteService}
 
 object Main extends IOApp.Simple:
   def run: IO[Unit] = (for
     commands <- Resource.eval(Deferred[IO, CommandSdk])
     scheduler <- Scheduler.resource()
+    sqlite <- SqliteService.resource()
     graaljs <- GraalManager.resource(commands = commands.get)
-  yield (scheduler, graaljs, commands)).use { (scheduler, graaljs, commands) =>
+  yield (scheduler, sqlite, graaljs, commands)).use { (scheduler, sqlite, graaljs, commands) =>
     val app = httpApp {
       server {
         host("0.0.0.0")
@@ -30,6 +32,7 @@ object Main extends IOApp.Simple:
       ScheduleRoutes.register(scheduler)
       JobsRoutes.register()
       GraalJsRoutes.register(graaljs)
+      SqliteRoutes.register(sqlite)
       command[PlainText]("health") {
         handle { IO.pure(PlainText("ok")) }
       }

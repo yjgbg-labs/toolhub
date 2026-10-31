@@ -212,6 +212,56 @@ groot-cli graaljs start --cpu 2s --timeout 30s --body '
 当前打包目标为 Linux AMD64，使用 GraalVM `25.4.4.1.1` Community isolate 和 SQLite JDBC
 `3.54.1.0`，原生资源随 assembly JAR 交付；JDK 25 启动参数启用 `--enable-native-access=ALL-UNNAMED`。
 
+### SQLite 环境与 SQL
+
+`sqlite` 整组声明 `exposeOn(cli, codemode, graaljs)`，三端共享服务端的数据库与环境注册表。
+
+```sh
+groot-cli sqlite env list
+groot-cli sqlite env add --name scratch
+groot-cli sqlite env import --name existing --path /absolute/server/path/data.sqlite3
+groot-cli sqlite execute --env scratch --sql "CREATE TABLE notes(id INTEGER PRIMARY KEY, text TEXT)"
+groot-cli sqlite execute --env scratch --sql "INSERT INTO notes(text) VALUES ('hello'); SELECT * FROM notes"
+groot-cli sqlite env delete --name scratch
+```
+
+- `add` 创建空数据库，返回 `{name, path, managed: true}`；同名注册返回 409，不覆盖已有环境。
+- `import` 原地引用服务端已有的绝对文件路径，返回 `managed: false`。注册时只读校验，之后的
+  查询能看到外部程序的更新，包括尚未 checkpoint 的 WAL 数据；SQL 写入也作用于原文件。
+- `delete` 只删除名称绑定，保留数据库文件。正在执行的调用可以完成；后续按旧名称访问返回 404。
+  可以使用返回过的 `path` 重新导入数据库；再次 `add` 同名环境会创建一个新的空文件。
+- 环境名允许 Unicode，最多 128 个字符。托管文件使用随机文件名，不将环境名解释为路径。
+- 注册表为 `$SPROUT_HOME/sqlite/environments.sqlite3`，托管数据库位于
+  `$SPROUT_HOME/sqlite/databases/`。注册表持久化，同一目录只允许一个服务实例持有。
+  已注册的数据库文件如果消失，执行报错，不会自动创建替代文件。
+
+Code Mode 和 GraalJS 使用相同的调用：
+
+```js
+await tools.sqlite.env.add({query: {name: "scratch"}});
+const result = await tools.sqlite.execute({query: {
+  env: "scratch",
+  sql: "SELECT 42 AS answer, 'hello' AS text"
+}});
+console.log(result.body.results[0]);
+// {columns: ["answer", "text"], rows: [[42, "hello"]], changes: 0}
+```
+
+一次 `execute` 可包含多条 SQL，在同一个独立连接上按顺序执行，返回
+`{results: [{columns, rows, changes}, ...]}`。支持注释、字符串中的分号、触发器与 `RETURNING`。
+`columns` 保存列顺序及重复列名，`rows` 中每行按相同顺序排列；非查询语句的列与行为空。
+`changes` 为该语句造成的行变更数，包含触发器，不是整个事务提交后的净变更数。
+
+SQLite 默认逐语句自动提交。需要原子执行时，在同一次调用中使用 `BEGIN; ...; COMMIT;`；
+首次错误会停止后续语句，已自动提交的数据保留，未提交事务在连接关闭时回滚。
+临时表、连接级 PRAGMA 和事务状态只在本次调用内有效。
+
+结果中的 NULL、文本、普通整数和浮点数使用对应 JSON 值。超出 JavaScript 安全整数范围的
+整数用十进制字符串返回；BLOB 用 `{base64: "..."}` 返回，无穷浮点值用字符串返回。
+SQL 上限为 1 MiB，超额返回 400；整次调用结果最多 10000 行、512 KiB，结果超额返回 413。可用 `LIMIT`
+和选择所需列控制结果大小。取消调用会中断原生 SQLite 查询，并等待工作线程和连接清理完成。
+数据库锁等待最多 5 秒，busy/locked 返回 503，约束冲突返回 409，普通 SQL 错误返回 400。
+
 ### 本地 jobs
 
 在项目目录执行 `groot-cli jobs --job <任务>`；服务端根据隐式传入的 cwd 读取 `jobs.yaml`，`--parallel` 默认 `5`。
