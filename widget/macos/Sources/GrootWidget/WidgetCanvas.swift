@@ -15,7 +15,7 @@ final class WidgetCanvas: NSView {
     override func mouseDown(with event: NSEvent) { drag?(event) }
 
     private let labelColor = NSColor(srgbRed: 170/255, green: 181/255, blue: 187/255, alpha: 1)
-    private let offColor = NSColor(srgbRed: 38/255, green: 45/255, blue: 49/255, alpha: 1)
+    private let offColor = NSColor(srgbRed: 8/255, green: 10/255, blue: 12/255, alpha: 1)
 
     override func draw(_ dirtyRect: NSRect) {
         let font = NSFont.monospacedSystemFont(ofSize: CGFloat(settings.fontSize), weight: .regular)
