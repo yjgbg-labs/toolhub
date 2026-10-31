@@ -8,17 +8,16 @@ final class WidgetCanvas: NSView {
     var connected = false
     var drag: ((NSEvent) -> Void)?
     override var isFlipped: Bool { true }
+    override var isOpaque: Bool { false }
+    override var allowsVibrancy: Bool { false }
     override var acceptsFirstResponder: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) { drag?(event) }
 
-    static let panel = NSColor(srgbRed: 13/255, green: 17/255, blue: 20/255, alpha: 1)
     private let labelColor = NSColor(srgbRed: 170/255, green: 181/255, blue: 187/255, alpha: 1)
     private let offColor = NSColor(srgbRed: 38/255, green: 45/255, blue: 49/255, alpha: 1)
 
     override func draw(_ dirtyRect: NSRect) {
-        Self.panel.setFill()
-        bounds.fill()
         let font = NSFont.monospacedSystemFont(ofSize: CGFloat(settings.fontSize), weight: .regular)
         let rowHeight = CGFloat(settings.rowHeight)
         if items.isEmpty {

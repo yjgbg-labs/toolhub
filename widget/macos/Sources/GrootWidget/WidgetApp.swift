@@ -31,7 +31,12 @@ final class WidgetApp: NSObject, NSApplicationDelegate {
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        let container = NSView(frame: panel.contentView!.bounds)
+        let container = NSVisualEffectView(frame: panel.contentView!.bounds)
+        container.material = .hudWindow
+        container.blendingMode = .behindWindow
+        // The panel never becomes key; keep its backdrop blurred while other apps have focus.
+        container.state = .active
+        container.appearance = NSAppearance(named: .darkAqua)
         container.wantsLayer = true
         container.layer?.cornerRadius = 10
         container.layer?.masksToBounds = true
