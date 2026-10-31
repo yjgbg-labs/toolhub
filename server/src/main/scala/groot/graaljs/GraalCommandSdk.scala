@@ -1,48 +1,54 @@
-package framework.runtime
+package groot.graaljs
 
 import cats.effect.IO
-import framework.http.*
+import framework.Client
+import framework.http.InputLocation
 import framework.model.SchemaNode
+import framework.runtime.{Application, Endpoint}
 import io.circe.{Json, JsonObject}
 import java.nio.charset.StandardCharsets.UTF_8
-import org.http4s.{Header, HttpApp, Method, Query, Request, Uri}
+import org.http4s.{Header, Method, Query, Request, Uri}
 import org.typelevel.ci.CIString
 
-/** An in-process client of the frozen command declarations, using the same HTTP validation and middleware. */
-final class CommandSdk private[framework] (
-    endpoints: Vector[BoundEndpoint],
-    httpApp: HttpApp[IO]
-):
-  private val byId = endpoints.map(endpoint => endpoint.spec.operationId -> endpoint.spec).toMap
+/** GraalJS calling conventions and bounds over the framework's in-process HTTP API. */
+final class GraalCommandSdk private (endpoints: Vector[Endpoint]):
+  private val byId = endpoints.map { spec =>
+    val names = spec.inputs.map(input => if input.location == InputLocation.Body then "body" else input.name)
+    require(names.distinct.size == names.size, s"Duplicate SDK parameter name (including reserved body): ${spec.operationId}")
+    spec.operationId -> spec
+  }.toMap
 
   val commands: Vector[String] = byId.keys.toVector.sorted.map { id =>
     require(id.matches("[A-Za-z][A-Za-z0-9_-]*(\\.[A-Za-z][A-Za-z0-9_-]*)*"), s"Invalid SDK operationId: $id")
     id
   }
 
-  def call(id: String, input: Json): IO[Json] = IO.defer {
+  def call(id: String, input: Json): IO[Json] = call(id, Some(input))
+
+  def call(id: String, input: Option[Json] = None): IO[Json] = IO.defer {
     val spec = byId.getOrElse(id, throw new IllegalArgumentException(s"Unknown command: $id"))
-    val args = input.asObject.getOrElse(throw new IllegalArgumentException("Command input must be an object"))
-    val locations = spec.inputs.map(_.location.toString.toLowerCase).toSet
-    require(args.keys.forall(locations), s"Unknown input group for $id")
+    val bodyInput = spec.inputs.find(_.location == InputLocation.Body)
+    val bodyOnly = bodyInput.nonEmpty && spec.inputs.size == 1
+    val args = if bodyOnly then JsonObject.empty else
+      input.fold(JsonObject.empty)(_.asObject.getOrElse(throw new IllegalArgumentException("Command input must be an object")))
+    val names = spec.inputs.map(parameter => if parameter.location == InputLocation.Body then "body" else parameter.name).toSet
+    require(args.keys.forall(names), s"Unknown parameter for $id")
     val groups = Vector(InputLocation.Path, InputLocation.Query, InputLocation.Header, InputLocation.Cookie).map { location =>
-      val name = location.toString.toLowerCase
-      val group = args(name).map(_.asObject.getOrElse(throw new IllegalArgumentException(s"$name must be an object"))).getOrElse(JsonObject.empty)
       val declared = spec.inputs.filter(_.location == location)
-      require(group.keys.forall(key => declared.exists(_.name == key)), s"Unknown $name parameter for $id")
+      val group = JsonObject.fromIterable(declared.flatMap(parameter => args(parameter.name).map(parameter.name -> _)))
       declared.foreach { parameter =>
         group(parameter.name).foreach { value =>
-          require(matches(parameter.schema.node(), value), s"Invalid type for $name.${parameter.name}")
+          require(matches(parameter.schema, value), s"Invalid type for ${parameter.name}")
         }
       }
       location -> group
     }.toMap
     def scalar(value: Json): String = value.asString.getOrElse(value.noSpaces)
-    val path = spec.path.segments.map { segment =>
+    val path = spec.path.split("/").toVector.filter(_.nonEmpty).map { segment =>
       if segment.startsWith("{") then
         val name = segment.drop(1).dropRight(1)
-        val value = scalar(groups(InputLocation.Path)(name).getOrElse(throw new IllegalArgumentException(s"Missing path.$name")))
-        require(value.nonEmpty && value != "." && value != "..", s"Invalid path.$name")
+        val value = scalar(groups(InputLocation.Path)(name).getOrElse(throw new IllegalArgumentException(s"Missing $name")))
+        require(value.nonEmpty && value != "." && value != "..", s"Invalid path parameter: $name")
         value
       else segment
     }
@@ -64,14 +70,15 @@ final class CommandSdk private[framework] (
     val base = allHeaders.foldLeft(Request[IO](method = Method.fromString(spec.method).toOption.get, uri = uri)) {
       (request, header) => request.putHeaders(header)
     }
-    val request = args("body").fold(base) { value =>
-      val media = spec.inputs.find(_.location == InputLocation.Body).get.bodyMediaType.get
+    val body = if bodyOnly then input else bodyInput.flatMap(_ => args("body"))
+    val request = body.fold(base) { value =>
+      val media = bodyInput.get.bodyMediaType.get
       val text = if media == "text/plain" then value.asString.getOrElse(throw new IllegalArgumentException("body must be a string")) else value.noSpaces
       base.withEntity(text).putHeaders(Header.Raw(CIString("Content-Type"), media))
     }
-    httpApp(request).flatMap { response =>
-      response.body.take(CommandSdk.maxBytes + 1L).compile.to(Array).flatMap { bytes => IO {
-        require(bytes.length <= CommandSdk.maxBytes, "SDK response exceeds 1 MiB")
+    spec.httpApp(request).flatMap { response =>
+      response.body.take(GraalCommandSdk.maxBytes + 1L).compile.to(Array).flatMap { bytes => IO {
+        require(bytes.length <= GraalCommandSdk.maxBytes, "SDK response exceeds 1 MiB")
         val text = new String(bytes, UTF_8)
         val media = response.contentType.map(value => s"${value.mediaType.mainType}/${value.mediaType.subType}").getOrElse("")
         val body = if bytes.isEmpty then Json.Null
@@ -94,6 +101,9 @@ final class CommandSdk private[framework] (
     case SchemaNode.Nullable(element) => value.isNull || matches(element(), value)
     case _ => false
 
-object CommandSdk:
+object GraalCommandSdk:
   val maxBytes = 1024 * 1024
-  val empty: CommandSdk = new CommandSdk(Vector.empty, org.http4s.HttpApp.notFound[IO])
+  val empty: GraalCommandSdk = new GraalCommandSdk(Vector.empty)
+
+  def apply(app: Application): GraalCommandSdk =
+    new GraalCommandSdk(app.endpoints.filter(_.exposedOn.contains(Client.graaljs)))

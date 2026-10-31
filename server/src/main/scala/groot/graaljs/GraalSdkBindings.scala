@@ -30,10 +30,10 @@ private[graaljs] final class GraalSdkBindings(
       val resolve = callbacks(0)
       val reject = callbacks(1)
       try
-        val input = arguments.headOption.fold("{}") { argument =>
+        val input = arguments.headOption.fold("") { argument =>
           val encoded = stringify.execute(argument)
           // JSON.stringify(undefined) yields undefined, while JSON.stringify(null) yields the string "null".
-          if encoded.isNull && argument.isNull then "{}"
+          if encoded.isNull && argument.isNull then ""
           else
             require(encoded.isString, "Command input must be JSON serializable")
             encoded.asString()

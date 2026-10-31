@@ -20,7 +20,7 @@ import scala.util.Try
 import sttp.apispec.openapi.circe.*
 
 final class Application private[framework] (
-    endpoints: Vector[BoundEndpoint],
+    boundEndpoints: Vector[BoundEndpoint],
     val serverSettings: ServerSettings,
     val openApiSettings: OpenApiSettings,
     val openApi: sttp.apispec.openapi.OpenAPI
@@ -28,22 +28,30 @@ final class Application private[framework] (
   val openApiJson: String = Printer.noSpaces.copy(sortKeys = true).print(openApi.asJson)
   private val etag = "\"" + MessageDigest.getInstance("SHA-256").digest(openApiJson.getBytes(UTF_8))
     .map(b => f"${b & 0xff}%02x").mkString + "\""
-  private val ordered = endpoints.sortBy(e => (e.spec.path.priority, e.spec.path.value, e.spec.method)).reverse
+  private val ordered = boundEndpoints.sortBy(e => (e.spec.path.priority, e.spec.path.value, e.spec.method)).reverse
   private val publicEndpoints = ordered.filter(endpoint => endpoint.spec.exposedOn.exists(_ != Client.graaljs))
-  private val graalEndpoints = ordered.filter(_.spec.exposedOn.contains(Client.graaljs))
   private val docs = PathPattern.parse(openApiSettings.endpoint)
 
-  private def httpClient(visible: Vector[BoundEndpoint]): HttpApp[IO] = Kleisli { request =>
-    IO.defer(dispatch(request, visible)).handleErrorWith { error =>
+  private def httpHandler(run: (Request[IO], Vector[String]) => IO[Response[IO]]): HttpApp[IO] = Kleisli { request =>
+    IO.defer {
+      val actual = request.uri.path.segments.map(_.decoded()).toVector
+      val segments = if actual.lastOption.contains("") then actual.dropRight(1) else actual
+      run(request, segments)
+    }.handleErrorWith { error =>
       IO(scribe.error("Request failed", error)).as(errorResponse(500, "internal_error", "Internal server error"))
     }.map { response =>
       if request.method.name == "HEAD" then response.withBodyStream(fs2.Stream.empty) else response
     }
   }
 
-  val httpApp: HttpApp[IO] = httpClient(publicEndpoints)
+  val httpApp: HttpApp[IO] = httpHandler(dispatch)
 
-  lazy val commandSdk: CommandSdk = new CommandSdk(graalEndpoints, httpClient(graalEndpoints))
+  val endpoints: Vector[Endpoint] = ordered.map { endpoint =>
+    val spec = endpoint.spec
+    new Endpoint(spec.operationId, spec.method, spec.path.value, spec.inputs.map { input =>
+      Endpoint.Input(input.name, input.location, input.schema.node(), input.bodyMediaType)
+    }, spec.exposedOn, httpHandler((request, segments) => route(request, segments, Vector(endpoint))))
+  }
 
   def resource: Resource[IO, org.http4s.server.Server] =
     EmberServerBuilder.default[IO]
@@ -56,9 +64,7 @@ final class Application private[framework] (
 
   def serve: IO[Nothing] = resource.useForever
 
-  private def dispatch(request: Request[IO], visible: Vector[BoundEndpoint]): IO[Response[IO]] =
-    val actual = request.uri.path.segments.map(_.decoded()).toVector
-    val segments = if actual.lastOption.contains("") then actual.dropRight(1) else actual
+  private def dispatch(request: Request[IO], segments: Vector[String]): IO[Response[IO]] =
     if docs.matches(segments).nonEmpty then
       if Set("GET", "HEAD").contains(request.method.name) then
         val matches = headerValues(request, "If-None-Match").flatMap(_.split(",")).exists { value =>
@@ -69,16 +75,18 @@ final class Application private[framework] (
         IO.pure(result.putHeaders(Header.Raw(CIString("ETag"), etag)))
       else IO.pure(errorResponse(405, "method_not_allowed", "Method not allowed")
         .putHeaders(Header.Raw(CIString("Allow"), "GET, HEAD")))
-    else
-      val matches = visible.flatMap(endpoint => endpoint.spec.path.matches(segments).map(params => endpoint -> params))
-      matches.headOption match
-        case None => IO.pure(errorResponse(404, "not_found", "Route not found"))
-        case Some((best, _)) =>
-          val samePath = matches.filter(_._1.spec.path.value == best.spec.path.value)
-          samePath.find(_._1.spec.method == request.method.name) match
-            case None => IO.pure(errorResponse(405, "method_not_allowed", "Method not allowed")
-              .putHeaders(Header.Raw(CIString("Allow"), samePath.map(_._1.spec.method).distinct.sorted.mkString(", "))))
-            case Some((endpoint, params)) => execute(endpoint, params, request)
+    else route(request, segments, publicEndpoints)
+
+  private def route(request: Request[IO], segments: Vector[String], visible: Vector[BoundEndpoint]): IO[Response[IO]] =
+    val matches = visible.flatMap(endpoint => endpoint.spec.path.matches(segments).map(params => endpoint -> params))
+    matches.headOption match
+      case None => IO.pure(errorResponse(404, "not_found", "Route not found"))
+      case Some((best, _)) =>
+        val samePath = matches.filter(_._1.spec.path.value == best.spec.path.value)
+        samePath.find(_._1.spec.method == request.method.name) match
+          case None => IO.pure(errorResponse(405, "method_not_allowed", "Method not allowed")
+            .putHeaders(Header.Raw(CIString("Allow"), samePath.map(_._1.spec.method).distinct.sorted.mkString(", "))))
+          case Some((endpoint, params)) => execute(endpoint, params, request)
 
   private def execute(endpoint: BoundEndpoint, params: Map[String, String], request: Request[IO]): IO[Response[IO]] =
     val spec = endpoint.spec

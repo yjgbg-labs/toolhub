@@ -2,15 +2,14 @@ package groot
 
 import cats.effect.{Deferred, IO, IOApp, Resource}
 import framework.rpcDsl.*
-import framework.runtime.CommandSdk
 import groot.jobs.JobsRoutes
-import groot.graaljs.{GraalJsRoutes, GraalManager}
+import groot.graaljs.{GraalCommandSdk, GraalJsRoutes, GraalManager}
 import groot.schedule.{Scheduler, ScheduleRoutes}
 import groot.sqlite.{SqliteRoutes, SqliteService}
 
 object Main extends IOApp.Simple:
   def run: IO[Unit] = (for
-    commands <- Resource.eval(Deferred[IO, CommandSdk])
+    commands <- Resource.eval(Deferred[IO, GraalCommandSdk])
     scheduler <- Scheduler.resource()
     sqlite <- SqliteService.resource()
     graaljs <- GraalManager.resource(commands = commands.get)
@@ -37,5 +36,5 @@ object Main extends IOApp.Simple:
         handle { IO.pure(PlainText("ok")) }
       }
     }
-    commands.complete(app.commandSdk) *> app.serve
+    commands.complete(GraalCommandSdk(app)) *> app.serve
   }
