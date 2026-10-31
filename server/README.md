@@ -378,6 +378,17 @@ Code Mode tools use the command path directly: `schedule.config.read` becomes
 `tools.health()`. The plugin preserves dotted namespaces and their descriptions,
 with no additional prefix or namespace override.
 
+GraalJS and Code Mode flatten all non-body parameters into the input object,
+using the declaration to serialize each value to its HTTP location. Parameter
+names must be unique across locations. For mixed inputs, `body` is reserved for
+the request body: `tools.schedule.new({name: "example", body: {...}})`.
+If the operation declares only a request body, pass that value directly:
+`tools.schedule.config.write(config)`. This also applies to text and other JSON
+body types. Body-only detection uses the declaration, not the fields present in
+a call; optional or inherited parameters still require the mixed-input shape.
+SDK/catalog construction rejects ambiguous names. CLI arguments and the
+HTTP/OpenAPI contract retain their original formats.
+
 ## Middleware and errors
 
 Both DSLs retain `middleware(Handler => Handler)`, shared declarations and
@@ -467,7 +478,7 @@ to RPC `commands`.
 
 Scheduled job names now use `?name=...` instead of a path segment. Consequently,
 CLI calls use `groot-cli schedule log --name example`, and Code Mode/client inputs
-use `{ query: { name: "example" } }`. The health endpoint is now `GET /health`.
+use `{ name: "example" }`. The health endpoint is now `GET /health`.
 
 Run server checks from the repository root with `groot jobs server-test` and
 deploy with `groot jobs server-deploy`. See [the project README](../README.md)

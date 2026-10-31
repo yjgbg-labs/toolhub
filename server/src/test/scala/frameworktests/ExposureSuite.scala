@@ -120,9 +120,9 @@ class ExposureSuite extends CatsEffectSuite:
         }
       }
       before <- calls.get
-      valid <- app.commandSdk.call("internal.read", Json.obj("query" -> Json.obj("number" -> Json.fromInt(1))))
-      invalid <- app.commandSdk.call("internal.read", Json.obj("query" -> Json.obj("number" -> Json.fromInt(0))))
-      denied <- app.commandSdk.call("internal.read", Json.obj("query" -> Json.obj("number" -> Json.fromInt(2))))
+      valid <- app.commandSdk.call("internal.read", Json.obj("number" -> Json.fromInt(1)))
+      invalid <- app.commandSdk.call("internal.read", Json.obj("number" -> Json.fromInt(0)))
+      denied <- app.commandSdk.call("internal.read", Json.obj("number" -> Json.fromInt(2)))
       after <- calls.get
     yield
       assertEquals(before, 0)

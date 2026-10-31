@@ -191,7 +191,7 @@ class SqliteSuite extends CatsEffectSuite:
         empty <- app.httpApp(request("/sqlite/execute", "env" -> "http", "sql" -> "-- empty"))
         _ <- service.execute("http", "CREATE TABLE unique_values(value UNIQUE); INSERT INTO unique_values VALUES (1)")
         constraint <- app.httpApp(request("/sqlite/execute", "env" -> "http", "sql" -> "INSERT INTO unique_values VALUES (1)"))
-        sdk <- app.commandSdk.call("sqlite.execute", Json.obj("query" -> Json.obj("env" -> Json.fromString("http"), "sql" -> Json.fromString("SELECT value FROM unique_values"))))
+        sdk <- app.commandSdk.call("sqlite.execute", Json.obj("env" -> Json.fromString("http"), "sql" -> Json.fromString("SELECT value FROM unique_values")))
         list <- app.httpApp(request("/sqlite/env/list")).flatMap(_.as[Json])
         deleted <- app.httpApp(request("/sqlite/env/delete", "name" -> "http"))
         missing <- app.httpApp(request("/sqlite/env/delete", "name" -> "http"))

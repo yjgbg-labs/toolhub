@@ -1,7 +1,7 @@
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import type { ValidateFunction } from "ajv";
-import { Catalog, type Location } from "./catalog";
+import { Catalog } from "./catalog";
 import { transport, type Fetch } from "./transport";
 
 export interface ClientOptions {
@@ -11,7 +11,6 @@ export interface ClientOptions {
   timeoutMs?: number;
   fetch?: Fetch;
 }
-export type OperationInput = Partial<Record<Location, Record<string, unknown>>> & { body?: unknown };
 export interface ApiResult { status: number; headers: Record<string, string>; body: any }
 
 function connectionSettings(options: ClientOptions) {
@@ -59,18 +58,21 @@ export class ApiClient {
     return new ApiClient(new Catalog(await response.json()), options);
   }
 
-  async call(id: string, input: unknown = {}, signal?: AbortSignal): Promise<ApiResult> {
+  async call(id: string, input?: unknown, signal?: AbortSignal): Promise<ApiResult> {
     const operation = this.catalog.byId.get(id);
     if (!operation) throw new Error(`Unknown operation: ${id}`);
+    const bodyOnly = !!operation.body && operation.parameters.length === 0;
+    if (!bodyOnly && input === undefined) input = {};
     const validate = this.validate.get(id)!;
-    if (!validate(input)) {
+    const omittedBody = bodyOnly && input === undefined && !operation.body!.required;
+    if (!omittedBody && !validate(input)) {
       throw new Error(`Invalid input for ${id}: ${validate.errors?.map(error => `${error.instancePath || "/"} ${error.message}`).join("; ")}`);
     }
-    const args = input as OperationInput;
+    const args = (bodyOnly ? {} : input) as Record<string, unknown>;
     const headers = new Headers(this.options.headers);
     headers.set("Accept", "application/json, text/plain, */*");
     const path = operation.path.replace(/\{([^{}]+)\}/g, (_, name: string) => {
-      const value = String(args.path![name]);
+      const value = String(args[name]);
       if (!value || value === "." || value === "..") throw new Error(`Invalid path segment: ${name}`);
       return encodeURIComponent(value);
     });
@@ -78,7 +80,7 @@ export class ApiClient {
     const cookies: string[] = [];
     for (const parameter of operation.parameters) {
       if (parameter.in === "path") continue;
-      const value = args[parameter.in]?.[parameter.name];
+      const value = args[parameter.name];
       if (value === undefined) continue;
       // Optional parameters are omitted rather than encoding a literal "null".
       if (value === null) continue;
@@ -100,9 +102,10 @@ export class ApiClient {
     }
     if (cookies.length) headers.set("Cookie", [headers.get("Cookie"), ...cookies].filter(Boolean).join("; "));
     let body: string | undefined;
-    if (Object.hasOwn(args, "body")) {
-      body = operation.body!.mediaType === "text/plain" ? args.body as string : JSON.stringify(args.body);
-      headers.set("Content-Type", operation.body!.mediaType);
+    const payload = bodyOnly ? input : args.body;
+    if (operation.body && payload !== undefined) {
+      body = operation.body.mediaType === "text/plain" ? payload as string : JSON.stringify(payload);
+      headers.set("Content-Type", operation.body.mediaType);
     }
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const response = await this.fetch(url, {

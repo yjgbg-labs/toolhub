@@ -118,23 +118,30 @@ export class Catalog {
         if (typeof id !== "string" || !operationPattern.test(id)) throw new Error(`Invalid or missing operationId: ${method} ${path}`);
         if (this.byId.has(id)) throw new Error(`Duplicate operationId: ${id}`);
         const parameters = new Map<string, Parameter>();
-        for (const rawParam of [...(item.parameters ?? []), ...(op.parameters ?? [])]) {
-          const param = resolve(doc, rawParam);
-          if (!locations.includes(param.in) || typeof param.name !== "string" || !param.name) throw new Error(`Invalid parameter in ${id}`);
-          const schema = resolve(doc, param.schema);
-          const style = param.style ?? (["query", "cookie"].includes(param.in) ? "form" : "simple");
-          if (style !== (["query", "cookie"].includes(param.in) ? "form" : "simple")) throw new Error(`Unsupported parameter style ${style}: ${id}`);
-          const types = Array.isArray(schema.type) ? schema.type : [schema.type];
-          if (types.some((type: string) => !["string", "integer", "number", "boolean", "array", "null"].includes(type))) {
-            throw new Error(`Unsupported parameter schema: ${id} ${param.name}`);
+        for (const declarations of [item.parameters ?? [], op.parameters ?? []]) {
+          const local = new Set<string>();
+          for (const rawParam of declarations) {
+            const param = resolve(doc, rawParam);
+            if (!locations.includes(param.in) || typeof param.name !== "string" || !param.name) throw new Error(`Invalid parameter in ${id}`);
+            const key = `${param.in}:${param.in === "header" ? param.name.toLowerCase() : param.name}`;
+            if (local.has(key)) throw new Error(`Duplicate SDK parameter name: ${id} ${param.name}`);
+            local.add(key);
+            const schema = resolve(doc, param.schema);
+            const style = param.style ?? (["query", "cookie"].includes(param.in) ? "form" : "simple");
+            if (style !== (["query", "cookie"].includes(param.in) ? "form" : "simple")) throw new Error(`Unsupported parameter style ${style}: ${id}`);
+            const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+            if (types.some((type: string) => !["string", "integer", "number", "boolean", "array", "null"].includes(type))) {
+              throw new Error(`Unsupported parameter schema: ${id} ${param.name}`);
+            }
+            if (types.includes("array") && (param.in !== "query" || !["string", "number", "integer", "boolean"].includes(resolve(doc, schema.items).type))) {
+              throw new Error(`Only primitive query arrays are supported: ${id} ${param.name}`);
+            }
+            // An operation may override the same path-level parameter, but cannot declare it twice.
+            parameters.set(key, {
+              name: param.name, in: param.in, required: param.in === "path" || param.required === true,
+              schema, description: param.description, explode: param.explode ?? style === "form",
+            });
           }
-          if (types.includes("array") && (param.in !== "query" || !["string", "number", "integer", "boolean"].includes(resolve(doc, schema.items).type))) {
-            throw new Error(`Only primitive query arrays are supported: ${id} ${param.name}`);
-          }
-          parameters.set(`${param.in}:${param.in === "header" ? param.name.toLowerCase() : param.name}`, {
-            name: param.name, in: param.in, required: param.in === "path" || param.required === true,
-            schema, description: param.description, explode: param.explode ?? style === "form",
-          });
         }
         const params = [...parameters.values()];
         const placeholders = [...path.matchAll(/\{([^{}]+)\}/g)].map(match => match[1]!);
@@ -159,14 +166,14 @@ export class Catalog {
         }
         const properties: Schema = Object.create(null);
         const required: string[] = [];
-        for (const location of locations) {
-          const group = params.filter(param => param.in === location);
-          if (!group.length) continue;
-          const requiredParams = group.filter(param => param.required).map(param => param.name);
-          properties[location] = objectSchema(Object.fromEntries(group.map(param => [param.name, {
+        for (const param of params) {
+          if (Object.hasOwn(properties, param.name) || (body && param.name === "body")) {
+            throw new Error(`Duplicate SDK parameter name (including reserved body): ${id} ${param.name}`);
+          }
+          properties[param.name] = {
             ...param.schema, ...(param.description ? { description: param.description } : {}),
-          }])), requiredParams);
-          if (requiredParams.length) required.push(location);
+          };
+          if (param.required) required.push(param.name);
         }
         if (body) {
           properties.body = { ...body.schema, ...(body.description ? { description: body.description } : {}) };
@@ -187,7 +194,7 @@ export class Catalog {
           id, segments: id.split("."), method: method.toUpperCase(), path,
           description: [op.summary, op.description].filter(Boolean).join("\n") || `${method.toUpperCase()} ${path}`,
           parameters: params, body,
-          inputSchema: standalone(doc, objectSchema(properties, required)),
+          inputSchema: standalone(doc, body && !params.length ? properties.body : objectSchema(properties, required)),
           outputSchema: standalone(doc, objectSchema({
             status: { type: "integer" }, headers: { type: "object", additionalProperties: { type: "string" } },
             body: responseBodies.length ? { anyOf: responseBodies } : {},

@@ -21,18 +21,38 @@ class CommandSdkSuite extends CatsEffectSuite:
       }
     }
     val input = Json.obj(
-      "path" -> Json.obj("id" -> Json.fromString("a/b 中文?")),
-      "query" -> Json.obj("word" -> Json.arr(Json.fromString("a&b"), Json.fromString("x=y"))),
-      "header" -> Json.obj("X-Token" -> Json.fromString("token")),
-      "cookie" -> Json.obj("session" -> Json.fromString("abc")))
+      "id" -> Json.fromString("a/b 中文?"),
+      "word" -> Json.arr(Json.fromString("a&b"), Json.fromString("x=y")),
+      "X-Token" -> Json.fromString("token"),
+      "session" -> Json.fromString("abc"))
     for
       response <- app.commandSdk.call("values.read", input)
       _ = assertEquals(response.hcursor.get[Int]("status"), Right(200))
       _ = assertEquals(response.hcursor.get[List[String]]("body"), Right(List("a/b 中文?", "a&b|x=y", "token", "abc")))
-      missing <- app.commandSdk.call("values.read", input.mapObject(_.remove("header")))
+      missing <- app.commandSdk.call("values.read", input.mapObject(_.remove("X-Token")))
       _ = assertEquals(missing.hcursor.get[Int]("status"), Right(400))
-      invalid <- app.commandSdk.call("values.read", input.mapObject(_.add("header", Json.obj("X-Token" -> Json.fromString("x\r\ny"))))).attempt
+      invalid <- app.commandSdk.call("values.read", input.mapObject(_.add("X-Token", Json.fromString("x\r\ny")))).attempt
       _ = assert(invalid.isLeft)
       unknown <- app.commandSdk.call("values.missing", Json.obj()).attempt
     yield assert(unknown.isLeft)
+  }
+
+  test("SDK construction rejects parameter names shared across locations and the mixed-body slot") {
+    val duplicate = httpApp { routes { get("/values/{id}") {
+      operationId("duplicate")
+      path[String]("id")
+      query[String]("id")
+      val ok = response.empty(204) {}
+      handle { IO.pure(ok(())) }
+    } } }
+    assert(intercept[IllegalArgumentException](duplicate.commandSdk).getMessage.contains("Duplicate SDK parameter name"))
+
+    val reserved = httpApp { routes { post("/values") {
+      operationId("reserved")
+      query[String]("body")
+      body.json[Json]
+      val ok = response.empty(204) {}
+      handle { IO.pure(ok(())) }
+    } } }
+    assert(intercept[IllegalArgumentException](reserved.commandSdk).getMessage.contains("reserved body"))
   }

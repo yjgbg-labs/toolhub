@@ -28,7 +28,8 @@ private[graaljs] final class GraalSdkSession(sdk: CommandSdk, dispatcher: Dispat
   private def submit(id: String, input: String, resolve: Value, reject: Value): Unit =
     require(pending.size < GraalSdkSession.maxPending, "At most 64 SDK calls may be pending per task")
     require(input.getBytes(UTF_8).length <= CommandSdk.maxBytes, "SDK input exceeds 1 MiB")
-    val action = IO.fromEither(io.circe.parser.parse(input)).flatMap(sdk.call(id, _)).map { result =>
+    val parsed: IO[Option[io.circe.Json]] = if input.isEmpty then IO.pure(None) else IO.fromEither(io.circe.parser.parse(input)).map(Some(_))
+    val action = parsed.flatMap(sdk.call(id, _)).map { result =>
       val json = result.noSpaces
       require(json.getBytes(UTF_8).length <= CommandSdk.maxBytes, "SDK response exceeds 1 MiB")
       json
