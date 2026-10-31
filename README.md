@@ -1,6 +1,6 @@
 # Groot CLI
 
-项目只有三个组件，分别通过 HTTP/OpenAPI 协作：
+项目包含四个组件，通过 HTTP/OpenAPI 与 SSE 协作：
 
 ```text
 server/                 Scala/JVM HTTP 服务端
@@ -12,17 +12,20 @@ cli/                    Scala Native 命令行程序
 plugin/                 TypeScript/Bun OpenCode V2 插件
   src/api/              插件自己的 OpenAPI、校验和传输实现
   test/                 API、插件、独立 bundle 与部署检查
+widget/                 原生桌面悬浮窗客户端
+  macos/                Swift/AppKit 客户端与协议测试
+  scripts/              Mac 远程构建和 LaunchAgent 安装
 AGENTS.md               项目开发与交付约定
 skills/                 OpenCode skills，全局目录链接至此
 config.env              JDK、安装路径及服务参数
-jobs.yaml               四个任务，内联构建、测试和交付流程
+jobs.yaml               构建、测试和交付编排
 ```
 
 CLI 与插件各自拥有实现与依赖，没有共享代码或 workspace 包引用。
 CLI 的动态协议实现直接编入 Native 可执行文件；插件打成独立 JS bundle。
 服务端使用 Scala 3.9.0 LTS 和 JDK 25，编译器及依赖版本集中在 `server/project.scala`。
 
-## 四个任务
+## 项目任务
 
 在项目根目录执行：
 
@@ -32,10 +35,13 @@ CLI 的动态协议实现直接编入 Native 可执行文件；插件打成独�
 | `groot-cli jobs --job server-deploy` | 服务端测试、JAR 构建、user service 安装及健康检查 |
 | `groot-cli jobs --job cli-deploy` | Native 编译、CLI/安装检查及安装 `groot-cli` |
 | `groot-cli jobs --job pluging-deploy` | 插件依赖安装、类型检查、bundle 构建、测试及安装 OpenCode 插件 |
+| `groot-cli jobs --job widget-test` | 在目标 Mac 编译客户端并运行 Swift 协议测试 |
+| `groot-cli jobs --job widget-build` | 测试后构建、签名 macOS app，并取回校验后的归档 |
+| `groot-cli jobs --job widget-deploy` | 构建后安装 macOS app、配置和登录启动项 |
 
 `pluging-deploy` 是任务的实际名称。每个组件独立部署，只处理自身制品。
-需要只构建和验证时，可以执行 `CHECK_ONLY=1 groot-cli jobs --job <部署任务>`。
-使用已有本地构建产物时，执行 `INSTALL_ONLY=1 groot-cli jobs --job <部署任务>`；
+server/cli/plugin 需要只构建和验证时，可以执行 `CHECK_ONLY=1 groot-cli jobs --job <部署任务>`；widget 使用 `widget-build`。
+server/cli/plugin 使用已有本地构建产物时，执行 `INSTALL_ONLY=1 groot-cli jobs --job <部署任务>`；
 它跳过组件构建，`server-deploy` 的 `server-test` 依赖仍会执行。
 两个开关同时设置时，只检查本地产物存在且非空，不安装；服务端依赖测试仍会执行。
 
@@ -45,11 +51,12 @@ JDK 25 下仍可能出现 `scala.runtime.LazyVals` 的 `Unsafe` 弃用警告：M
 
 ## 本机交付约定
 
-构建和安装均在本机完成，交付方式为构建、测试后直接安装到目标目录：
+server/cli/plugin 在本机完成构建与安装，交付方式为构建、测试后直接安装到目标目录：
 
 - CLI：将 `cli/dist/groot-cli` 移动到 `~/.local/bin/groot-cli`。
 - 服务端：将 `server/dist/groot.jar` 安装到 `$SERVER_INSTALL_ROOT/server/groot.jar`，然后重启 user service 并检查健康状态。
 - 插件：将 `plugin/dist/index.js` 直接安装为 `$OPENCODE_PLUGIN_DIR/sprout.ts`。
+- Widget：通过 SSH 在 `WIDGET_MAC_HOST` 构建并安装至 `~/Applications/GrootWidget.app`，详见 [widget/README.md](widget/README.md)。
 
 `config.env` 集中配置 JDK 和安装目标；服务端、CLI、插件分别部署。
 无需为本机交付设置对象存储上传、下载或远程制品版本参数。

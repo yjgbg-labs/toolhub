@@ -1,5 +1,31 @@
 version: 1
 jobs:
+  - name: widget-test
+    run: |
+      set -eu
+      set -a
+      . ./config.env
+      set +a
+      bun widget/scripts/macos.ts test
+
+  - name: widget-build
+    needs: [widget-test]
+    run: |
+      set -eu
+      set -a
+      . ./config.env
+      set +a
+      bun widget/scripts/macos.ts build
+
+  - name: widget-deploy
+    needs: [widget-build]
+    run: |
+      set -eu
+      set -a
+      . ./config.env
+      set +a
+      bun widget/scripts/macos.ts deploy
+
   - name: server-test
     run: |
       set -eu
