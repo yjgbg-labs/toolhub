@@ -26,6 +26,7 @@ private[framework] object OpenApi:
       ApiSchema($ref = Some(s"#/components/schemas/$name"))
 
     def render(node: SchemaNode): ApiSchema = node match
+      case SchemaNode.AnyValue => ApiSchema.Empty
       case SchemaNode.Primitive(kind, format) =>
         val tpe = SchemaType.Values.find(_.value == kind).getOrElse(throw new IllegalArgumentException(s"Unknown schema type: $kind"))
         ApiSchema(tpe).copy(format = format)

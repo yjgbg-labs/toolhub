@@ -325,6 +325,14 @@ and client disconnect release them. Handler errors before the response is
 returned can be recovered normally. Once body streaming starts, failures
 terminate the stream; handle them in the source stream if an error event is needed.
 
+## Dynamic JSON values
+
+`framework.model.JsonModel` supports `io.circe.Json` directly, including inside
+derived models and collections. Its OpenAPI schema is `{}` (any JSON value), and
+its codec preserves the original JSON shape. This is useful for SQL result cells
+whose types depend on the executed query; typed fields around those cells still
+retain their normal schemas.
+
 ## Documentation text
 
 Use `description("...")` consistently for documentation text, including named

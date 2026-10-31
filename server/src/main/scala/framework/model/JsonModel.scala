@@ -29,6 +29,7 @@ object JsonModel:
   }
 
   given JsonModel[String] = instance("scala.String", SchemaNode.Primitive("string"))(Encoder.encodeString, Decoder.decodeString)
+  given JsonModel[Json] = instance("io.circe.Json", SchemaNode.AnyValue)(Encoder.encodeJson, Decoder.decodeJson)
   given JsonModel[Boolean] = instance("scala.Boolean", SchemaNode.Primitive("boolean"))(Encoder.encodeBoolean, Decoder.decodeBoolean)
   given JsonModel[Int] = instance("scala.Int", SchemaNode.Primitive("integer", Some("int32")))(Encoder.encodeInt, numeric(Decoder.decodeInt))
   given JsonModel[Long] = instance("scala.Long", SchemaNode.Primitive("integer", Some("int64")))(Encoder.encodeLong, numeric(Decoder.decodeLong))
