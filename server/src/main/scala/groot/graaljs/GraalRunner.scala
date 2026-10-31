@@ -60,7 +60,7 @@ private[graaljs] object GraalRunner:
       case _ => "runtime_error"
     TaskError(code, message)
 
-  private final class Runner(engine: Engine, dispatcher: Dispatcher[IO], commands: IO[CommandSdk]) extends GraalRunner:
+  private final class Runner(engine: Engine, dispatcher: Dispatcher[IO], commands: IO[CommandSdk], fetch: GraalFetch) extends GraalRunner:
     private val cpu = ManagementFactory.getThreadMXBean
     if cpu.isThreadCpuTimeSupported && !cpu.isThreadCpuTimeEnabled then cpu.setThreadCpuTimeEnabled(true)
 
@@ -72,7 +72,7 @@ private[graaljs] object GraalRunner:
       val context = new AtomicReference[Context]()
       val stop = new AtomicReference[TaskError]()
       val completed = new CompletableFuture[RunResult]()
-      val session = new GraalSdkSession(sdk, dispatcher)
+      val session = new GraalSdkSession(sdk, dispatcher, fetch)
       val execution = new GraalExecution:
         // Cancelling an observer never cancels the worker or its completion signal.
         def result: IO[RunResult] = IO.async_ { callback =>
@@ -149,11 +149,12 @@ private[graaljs] object GraalRunner:
       execution
     } }
 
-  def resource(commands: IO[CommandSdk] = IO.pure(CommandSdk.empty)): Resource[IO, GraalRunner] = for
+  def resource(commands: IO[CommandSdk] = IO.pure(CommandSdk.empty), fetch: Resource[IO, GraalFetch] = GraalFetch.resource): Resource[IO, GraalRunner] = for
     dispatcher <- Dispatcher.parallel[IO]
+    http <- fetch
     engine <- Resource.make(IO.blocking {
       Engine.newBuilder("js").sandbox(SandboxPolicy.ISOLATED).spawnIsolate(true)
         .out(OutputStream.nullOutputStream()).err(OutputStream.nullOutputStream())
         .option("engine.MaxIsolateMemory", s"${Limits.engineBytes}B").build()
     })(engine => IO.blocking(engine.close(true)))
-  yield new Runner(engine, dispatcher, commands)
+  yield new Runner(engine, dispatcher, commands, http)

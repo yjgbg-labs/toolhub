@@ -6,6 +6,10 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.SandboxPolicy;
 import groot.graaljs.GraalSdkBindings;
+import groot.graaljs.GraalFetchBindings;
+import groot.graaljs.FetchResponse;
+import java.util.concurrent.atomic.AtomicReference;
+import scala.util.Right;
 import scala.collection.immutable.Vector$;
 import scala.jdk.javaapi.CollectionConverters;
 import scala.runtime.BoxedUnit;
@@ -31,6 +35,15 @@ public class AssemblySmoke {
             sdk.install();
             context.eval("js", "tools.health().then(r => globalThis.sdkResult = r.body)");
             if (!context.eval("js", "sdkResult").asString().equals("ok")) throw new AssertionError("Command SDK failed");
+            var fetch = new AtomicReference<GraalFetchBindings>();
+            fetch.set(new GraalFetchBindings(context, (request, resolve, reject) -> {
+                fetch.get().deliver(resolve, reject, new Right<>(new FetchResponse(
+                    request.url(), 200, "OK", false, Vector$.MODULE$.empty(), new byte[] {0, 127, (byte) 255})));
+                return BoxedUnit.UNIT;
+            }));
+            fetch.get().install();
+            context.eval("js", "fetch('http://example.com').then(r => r.bytes()).then(b => globalThis.fetchResult = [...b].join(','))");
+            if (!context.eval("js", "fetchResult").asString().equals("0,127,255")) throw new AssertionError("Fetch SDK failed");
         }
         Class.forName("org.sqlite.JDBC");
         try (var db = DriverManager.getConnection("jdbc:sqlite::memory:");
@@ -38,6 +51,6 @@ public class AssemblySmoke {
              var rows = statement.executeQuery("SELECT 42")) {
             if (!rows.next() || rows.getInt(1) != 42) throw new AssertionError("SQLite query failed");
         }
-        System.out.println("Assembly smoke passed: GraalJS isolate, command SDK and SQLite");
+        System.out.println("Assembly smoke passed: GraalJS isolate, command SDK, fetch and SQLite");
     }
 }

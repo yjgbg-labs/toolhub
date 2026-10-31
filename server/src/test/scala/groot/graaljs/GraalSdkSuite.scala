@@ -56,7 +56,7 @@ class GraalSdkSuite extends CatsEffectSuite:
         }
         _ <- GraalManager.resource(home.resolve("data"), IO.pure(app.commandSdk)).use { manager =>
           run(manager, """
-            if (typeof search !== "undefined" || typeof Java !== "undefined" || typeof fetch !== "undefined") throw Error("unexpected SDK");
+            if (typeof search !== "undefined" || typeof Java !== "undefined" || typeof fetch !== "function") throw Error("unexpected SDK");
             const originalTools = tools, health = tools.health;
             for (const mutate of [() => { tools.health = null; }, () => { delete tools.health; },
                  () => { tools.extra = 42; }, () => { globalThis.tools = {}; },
