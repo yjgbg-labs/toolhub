@@ -2,6 +2,7 @@ import AppKit
 import WidgetCore
 
 final class WidgetCanvas: NSView {
+    static let verticalPadding: CGFloat = 4
     var items: [WidgetItem] = []
     var settings = WidgetSettings()
     var connected = false
@@ -21,14 +22,14 @@ final class WidgetCanvas: NSView {
         let font = NSFont.monospacedSystemFont(ofSize: CGFloat(settings.fontSize), weight: .regular)
         let rowHeight = CGFloat(settings.rowHeight)
         if items.isEmpty {
-            text(connected ? "暂无状态" : "连接中…", rect: NSRect(x: 16, y: 12, width: bounds.width - 32, height: rowHeight),
+            text(connected ? "暂无状态" : "连接中…", rect: NSRect(x: 16, y: Self.verticalPadding, width: bounds.width - 32, height: rowHeight),
                  font: font, color: labelColor)
         }
         let labelWidth = min(bounds.width * 0.55, items.map {
             ($0.label as NSString).size(withAttributes: [.font: font]).width
         }.max() ?? 0)
         for (index, item) in items.enumerated() {
-            let y = 12 + CGFloat(index) * rowHeight
+            let y = Self.verticalPadding + CGFloat(index) * rowHeight
             let left = NSRect(x: 16, y: y, width: labelWidth, height: rowHeight)
             text(item.label, rect: left, font: font, color: labelColor)
             if let value = item.value, !value.isEmpty {

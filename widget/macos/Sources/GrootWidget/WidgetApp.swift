@@ -4,7 +4,8 @@ import WidgetCore
 @MainActor
 final class WidgetApp: NSObject, NSApplicationDelegate {
     let api: WidgetAPI
-    let panel = WidgetPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 64),
+    let panel = WidgetPanel(contentRect: NSRect(x: 0, y: 0, width: 440,
+                                              height: WidgetCanvas.verticalPadding * 2 + CGFloat(WidgetSettings().rowHeight)),
                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     let canvas = WidgetCanvas()
     let scroll = NSScrollView()
@@ -87,7 +88,7 @@ final class WidgetApp: NSObject, NSApplicationDelegate {
         guard let main = NSScreen.screens.first else { return }
         canvas.settings = settings
         let width = CGFloat(settings.width)
-        let contentHeight = 24 + CGFloat(max(1, canvas.items.count) * settings.rowHeight)
+        let contentHeight = WidgetCanvas.verticalPadding * 2 + CGFloat(max(1, canvas.items.count) * settings.rowHeight)
         let x = settings.x.map(CGFloat.init) ?? (main.visibleFrame.maxX - width - 20)
         let top = settings.y.map { main.frame.maxY - CGFloat($0) } ?? (main.visibleFrame.maxY - 20)
         let proposed = NSRect(x: x, y: top - min(contentHeight, main.visibleFrame.height - 40),
