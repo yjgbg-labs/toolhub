@@ -24,7 +24,6 @@ private[graaljs] final class GraalSdkSession(sdk: CommandSdk, dispatcher: Dispat
   def install(context: Context): Unit =
     bindings = new GraalSdkBindings(context, sdk.commands, submit)
     bindings.install()
-    if sdk.commands.contains("fetch") then new GraalFetchBindings(context).install()
 
   private def submit(id: String, input: String, resolve: Value, reject: Value): Unit =
     require(pending.size < GraalSdkSession.maxPending, "At most 64 SDK calls may be pending per task")

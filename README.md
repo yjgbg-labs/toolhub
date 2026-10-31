@@ -203,7 +203,7 @@ groot-cli graaljs start --cpu 2s --timeout 30s --body '
 - 源码作为 async 函数体执行，支持顶层 `await` / `return` 和 `Promise.all` 并行调用。
   顶层 Promise 完成后结束任务；返回值不写入日志，需要输出时使用 `console.log`。
   任务结束、超时或取消时会取消尚未完成的调用，并等待它们的清理完成后释放任务额度。
-- 每个任务最多 64 个待完成调用（SDK 与 `fetch` 合计）；每次 SDK 请求 JSON、响应正文及序列化后的响应均不超过 1 MiB。
+- 每个任务最多 64 个待完成 SDK 调用；每次请求 JSON、响应正文及序列化后的响应均不超过 1 MiB。
   等待命令不占用 guest CPU，但仍计入墙钟超时。被调用命令的 JVM/外部工作不计入 JS 的 4 MiB 堆限制。
 - `tools` 授予脚本与这些服务端命令相同的能力，包括修改定时任务、提交或取消其他 GraalJS 任务。
   它不是只读接口。独立提交的子任务具有自己的生命周期；父任务结束不会自动取消已提交的子任务。
@@ -228,37 +228,23 @@ const reply = await tools.fetch({body: {
 console.log(reply.body.status, reply.body.ok, reply.body.bodyBase64);
 ```
 
-当 `fetch` 命令对 GraalJS 可见时，同时安装全局 `fetch(url, {method, headers, body})` 适配器，使用与
-[Code Mode fetch](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/codemode/fetch.ts)
-一致的缓冲式响应接口。适配器由 Scala proxy 注入，只做参数和响应转换，实际调用 `tools.fetch`。
+`tools.fetch` 完全由 `httpApp` 的命令声明映射，调用及返回遵循普通 SDK 的 JSON 契约。
+HTTP 行为参考 [Code Mode fetch](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/codemode/fetch.ts)：
 
-```js
-const response = await fetch("https://example.com/api/notes", {
-  method: "POST",
-  headers: {"Content-Type": "application/json"},
-  body: JSON.stringify({text: "hello"})
-});
-console.log(response.status, response.ok, response.url, response.redirected);
-console.log(response.headers.get("content-type"));
-const value = await response.json();
-// 也可重复调用 await response.text()、await response.bytes()
-```
-
-- URL 使用绝对 HTTP/HTTPS 地址，可传字符串或可字符串化的 URL 对象。默认方法为 `GET`。
-  `headers` 支持名称到值的对象、`[name, value][]`，也可复用响应的 `headers`。
-  `body` 支持字符串和原生 `Uint8Array`；字符串默认 `text/plain;charset=UTF-8`，JSON 需自行序列化。
-  可字符串化的 `URLSearchParams` 对象按表单编码发送。此处提供的是 `fetch` 绑定；
-  `URL`、`URLSearchParams`、`Headers`、`Request`、`Response` 构造器不由该绑定安装。
-- Promise 在响应体读取完成后兑现。响应包含 `url`、`status`、`statusText`、`ok`、`redirected`，
-  `headers.get(name)` / `has(name)` 不区分大小写，`entries()` 返回名称已小写的键值对数组。
-- `text()` 按 UTF-8 解码，`json()` 解析为原生 JS 值，`bytes()` 返回原生 `Uint8Array`。
-  三者均返回 Promise，可重复读取；无效 JSON 仅在调用 `json()` 时拒绝。
-- HTTP 4xx/5xx 正常返回响应，由调用方检查 `ok` 或 `status`。无效请求、连接错误和重定向循环
-  拒绝 Promise。自动跟随最多 20 次重定向，跨源跳转移除认证与 Cookie 请求头；支持 gzip/deflate 解压。
-- 每次请求默认 30 秒墙钟超时，覆盖重定向及响应体读取；与 Code Mode 一样只读取 `method/headers/body`
-  这三个选项。请求数据和解压后的响应体各限制为 1 MiB，超限拒绝为 `RangeError`。
-  命令的序列化请求与响应还受统一 SDK 的 1 MiB 限制；base64 与 JSON 开销也计入，因此可传输的原始字节数会更小。
-  任务结束、取消或超时会取消在途请求，等待连接资源清理后释放任务额度。
+- `url` 为绝对 HTTP/HTTPS 地址字符串，默认方法为 `GET`。`headers` 为名称到字符串值的对象。
+  `body` 默认使用 UTF-8，自动设置 `text/plain;charset=UTF-8`；JSON 需自行序列化并设置请求头。
+  二进制请求体使用 base64 字符串和 `bodyEncoding: "base64"`。
+- Promise 在响应体读取完成后兑现，结果为标准 `{status, headers, body}` SDK 响应。
+  内层 `body` 包含目标网站的 `url`、`status`、`statusText`、`ok`、`redirected`、`headers` 和 `bodyBase64`。
+  响应头名称统一为小写，响应字节以 base64 保留。
+- 目标网站的 HTTP 4xx/5xx 正常返回数据，由调用方检查 `reply.body.ok` 或 `reply.body.status`。
+  无效请求、连接错误和重定向循环返回命令错误 400，超出传输大小限制返回 413，请求超时返回 504；
+  GraalJS 通过标准 `ApiError` 的 `response` 读取这些错误。
+- 自动跟随最多 20 次重定向，跨源跳转移除认证与 Cookie 请求头；支持 gzip/deflate 解压。
+  每次请求默认 30 秒墙钟超时，覆盖重定向及响应体读取。
+- 请求数据和解压后的响应体各限制为 1 MiB。命令的序列化请求与响应还受统一 SDK 的 1 MiB 限制；
+  base64 与 JSON 开销也计入，因此可传输的原始字节数会更小。
+  任务结束、取消或超时会取消在途命令，等待连接资源清理后释放任务额度。
 
 当前打包目标为 Linux AMD64，使用 GraalVM `25.4.4.1.1` Community isolate 和 SQLite JDBC
 `3.54.1.0`，原生资源随 assembly JAR 交付；JDK 25 启动参数启用 `--enable-native-access=ALL-UNNAMED`。
