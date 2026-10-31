@@ -38,6 +38,9 @@ CLI 的动态协议实现直接编入 Native 可执行文件；插件打成独�
 | `groot-cli jobs --job widget-test` | 在目标 Mac 编译客户端并运行 Swift 协议测试 |
 | `groot-cli jobs --job widget-build` | 测试后构建、签名 macOS app，并取回校验后的归档 |
 | `groot-cli jobs --job widget-deploy` | 构建后安装 macOS app、配置和登录启动项 |
+| `groot-cli jobs --job widget-windows-test` | 在 Windows 运行 SSE、HTTP 和配置协议检查 |
+| `groot-cli jobs --job widget-windows-build` | 测试后构建 Windows 原生客户端并取回校验后的归档 |
+| `groot-cli jobs --job widget-windows-deploy` | 构建后安装 Windows 客户端、连接配置和交互式登录任务 |
 
 `pluging-deploy` 是任务的实际名称。每个组件独立部署，只处理自身制品。
 server/cli/plugin 需要只构建和验证时，可以执行 `CHECK_ONLY=1 groot-cli jobs --job <部署任务>`；widget 使用 `widget-build`。
@@ -56,7 +59,7 @@ server/cli/plugin 在本机完成构建与安装，交付方式为构建、测�
 - CLI：将 `cli/dist/groot-cli` 移动到 `~/.local/bin/groot-cli`。
 - 服务端：将 `server/dist/groot.jar` 安装到 `$SERVER_INSTALL_ROOT/server/groot.jar`，然后重启 user service 并检查健康状态。
 - 插件：将 `plugin/dist/index.js` 直接安装为 `$OPENCODE_PLUGIN_DIR/sprout.ts`。
-- Widget：通过 SSH 在 `WIDGET_MAC_HOST` 构建并安装至 `~/Applications/GrootWidget.app`，详见 [widget/README.md](widget/README.md)。
+- Widget：Mac 通过 SSH 在 `WIDGET_MAC_HOST` 构建并安装至 `~/Applications/GrootWidget.app`；Windows 通过 `groot windows exec` 构建并安装至 `%LOCALAPPDATA%\GrootWidget\app`，详见 [widget/README.md](widget/README.md)。
 
 `config.env` 集中配置 JDK 和安装目标；服务端、CLI、插件分别部署。
 无需为本机交付设置对象存储上传、下载或远程制品版本参数。
