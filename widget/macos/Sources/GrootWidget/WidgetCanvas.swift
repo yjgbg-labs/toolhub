@@ -40,7 +40,7 @@ final class WidgetCanvas: NSView {
                 let lampsWidth = slotSize * 3 + gap * 2
                 for (lamp, color) in [WidgetColor.red, .yellow, .green].enumerated() {
                     let active = item.color == color
-                    let diameter: CGFloat = active ? slotSize : 8
+                    let diameter: CGFloat = active ? slotSize : 12
                     let centerX = bounds.width - 16 - lampsWidth + CGFloat(lamp) * (slotSize + gap) + slotSize/2
                     (active ? tone(color) : offColor).setFill()
                     NSBezierPath(ovalIn: NSRect(x: centerX - diameter/2,
