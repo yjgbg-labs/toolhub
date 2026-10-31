@@ -7,6 +7,7 @@ import groot.graaljs.{GraalCommandSdk, GraalJsRoutes, GraalManager}
 import groot.schedule.{Scheduler, ScheduleRoutes}
 import groot.sqlite.{SqliteRoutes, SqliteService}
 import groot.fetch.{FetchRoutes, FetchService}
+import groot.fs.{FsRoutes, FsService}
 
 object Main extends IOApp.Simple:
   def run: IO[Unit] = (for
@@ -35,6 +36,7 @@ object Main extends IOApp.Simple:
       GraalJsRoutes.register(graaljs)
       SqliteRoutes.register(sqlite)
       FetchRoutes.register(fetch)
+      FsRoutes.register(new FsService)
       command[PlainText]("health") {
         handle { IO.pure(PlainText("ok")) }
       }
