@@ -235,7 +235,49 @@ groot-cli graaljs start --cpu 2s --timeout 30s --body '
   等待命令不占用 guest CPU，但仍计入墙钟超时。被调用命令的 JVM/外部工作不计入 JS 的 4 MiB 堆限制。
 - `tools` 授予脚本与这些服务端命令相同的能力，包括修改定时任务、提交或取消其他 GraalJS 任务。
   它不是只读接口。独立提交的子任务具有自己的生命周期；父任务结束不会自动取消已提交的子任务。
-  `fetch`、文件系统、Java 反射等通用宿主接口仍未开放。
+
+#### HTTP `fetch`
+
+`fetch` 在 `server/src/main/scala/groot/fetch/FetchRoutes.scala` 中通过
+`command[FetchResponse]("fetch")` 和 `exposeOn(graaljs)` 声明。它进入 GraalJS 的命令树，
+OpenAPI 标记为 `x-expose-on: ["graaljs"]`；CLI、Code Mode 目录及公共 HTTP 路由均按该声明过滤。
+网络客户端由应用管理，执行经过统一 SDK 的参数校验、中间件、错误恢复和取消流程。
+
+可以直接使用标准命令接口，响应体中的 HTTP 状态是目标网站的状态，原始字节以 base64 返回：
+
+```js
+const reply = await tools.fetch({
+  url: "https://example.com/api/notes",
+  method: "POST",
+  headers: {"Content-Type": "application/json"},
+  body: JSON.stringify({text: "hello"}),
+  bodyEncoding: "utf8" // 二进制可传 base64 字符串并设置为 "base64"
+});
+console.log(reply.body.status, reply.body.ok, reply.body.bodyBase64);
+```
+
+`tools.fetch` 完全由 `httpApp` 的命令声明映射，调用及返回遵循普通 SDK 的 JSON 契约。
+该命令仅声明请求体，因此直接传入请求对象，其中的 `body` 字段是发往目标网站的正文。
+HTTP 行为参考 [Code Mode fetch](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/codemode/fetch.ts)：
+
+- `url` 为绝对 HTTP/HTTPS 地址字符串，默认方法为 `GET`。`headers` 为名称到字符串值的对象。
+  `body` 默认使用 UTF-8，自动设置 `text/plain;charset=UTF-8`；JSON 需自行序列化并设置请求头。
+  二进制请求体使用 base64 字符串和 `bodyEncoding: "base64"`。
+- Promise 在响应体读取完成后兑现，结果为标准 `{status, headers, body}` SDK 响应。
+  内层 `body` 包含目标网站的 `url`、`status`、`statusText`、`ok`、`redirected`、`headers`、`bodyBase64` 和 `setCookies`。
+  响应头名称统一为小写，`headers` 提供以逗号合并的视图，响应字节以 base64 保留。
+  处理 Cookie 时使用 `setCookies` 字符串数组：它按最终响应中的顺序逐项保留 `Set-Cookie` 原值，
+  包括 `Expires` 和扩展属性中的逗号；没有 Cookie 时返回空数组。
+- 目标网站的 HTTP 4xx/5xx 正常返回数据，由调用方检查 `reply.body.ok` 或 `reply.body.status`。
+  无效请求、连接错误和重定向循环返回命令错误 400，超出传输大小限制返回 413，请求超时返回 504；
+  GraalJS 通过标准 `ApiError` 的 `response` 读取这些错误。
+- 自动跟随最多 20 次重定向，跨源跳转移除认证与 Cookie 请求头；支持 gzip/deflate 解压。
+  逗号分隔或多次出现的 `Content-Encoding` 按顺序组成编码链，再按逆序完整解压。
+  编码链含不支持的编码时保留原始响应字节；响应头始终保留上游的编码和长度信息。
+  每次请求默认 30 秒墙钟超时，覆盖重定向及响应体读取。
+- 请求数据和解压后的响应体各限制为 1 MiB。命令的序列化请求与响应还受统一 SDK 的 1 MiB 限制；
+  base64 与 JSON 开销也计入，因此可传输的原始字节数会更小。
+  任务结束、取消或超时会取消在途命令，等待连接资源清理后释放任务额度。
 
 当前打包目标为 Linux AMD64，使用 GraalVM `25.4.4.1.1` Community isolate 和 SQLite JDBC
 `3.54.1.0`，原生资源随 assembly JAR 交付；JDK 25 启动参数启用 `--enable-native-access=ALL-UNNAMED`。
