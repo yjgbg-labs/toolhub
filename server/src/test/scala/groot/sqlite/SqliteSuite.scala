@@ -145,11 +145,11 @@ class SqliteSuite extends CatsEffectSuite:
     temporary.use { home => SqliteService.resource(home).use { service =>
       for
         _ <- service.add("scripts")
-        result <- service.execute("scripts", """
+        result <- service.execute("scripts", s"""
           -- ignored ; END;
           CREATE TABLE data(id INTEGER PRIMARY KEY, value TEXT);
           CREATE TABLE audit(value TEXT);
-          \ufeffCREATE TRIGGER track AFTER INSERT ON data BEGIN
+          ${'\ufeff'}CREATE TRIGGER track AFTER INSERT ON data BEGIN
             INSERT INTO audit VALUES (CASE WHEN NEW.value = 'a;''b' THEN 'yes' ELSE 'no' END);
             /* ; END; */ INSERT INTO audit VALUES ('trigger;value');
           END;
