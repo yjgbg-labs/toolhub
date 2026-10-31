@@ -2,7 +2,7 @@ import AppKit
 import WidgetCore
 
 extension WidgetApp {
-    @objc func reconnect() {
+    func reconnect() {
         streamTask?.cancel()
         let generation = UUID()
         streamGeneration = generation

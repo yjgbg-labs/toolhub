@@ -70,8 +70,8 @@ Mac 使用逐字节、有界的 SSE 解析，支持 UTF-8、CR/LF/CRLF、BOM 和
 Mac 背景使用 `NSVisualEffectView` 的深色 HUD 毛玻璃材质，实时模糊窗口背后的内容，失去焦点后仍保持效果。
 背景与内容统一使用 16 点圆角；独立的背景蒙版裁剪毛玻璃，40% 深色叠层减少透底。
 文字和灯在透明前景层绘制；`opacity` 仍控制整个窗口，设为 `1` 可保持前景清晰，背景由系统材质提供半透明效果。
-拖动内容区域移动窗口，菜单栏图标支持显示/隐藏、置顶、重连和退出。
-拖动结束和置顶操作通过 `config.write` 回写完整配置；本地写入串行化并合并连续手势，失败自动重试。
+拖动内容区域移动窗口，菜单栏图标仅提供“显示 / 隐藏”。
+拖动结束通过 `config.write` 回写完整配置；本地写入串行化并合并连续手势，失败自动重试。
 多个客户端共享配置，最后一次成功写入生效。客户端本地仅保存服务连接地址，不缓存状态或窗口配置。
 
 ## 构建与部署
@@ -100,7 +100,7 @@ groot-cli jobs --job widget-deploy
 - 登录启动：`~/Library/LaunchAgents/lab.yjgbg.groot-widget.plist`
 - 日志：`~/Library/Logs/GrootWidget/app.log`
 
-LaunchAgent 在 Aqua 桌面会话启动，异常退出后自动重启；菜单“退出”正常结束，下一次登录再启动。
+LaunchAgent 在 Aqua 桌面会话启动，异常退出后自动重启。
 手动启动可用 `open ~/Applications/GrootWidget.app`；手动恢复登录任务可用
 `launchctl kickstart gui/$(id -u)/lab.yjgbg.groot-widget`。
 

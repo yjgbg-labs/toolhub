@@ -10,7 +10,6 @@ final class WidgetApp: NSObject, NSApplicationDelegate {
     let canvas = WidgetCanvas()
     let scroll = NSScrollView()
     var statusItem: NSStatusItem!
-    var pinItem: NSMenuItem!
     var streamTask: Task<Void, Never>?
     var streamGeneration = UUID()
     var writeTask: Task<Void, Never>?
@@ -81,13 +80,9 @@ final class WidgetApp: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "list.bullet.rectangle", accessibilityDescription: "Groot Widget")
         let menu = NSMenu()
-        for (title, selector) in [("显示 / 隐藏", #selector(toggleVisible)), ("置顶", #selector(togglePin)),
-                                  ("重新连接", #selector(reconnect)), ("退出", #selector(quit))] {
-            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
-            item.target = self
-            menu.addItem(item)
-            if selector == #selector(togglePin) { pinItem = item }
-        }
+        let item = NSMenuItem(title: "显示 / 隐藏", action: #selector(toggleVisible), keyEquivalent: "")
+        item.target = self
+        menu.addItem(item)
         statusItem.menu = menu
     }
 
@@ -95,13 +90,6 @@ final class WidgetApp: NSObject, NSApplicationDelegate {
         hidden.toggle()
         if hidden { panel.orderOut(nil) } else { panel.orderFrontRegardless() }
     }
-    @objc func togglePin() {
-        guard ready else { return }
-        settings.topMost.toggle()
-        layout()
-        saveSettings()
-    }
-    @objc func quit() { NSApp.terminate(nil) }
     @objc func screenChanged() { if !dragging { layout() } }
 
     func layout() {
@@ -127,7 +115,6 @@ final class WidgetApp: NSObject, NSApplicationDelegate {
         canvas.frame = NSRect(x: 0, y: 0, width: scroll.contentSize.width, height: contentHeight)
         panel.level = settings.topMost ? .floating : .normal
         panel.alphaValue = settings.opacity
-        pinItem?.state = settings.topMost ? .on : .off
         canvas.needsDisplay = true
     }
 
