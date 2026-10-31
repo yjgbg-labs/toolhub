@@ -279,6 +279,60 @@ HTTP 行为参考 [Code Mode fetch](https://github.com/anomalyco/opencode/blob/d
   base64 与 JSON 开销也计入，因此可传输的原始字节数会更小。
   任务结束、取消或超时会取消在途命令，等待连接资源清理后释放任务额度。
 
+#### 文件系统 `fs`
+
+`server/src/main/scala/groot/fs/FsRoutes.scala` 声明普通 `commands("fs")` 命令组，并设置
+`exposeOn(graaljs)`。通用 SDK 按声明生成 `tools.fs.*`，OpenAPI 发布暴露信息，公共 HTTP 路由与
+CLI、Code Mode 目录按声明过滤。操作使用 **Sprout 服务端的绝对路径**和服务进程的系统权限。
+
+| 命令 | 输入 | 成功响应的 `body` |
+| --- | --- | --- |
+| `fs.read` | `path, encoding="utf8"` | `{content, encoding, bytes}` |
+| `fs.write` | `path, body, encoding="utf8", mode="replace"` | `{bytes}` |
+| `fs.stat` | `path` | `{kind, size, modifiedAt, linkTarget}` |
+| `fs.list` | `path` | 按名称排序的 `{name, kind}[]` |
+| `fs.mkdir` | `path, recursive=false` | `null` |
+| `fs.copy` | `from, to, overwrite=false` | `null` |
+| `fs.move` | `from, to, overwrite=false` | `null` |
+| `fs.remove` | `path, recursive=false` | `null` |
+
+```js
+await tools.fs.mkdir({path: "/data/reports", recursive: true});
+await tools.fs.write({
+  path: "/data/reports/state.json",
+  body: JSON.stringify({updated: true})
+});
+const state = JSON.parse((await tools.fs.read({path: "/data/reports/state.json"})).body.content);
+
+const reply = await tools.fetch({url: "https://example.com/file.bin"});
+if (!reply.body.ok) throw Error(`HTTP ${reply.body.status}`);
+await tools.fs.write({
+  path: "/data/reports/file.bin",
+  encoding: "base64",
+  body: reply.body.bodyBase64
+});
+```
+
+- `write` 声明普通参数和文本请求体，`body` 是文件内容字符串；空字符串可创建空文件。
+  `utf8` 读取严格校验编码，二进制通过 `base64` 保留原始字节。
+- `replace` 默认以同目录临时文件写入、关闭文件后原子替换目录项；已有文件的 POSIX 权限位会保留。
+  原子替换不受文件系统支持时返回错误。`create` 独占创建，已有目标返回 409；`append` 追加并在不存在时创建。
+  写入、复制和移动的目标父目录必须已存在。
+- `read` 和 `copy` 的源路径跟随符号链接，且只接受普通文件；写入和复制的目标拒绝符号链接及特殊文件。
+  `stat` 返回最终路径项本身，`kind` 为 `file/directory/symlink/other`，`modifiedAt` 为 ISO 8601 时间，
+  `linkTarget` 为链接原始目标字符串或 `null`。`list` 接受目录本身，展示直属链接的类型。
+- `copy` 在服务端以固定大小的缓冲区复制文件内容；`overwrite=true` 使用与 `write` 相同的原子替换流程。
+  `move` 移动文件、目录或链接本身，跨文件系统返回 409，不执行隐式复制加删除。
+  `mkdir(recursive=true)` 创建缺失父目录，已有目录视为成功。
+- `remove` 默认可删除文件、链接或空目录；非空目录需要 `recursive=true`。递归删除不跟随符号链接。
+- 每次读写文件数据最多 1 MiB；目录枚举最多 1000 项，超出时返回 413，结果不截断。
+  请求和响应还受通用 SDK 的 1 MiB 序列化限额约束，JSON 转义及 base64 开销计入其中。
+  服务端 `copy/move` 的文件内容不经过 JS，可操作超过此传输限额的文件。
+- 操作取消后等待文件句柄关闭及临时文件清理；原子替换发布前保留原目标。
+  `create/append`、非覆盖复制以及递归删除可能已部分完成，取消和失败不回滚这些修改。
+- 错误沿用标准 `ApiError`，通过 `response.body.code` 读取原因：400 无效路径或编码，403 权限不足，
+  404 不存在，409 已存在、类型不符、非空目录或跨文件系统移动，413 超限，500 其他文件系统 IO 错误。
+
 当前打包目标为 Linux AMD64，使用 GraalVM `25.4.4.1.1` Community isolate 和 SQLite JDBC
 `3.54.1.0`，原生资源随 assembly JAR 交付；JDK 25 启动参数启用 `--enable-native-access=ALL-UNNAMED`。
 
