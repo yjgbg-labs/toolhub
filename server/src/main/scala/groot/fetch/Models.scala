@@ -20,7 +20,8 @@ case class FetchResponse(
     ok: Boolean,
     redirected: Boolean,
     headers: Map[String, String],
-    bodyBase64: String
+    bodyBase64: String,
+    setCookies: List[String]
 ) derives JsonModel
 
 case class FetchError(name: String, message: String) derives JsonModel

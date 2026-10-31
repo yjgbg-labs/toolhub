@@ -76,10 +76,13 @@ final class FetchService(client: Client[IO], timeout: FiniteDuration = 30.second
         Left(next.withUri(target).withHeaders(Headers(stripped)))
       }
       else readBody(request, response).map { bytes =>
-        val headers = response.headers.headers.groupMap(_.name.toString.toLowerCase(java.util.Locale.ROOT))(_.value)
+        val fields = response.headers.headers
+        val headers = fields.groupMap(_.name.toString.toLowerCase(java.util.Locale.ROOT))(_.value)
           .toVector.sortBy(_._1).map { (name, values) => name -> values.mkString(", ") }
+        // Preserve cookie boundaries: Expires and extension attributes can themselves contain commas.
+        val setCookies = fields.collect { case field if field.name == CIString("Set-Cookie") => field.value }
         Right(FetchResponse(request.uri.renderString, response.status.code, response.status.reason,
-          response.status.isSuccess, redirects > 0, headers.toMap, Base64.getEncoder.encodeToString(bytes)))
+          response.status.isSuccess, redirects > 0, headers.toMap, Base64.getEncoder.encodeToString(bytes), setCookies))
       }
     }.flatMap {
       case Left(next) => follow(next, redirects + 1)
@@ -88,11 +91,18 @@ final class FetchService(client: Client[IO], timeout: FiniteDuration = 30.second
 
   private def readBody(request: Request[IO], response: Response[IO]): IO[Array[Byte]] =
     val empty = request.method == Method.HEAD || Set(204, 205, 304).contains(response.status.code)
+    val encodings = response.headers.headers.filter(_.name == CIString("Content-Encoding")).flatMap { field =>
+      field.value.split(",").toList.map(_.trim.toLowerCase(java.util.Locale.ROOT)).filter(_.nonEmpty)
+    }
     val bytes = if empty then Stream.empty.covary[IO] else
-      header(response.headers, "content-encoding").map(_.toLowerCase(java.util.Locale.ROOT)) match
-        case Some("gzip" | "x-gzip") => response.body.through(Compression[IO].gunzip()).flatMap(_.content)
-        case Some("deflate") => response.body.through(Compression[IO].inflate(InflateParams()))
-        case _ => response.body
+      // Decode the complete chain in reverse order, or preserve it intact if any coding is unsupported.
+      if encodings.forall(Set("gzip", "x-gzip", "deflate", "identity")) then
+        encodings.reverse.foldLeft(response.body) {
+          case (body, "gzip" | "x-gzip") => body.through(Compression[IO].gunzip()).flatMap(_.content)
+          case (body, "deflate") => body.through(Compression[IO].inflate(InflateParams()))
+          case (body, _) => body
+        }
+      else response.body
     bytes.take(maxBytes.toLong + 1).compile.to(Array).flatMap { body =>
       if body.length > maxBytes then IO.raiseError(FetchFailure("RangeError", "fetch() response exceeds 1 MiB"))
       else IO.pure(body)

@@ -4,8 +4,7 @@ import cats.effect.{Deferred, IO, Ref, Resource}
 import cats.syntax.all.*
 import com.comcast.ip4s.*
 import framework.rpcDsl.*
-import framework.runtime.CommandSdk
-import groot.graaljs.GraalManager
+import groot.graaljs.{GraalCommandSdk, GraalManager}
 import fs2.{Chunk, Stream}
 import io.circe.Json
 import java.io.ByteArrayOutputStream
@@ -37,16 +36,22 @@ class FetchSuite extends CatsEffectSuite:
   private def header(name: String, value: String): Header.Raw = Header.Raw(CIString(name), value)
   private def serve(app: HttpApp[IO]): Resource[IO, String] = EmberServerBuilder.default[IO]
     .withHost(ipv4"127.0.0.1").withPort(port"0").withHttpApp(app).build.map(s => s"http://127.0.0.1:${s.address.getPort}")
-  private def sdk(service: FetchService): CommandSdk = httpApp { FetchRoutes.register(service) }.commandSdk
-  private def call(sdk: CommandSdk, request: FetchRequest): IO[Json] =
-    sdk.call("fetch", Json.obj("body" -> JsonModel[FetchRequest].encoder(request)))
-  private def fetch(sdk: CommandSdk, request: FetchRequest): IO[FetchResponse] = call(sdk, request).flatMap { result =>
+  private def sdk(service: FetchService): GraalCommandSdk = GraalCommandSdk(httpApp { FetchRoutes.register(service) })
+  private def call(sdk: GraalCommandSdk, request: FetchRequest): IO[Json] =
+    sdk.call("fetch", JsonModel[FetchRequest].encoder(request))
+  private def fetch(sdk: GraalCommandSdk, request: FetchRequest): IO[FetchResponse] = call(sdk, request).flatMap { result =>
     assertEquals(result.hcursor.get[Int]("status"), Right(200), result.noSpaces)
     IO.fromEither(JsonModel[FetchResponse].decoder.decodeJson(result.hcursor.downField("body").focus.get))
   }
   private def bytes(response: FetchResponse): Array[Byte] = Base64.getDecoder.decode(response.bodyBase64)
   private def text(response: FetchResponse): String = new String(bytes(response), UTF_8)
   private def json(response: FetchResponse): Json = io.circe.parser.parse(text(response).stripPrefix("\ufeff")).toOption.get
+  private def compress(bytes: Array[Byte], gzip: Boolean): Array[Byte] =
+    val out = new ByteArrayOutputStream
+    val encoder = if gzip then new GZIPOutputStream(out) else new DeflaterOutputStream(out)
+    encoder.write(bytes)
+    encoder.close()
+    out.toByteArray
   private def run(manager: GraalManager, source: String): IO[Unit] = for
     submitted <- manager.start(source, "5s", "10s")
     task <- awaitUntil(manager.status(submitted.id))(_.terminal)
@@ -69,6 +74,7 @@ class FetchSuite extends CatsEffectSuite:
         _ = assertEquals((response.status, response.statusText, response.ok, response.redirected, response.url),
           (200, "OK", true, false, s"$url/echo?x=1"))
         _ = assertEquals(response.headers("x-reply"), "yes")
+        _ = assertEquals(response.setCookies, Nil)
         first = json(response).hcursor
         _ = assertEquals(first.get[String]("text"), Right("中文🙂"))
         _ = assertEquals(first.get[String]("method"), Right("POST"))
@@ -121,12 +127,7 @@ class FetchSuite extends CatsEffectSuite:
   }
 
   test("HTTP errors and empty responses remain data, gzip/deflate decode, and binary bytes are preserved") {
-    def compressed(gzip: Boolean): Array[Byte] =
-      val out = new ByteArrayOutputStream
-      val encoder = if gzip then new GZIPOutputStream(out) else new DeflaterOutputStream(out)
-      encoder.write("\ufeff{\"text\":\"中文\"}".getBytes(UTF_8))
-      encoder.close()
-      out.toByteArray
+    def compressed(gzip: Boolean): Array[Byte] = compress("\ufeff{\"text\":\"中文\"}".getBytes(UTF_8), gzip)
     val app = HttpApp[IO] { request => IO.pure(request.uri.path.renderString match
       case "/missing" => Response[IO](Status.NotFound).withEntity("missing")
       case "/empty" => Response[IO](Status.NoContent)
@@ -148,6 +149,88 @@ class FetchSuite extends CatsEffectSuite:
         _ = assertEquals(bytes(binary).toVector, Vector[Byte](0, 127, -128, -1))
         head <- fetch(commands, FetchRequest(s"$url/gzip", "HEAD"))
       yield assertEquals(head.bodyBase64, "")
+    }
+  }
+
+  test("content-coding lists and repeated headers decode in reverse order over HTTP") {
+    val plain = "中文🙂 layered response".getBytes(UTF_8)
+    val gzip = compress(plain, gzip = true)
+    val deflate = compress(plain, gzip = false)
+    val cases = List(
+      (compress(gzip, gzip = true), List("gzip, gzip")),
+      (compress(gzip, gzip = true), List("gzip", "gzip")),
+      (compress(gzip, gzip = false), List(" GZip , DEFLATE ")),
+      (compress(deflate, gzip = true), List("deflate", "gzip")),
+      (compress(compress(gzip, gzip = false), gzip = true), List("gzip, deflate", "x-gzip"))
+    )
+    val app = HttpApp[IO] { request =>
+      val (encoded, encodings) = cases(request.uri.path.renderString.drop(1).toInt)
+      IO.pure(Response[IO](Status.Ok).withBodyStream(Stream.chunk(Chunk.array(encoded)))
+        .withHeaders(org.http4s.Headers(encodings.map(header("Content-Encoding", _)))))
+    }
+    (serve(app), FetchService.resource).tupled.use { (url, service) =>
+      val commands = sdk(service)
+      cases.indices.toList.traverse_ { index =>
+        fetch(commands, FetchRequest(s"$url/$index")).map { response =>
+          assertEquals(bytes(response).toVector, plain.toVector, s"case $index")
+        }
+      }
+    }
+  }
+
+  test("layered decoding enforces the decoded size limit and leaves unsupported chains intact") {
+    val large = compress(compress(Array.fill[Byte](FetchService.maxBytes + 1)(65), gzip = true), gzip = false)
+    val opaque = Array[Byte](0, 127, -128, -1)
+    Ref.of[IO, Int](0).flatMap { active =>
+      val client = Client[IO](request =>
+        val (body, encodings) = request.uri.path.renderString match
+          case "/large" => (large, List("gzip", "deflate"))
+          case "/broken" => (compress(opaque, gzip = true), List("deflate, gzip"))
+          case "/unknown-list" => (opaque, List("gzip, br"))
+          case _ => (opaque, List("gzip", "br"))
+        Resource.make(active.update(_ + 1))(_ => active.update(_ - 1)).as(
+          Response[IO](Status.Ok).withBodyStream(Stream.chunk(Chunk.array(body)))
+            .withHeaders(org.http4s.Headers(encodings.map(header("Content-Encoding", _)))))
+      )
+      val commands = sdk(new FetchService(client))
+      for
+        result <- call(commands, FetchRequest("http://example.com/large"))
+        _ = assertEquals(result.hcursor.get[Int]("status"), Right(413))
+        broken <- call(commands, FetchRequest("http://example.com/broken"))
+        _ = assertEquals(broken.hcursor.get[Int]("status"), Right(400))
+        _ <- List("unknown-list", "unknown-fields").traverse_ { path =>
+          fetch(commands, FetchRequest(s"http://example.com/$path")).map { response =>
+            assertEquals(bytes(response).toVector, opaque.toVector)
+            assertEquals(response.headers("content-encoding"), "gzip, br")
+          }
+        }
+        count <- active.get
+      yield assertEquals(count, 0)
+    }
+  }
+
+  test("setCookies preserves response order and comma-containing values through HTTP and GraalJS") {
+    val cookies = List("session=first; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/; HttpOnly",
+      "session=second; Path=/api; SameSite=Lax", "other=value; extension=a, b=c")
+    val app = HttpApp[IO] { request => request.bodyText.compile.string.map { body =>
+      Response[IO](Status.Ok).withEntity(body).putHeaders(
+        header("Set-Cookie", cookies(0)), header("set-cookie", cookies(1)), header("sEt-CoOkIe", cookies(2)),
+        header("X-Value", "one"), header("x-value", "two"))
+    } }
+    (serve(app), FetchService.resource).tupled.use { (url, service) =>
+      val commands = sdk(service)
+      for
+        response <- fetch(commands, FetchRequest(url))
+        _ = assertEquals(response.setCookies, cookies)
+        _ = assertEquals(response.headers("set-cookie"), cookies.mkString(", "))
+        _ = assertEquals(response.headers("x-value"), "one, two")
+        _ <- temporary.use { home => GraalManager.resource(home, IO.pure(commands)).use { manager => run(manager, s"""
+          const result = await tools.fetch({url: "$url", method: "POST", body: "hello"});
+          if (result.body.bodyBase64 !== "aGVsbG8=") throw Error("body-only command input");
+          const expected = ${Json.fromValues(cookies.map(Json.fromString)).noSpaces};
+          if (JSON.stringify(result.body.setCookies) !== JSON.stringify(expected)) throw Error("cookie boundaries");
+        """) } }
+      yield ()
     }
   }
 
@@ -201,15 +284,15 @@ class FetchSuite extends CatsEffectSuite:
         command[String]("arrive") { handle { arrive.as("tool") } }
         command[Unit]("wait") { handle { IO.never[Unit] } }
       }
-      _ <- temporary.use { home => GraalManager.resource(home, IO.pure(app.commandSdk)).use { manager =>
+      _ <- temporary.use { home => GraalManager.resource(home, IO.pure(GraalCommandSdk(app))).use { manager =>
         run(manager, """
           if (typeof fetch !== "undefined") throw Error("unexpected business-specific global");
-          const promise = tools.fetch({body:{url:"http://example.com/arrive"}});
+          const promise = tools.fetch({url:"http://example.com/arrive"});
           if (!(promise instanceof Promise)) throw Error("not a native Promise");
           const results = await Promise.all([promise, tools.arrive()]);
           if (results[0].body.bodyBase64 !== "ZmV0Y2g=" || results[1].body !== "tool") throw Error("concurrency");
-          const pending = Array.from({length:64}, (_, i) => i % 2 ? tools.wait() : tools.fetch({body:{url:"http://example.com/wait"}}));
-          try { await tools.fetch({body:{url:"http://example.com/wait"}}); throw Error("missing pending limit"); }
+          const pending = Array.from({length:64}, (_, i) => i % 2 ? tools.wait() : tools.fetch({url:"http://example.com/wait"}));
+          try { await tools.fetch({url:"http://example.com/wait"}); throw Error("missing pending limit"); }
           catch(e) { if (!e.message.includes("64")) throw e; }
         """) *> active.get.map(count => assertEquals(count, 0))
       } }
@@ -226,7 +309,7 @@ class FetchSuite extends CatsEffectSuite:
         finalizing.complete(()) *> release.get *> active.update(_ - 1)).evalMap(_ => IO.never[Response[IO]]))
       commands = sdk(new FetchService(client))
       _ <- temporary.use { home => GraalManager.resource(home, IO.pure(commands)).use { manager => (for
-        first <- manager.start("await tools.fetch({body:{url:'http://example.com/wait'}});", "5s", "10s")
+        first <- manager.start("await tools.fetch({url:'http://example.com/wait'});", "5s", "10s")
         _ <- started.get.timeout(5.seconds)
         _ <- manager.cancel(first.id)
         _ <- finalizing.get.timeout(5.seconds)
@@ -235,7 +318,7 @@ class FetchSuite extends CatsEffectSuite:
         _ <- release.complete(())
         done <- awaitUntil(manager.status(first.id))(_.terminal)
         _ = assertEquals(done.state, "cancelled")
-        timed <- manager.start("await tools.fetch({body:{url:'http://example.com/wait'}});", "5s", "150ms")
+        timed <- manager.start("await tools.fetch({url:'http://example.com/wait'});", "5s", "150ms")
         timeout <- awaitUntil(manager.status(timed.id))(_.terminal)
         _ = assertEquals(timeout.error.map(_.code), Some("timeout"))
         count <- active.get
@@ -254,7 +337,8 @@ class FetchSuite extends CatsEffectSuite:
       }
       document = io.circe.parser.parse(app.openApiJson).toOption.get
       _ = assertEquals(document.hcursor.downField("paths").downField("/fetch").downField("post").get[List[String]]("x-expose-on"), Right(List("graaljs")))
-      _ = assertEquals(app.commandSdk.commands, Vector("fetch"))
+      commands = GraalCommandSdk(app)
+      _ = assertEquals(commands.commands, Vector("fetch"))
       _ <- serve(app.httpApp).use { url => org.http4s.ember.client.EmberClientBuilder.default[IO].build.use { external =>
         List(Method.GET, Method.POST, Method.HEAD, Method.OPTIONS).traverse_ { method =>
           external.run(Request[IO](method, Uri.unsafeFromString(s"$url/fetch"))).use(r => IO(assertEquals(r.status, Status.NotFound)))
@@ -262,15 +346,15 @@ class FetchSuite extends CatsEffectSuite:
       } }
       before <- calls.get
       _ = assertEquals(before, 0)
-      invalid <- app.commandSdk.call("fetch", Json.obj("body" -> Json.obj("url" -> Json.fromInt(42))))
+      invalid <- commands.call("fetch", Json.obj("url" -> Json.fromInt(42)))
       _ = assertEquals(invalid.hcursor.get[Int]("status"), Right(400))
-      _ <- temporary.use { home => GraalManager.resource(home, IO.pure(app.commandSdk)).use { manager => run(manager, """
+      _ <- temporary.use { home => GraalManager.resource(home, IO.pure(commands)).use { manager => run(manager, """
         if (typeof fetch !== "undefined") throw Error("unexpected global fetch");
-        const result = await tools.fetch({body:{url:"http://example.com"}});
+        const result = await tools.fetch({url:"http://example.com"});
         if (result.status !== 200 || result.body.status !== 404 || result.body.ok || result.body.bodyBase64 !== "bWlzc2luZw==") throw Error(JSON.stringify(result));
-        for (const body of [{url:"relative"}, {url:"http://example.com", headers:{"bad name":"x"}},
+        for (const request of [{url:"relative"}, {url:"http://example.com", headers:{"bad name":"x"}},
           {url:"http://example.com", method:"POST", body:"!", bodyEncoding:"base64"}]) {
-          try { await tools.fetch({body}); throw Error("missing command validation"); }
+          try { await tools.fetch(request); throw Error("missing command validation"); }
           catch(e) { if (e.name !== "ApiError" || e.response.status !== 400) throw e; }
         }
       """) } }
@@ -283,7 +367,7 @@ class FetchSuite extends CatsEffectSuite:
 
   test("the generic SDK omits commands excluded from the GraalJS catalog") {
     val hidden = httpApp { command[Unit]("fetch") { exposeOn(cli, codemode); handle { IO.unit } } }
-    List(CommandSdk.empty, hidden.commandSdk).traverse_ { commands =>
+    List(GraalCommandSdk.empty, GraalCommandSdk(hidden)).traverse_ { commands =>
       temporary.use { home => GraalManager.resource(home, IO.pure(commands)).use { manager =>
         run(manager, "if (typeof fetch !== 'undefined' || typeof tools.fetch !== 'undefined') throw Error('fetch exposure bypassed');")
       } }
