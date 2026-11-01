@@ -160,7 +160,7 @@ await tools.schedule.config.write(config);
 - 脚本错误、超时、资源超限、取消、中断及提交失败都会进入重试。重试优先于普通周期，
   等待期间释放逻辑资源；所有尝试都遵循同名不重叠和资源配额。
 - 普通周期按最近一次尝试开始时间加 `every` 计算；成功或重试耗尽后恢复周期调度，
-  新周期的 `attempt` 从 1 开始。重试/周期到期后在下一个 tick 检查，且可能等待资源。
+  新周期的 `attempt` 从 1 开始。到期时由单次定时器唤醒，且可能等待资源。
 - `list` 包含 `lastTaskId`、`lastTaskState`、`lastFinishedAt`、`lastError`、`attempt`、`nextRetryAt`。
   `status=retrying` 表示待重试，`queued` 表示等待调度资源；GraalJS 内部排队状态见 `lastTaskState`。
   `lastExitCode` 是兼容结果标记：成功 0、取消/中断 143、其他失败 1，并非进程退出码。
@@ -173,6 +173,14 @@ await tools.schedule.config.write(config);
   完整配置写入会保留未修改任务的状态。
 
 完整操作见 [schedule skill](skills/schedule/SKILL.md)。
+
+调度采用事件驱动：启动时恢复状态，创建/修改/删除/reset/资源配额变更和任务完成时唤醒调度，
+平时仅等待最近一次执行或重试的截止时间。队列等待资源释放事件；没有可到期任务时无限等待，
+不按秒扫描配置或状态文件。事件合并为一个待处理信号，较早的新任务会中断旧定时器并重新计算。
+仅内部 I/O/结果持久化错误使用 1–30 秒指数退避恢复，避免异常时忙循环。
+
+完整配置现在仅包含 `resources` 和 `jobs`；旧文件的 `tickMs` 可读取但被忽略，新 API 不再返回它。
+配置通过 API 更新会立即唤醒调度。`every: "0ms"` 表示前次完成后立即再次执行。
 
 ### 客户端暴露范围
 

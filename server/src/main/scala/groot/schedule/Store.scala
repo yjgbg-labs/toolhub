@@ -9,7 +9,7 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path, StandardCopyOption, StandardOpenOption}
 import java.io.RandomAccessFile
 
-final class Store(val home: Path):
+class Store(val home: Path):
   val configPath: Path = home.resolve("schedule.json")
   private val directory = home.resolve("schedule")
   private val stateDir = directory.resolve("state")

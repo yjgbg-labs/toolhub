@@ -14,6 +14,7 @@ description: 创建、修改或排查Sprout定时任务及迁移groot调度时�
 - 仅接受 JavaScript `source`；不接受 `command`、`cwd` 或运行状态字段。
 - 脚本使用 `console`、`tools.*`（HTTP 用 `tools.fetch`）；不能导入 Bun/Node 模块或启动进程。
 - 调度循环随 `groot-sprout-http.service` 启动；不要重启旧 `groot-schedule.service`。
+- 调度由配置变更、任务完成和最近截止时间唤醒；空闲/等待资源时休眠，不轮询文件。
 - 除非用户指定，不创建 cron 或 systemd timer。
 - 配置修改通过 API/CLI 完成，不直接编辑运行中的配置及状态文件。
 
@@ -64,7 +65,7 @@ groot-cli graaljs logs --id gjs_...
 - 默认失败后等待 1、2、4 秒；第 n 次失败延迟为 `min(delay × backoff^(n-1), maxDelay)`。
 - `delay` 支持 0；`backoff` 至少为 1 且有限；`maxDelay` 至少为 `delay`。
 - 错误、超时、资源超限、取消、中断及提交失败都重试；捕获错误后正常返回会被视为成功。
-- 重试优先于普通周期，等待重试时释放逻辑资源；到期后在下一 tick 检查，可能等待资源。
+- 重试优先于普通周期，等待重试时释放逻辑资源；到期定时器唤醒，资源释放后立即调度队列。
 - 成功或耗尽重试后恢复普通周期，下一周期为最近一次尝试开始时间加 `every`，`attempt` 重新从 1 开始。
 - ID 在提交前持久化；重启核对任务真实结果，保留尝试次数及重试截止时间，不重复发布旧 ID。
 - 未完成提交的中断计作一次失败。已产生的外部副作用不会回滚，脚本应支持幂等重试。
@@ -74,7 +75,6 @@ groot-cli graaljs logs --id gjs_...
 ```json
 {
   "resources": {"cpu": 100},
-  "tickMs": 1000,
   "jobs": {
     "sample": {
       "every": "10m",
@@ -90,7 +90,8 @@ groot-cli graaljs logs --id gjs_...
 ```
 
 `resource` 是逻辑并发令牌，与 GraalJS CPU/内存限制独立；值为非负数，须存在于顶层并不超过容量。
-`tickMs` 为正数，最大 2147483647。`config write` 必须包含 `resources`、`tickMs`、`jobs`，先验证后原子写入。
+`config write` 必须包含 `resources`、`jobs`，先验证后原子写入并唤醒调度。
+旧配置中的 `tickMs` 读取时忽略，新 API 不再返回它。`every: "0ms"` 表示前次完成后立即再次执行。
 未修改的任务保留状态；修改定义的任务清空状态。不要把 `list` 的运行字段写回任务配置。
 
 ```bash
