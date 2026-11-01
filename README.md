@@ -81,7 +81,7 @@ Native 编译还需要 Clang 和 libcurl 等开发库，
 ```sh
 groot-cli --help
 groot-cli health
-groot-cli schedule new --name hello --body '{"source":"console.log(\"hi\")","every":"1h"}'
+groot-cli schedule new --name hello --body '{"script":"/home/user/.config/sprout/scripts/hello.js","every":"1h"}'
 groot-cli jobs --job build --parallel 2
 ```
 
@@ -120,7 +120,7 @@ Code Mode 和 GraalJS 使用相同的参数规则，由命令声明自动映射�
 // 普通参数直接放在顶层；混合参数时保留 body。
 await tools.schedule.new({
   name: "example",
-  body: {every: "5m", source: "console.log('hello')", enabled: false}
+  body: {every: "5m", script: "/home/user/.config/sprout/scripts/hello.js", enabled: false}
 });
 await tools.schedule.log({name: "example", lines: 20});
 
@@ -139,14 +139,14 @@ await tools.schedule.config.write(config);
 
 ### GraalJS 定时任务与重试
 
-`schedule` 仅接受 JavaScript `source`，每次周期执行和每次重试都发布独立的 GraalJS 任务。
+`schedule` 使用 `script` 指向服务端 JavaScript 文件的绝对路径，每次成功提交的周期执行和重试都有独立的 GraalJS 任务 ID。
 脚本可用 `console` 和声明自动生成的 `tools.*`（含 `tools.fetch`）；不支持 Bun/Node 模块或进程命令。
-`command`、`cwd` 和运行状态字段会被拒绝。旧配置升级前应先备份，迁移成源码后通过 API 写入。
+内联 `source`、`command`、`cwd` 和运行状态字段会被拒绝。旧配置升级前应先备份，将源码保存为文件后通过 API 写入路径。
 
 ```json
 {
   "every": "5m",
-  "source": "const response = await tools.health(); console.log(response.body);",
+  "script": "/home/user/.config/sprout/scripts/health.js",
   "cpu": "1s",
   "timeout": "30s",
   "retry": {"maxRetries": 3, "delay": "1s", "backoff": 2, "maxDelay": "30s"},
@@ -166,13 +166,30 @@ await tools.schedule.config.write(config);
   `lastExitCode` 是兼容结果标记：成功 0、取消/中断 143、其他失败 1，并非进程退出码。
 - `schedule log` 聚合尝试日志，运行期间包含实时输出；可按 `lastTaskId` 查询 `graaljs status/logs`。
   删除任务保留历史日志。崩溃恢复可能重复一段日志，脚本副作用应具备幂等性。
-- 提交前持久化任务 ID；重启核对已完成/中断任务，继续已保存的重试次数和截止时间。
-  提交前发生中断计作一次失败，不重新提交旧 ID。服务关闭等待活动 Context 清理完成。
+- 调用 GraalJS `start` 后，从返回的 `GraalTask.id` 获取 ID 并持久化；重启核对已保存 ID 的真实结果和重试状态。
+  接受提交成功但 ID 尚未保存时崩溃造成的重复提交窗口。服务关闭等待活动 Context 清理完成。
 - `new`、`reset`、删除或修改任务定义会清空运行记录及待重试；已提交的旧任务可以完成，
   其结果不会覆盖新配置，也不会触发旧定义的重试。同名新任务等待旧 Context 完成后再运行。
   完整配置写入会保留未修改任务的状态。
 
 完整操作见 [schedule skill](skills/schedule/SKILL.md)。
+
+#### 提交时校验脚本内容
+
+- `script` 是服务器本地路径，不是客户端路径、URL 或 `file:` URI；文件须为非空 UTF-8 JavaScript，最大 1 MiB。
+- 每次周期执行和重试提交前读取脚本内容并计算 SHA-256；不依赖文件事件或大小/mtime 判断内容是否变化。
+  schedule 维护最多 128 项、按访问顺序淘汰的 `SHA-256 → org.graalvm.polyglot.Source` LRU，跨文件路径共享相同内容。
+  Source 名称及 URI 基于哈希；缓存命中复用原生对象，未命中时用本次读取的同一份字节解码并构建 Source。
+- GraalJS `start(source: Source, cpu, timeout)` 直接接收原生 Source，内部 submit 为 private；不管理文件或 LRU。
+  每个任务持有提交时的 Source 引用，并把其实际执行文本持久化到数据库，LRU 淘汰不影响已提交任务。
+  已提交（包括 GraalJS 内部排队）的任务继续执行旧快照；尚在等待 schedule 逻辑资源的任务和后续重试在提交时重新读取文件。
+- 文件更新在下一次提交时生效，不重置周期、尝试次数或打断正在运行的 Context。
+  缺失、不可读、空文件、编码或大小错误会使后续尝试以 `source_error` 失败并按策略重试，不回退到旧源码。
+  这些错误发生在提交前，由 schedule 记录，`lastTaskId` 为空；语法或执行错误在 GraalJS 中产生实际任务 ID。
+  语法错误由隔离 Context 执行时报告；修复文件后下次尝试自动使用新版。
+- 不创建文件 watcher 或轮询定时器；旧内容按 LRU 容量淘汰，关闭 scheduler 时释放缓存引用。
+  建议通过原子替换更新脚本，避免并发就地写入时读取到中间内容。
+  HTTP/CLI 的 `graaljs start` 由文本适配层构建原生 Source，继续支持一次性内联 JavaScript。
 
 调度采用事件驱动：启动时恢复状态，创建/修改/删除/reset/资源配额变更和任务完成时唤醒调度，
 平时仅等待最近一次执行或重试的截止时间。队列等待资源释放事件；没有可到期任务时无限等待，

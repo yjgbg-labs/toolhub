@@ -384,7 +384,7 @@ class FsSuite extends CatsEffectSuite:
       GraalManager.resource(home.resolve("tasks"), IO.pure(GraalCommandSdk(app))).use { manager =>
         val root = Json.fromString(home.resolve("workflow").toString).noSpaces
         for
-          task <- manager.start(s"""
+          task <- manager.start(groot.graaljs.JavaScript.source(s"""
             if (typeof fs !== "undefined" || typeof fetch !== "undefined") throw Error("unexpected business global");
             const root = $root;
             await tools.fs.mkdir({path: root});
@@ -400,7 +400,7 @@ class FsSuite extends CatsEffectSuite:
             try { await tools.fs.read({path: root + "/missing"}); throw Error("missing error"); }
             catch (e) { if (e.name !== "ApiError" || e.response.status !== 404 || e.response.body.code !== "not_found") throw e; }
             await tools.fs.remove({path: root, recursive: true});
-          """, "5s", "10s")
+          """), "5s", "10s")
           done <- awaitUntil(manager.status(task.id))(_.terminal)
           log <- manager.logs(task.id)
         yield

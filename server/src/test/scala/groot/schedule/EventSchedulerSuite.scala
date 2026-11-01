@@ -11,7 +11,7 @@ import munit.CatsEffectSuite
 import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
 
-class EventSchedulerSuite extends CatsEffectSuite:
+class EventSchedulerSuite extends ScriptFixtures:
   private def temporary: Resource[IO, Path] = Resource.make(
     IO.blocking(Files.createTempDirectory(Path.of("/tmp/opencode"), "schedule-events-"))
   )(path => IO.blocking {
@@ -23,9 +23,6 @@ class EventSchedulerSuite extends CatsEffectSuite:
   private def eventually[A](read: IO[A], timeout: FiniteDuration = 3.seconds)(check: A => Boolean): IO[A] =
     def loop: IO[A] = read.flatMap(value => if check(value) then IO.pure(value) else IO.sleep(5.millis) *> loop)
     loop.timeout(timeout)
-
-  private def job(source: String, cpu: Double = 0): ScheduleJob =
-    ScheduleJob("1h", source, resource = if cpu == 0 then Map.empty else Map("cpu" -> cpu))
 
   private def counting(home: Path, reads: Ref[IO, Int]): Store = new Store(home):
     override def config = reads.update(_ + 1) *> super.config

@@ -4,7 +4,7 @@ import cats.effect.{Deferred, IO, Ref, Resource}
 import cats.syntax.all.*
 import com.comcast.ip4s.*
 import framework.rpcDsl.*
-import groot.graaljs.{GraalCommandSdk, GraalManager}
+import groot.graaljs.{GraalCommandSdk, GraalManager, JavaScript}
 import fs2.{Chunk, Stream}
 import io.circe.Json
 import java.io.ByteArrayOutputStream
@@ -53,7 +53,7 @@ class FetchSuite extends CatsEffectSuite:
     encoder.close()
     out.toByteArray
   private def run(manager: GraalManager, source: String): IO[Unit] = for
-    submitted <- manager.start(source, "5s", "10s")
+    submitted <- manager.start(JavaScript.source(source), "5s", "10s")
     task <- awaitUntil(manager.status(submitted.id))(_.terminal)
     log <- manager.logs(task.id).map(_.toString)
   yield assertEquals(task.state, "succeeded", s"${task.error}\n$log")
@@ -309,7 +309,7 @@ class FetchSuite extends CatsEffectSuite:
         finalizing.complete(()) *> release.get *> active.update(_ - 1)).evalMap(_ => IO.never[Response[IO]]))
       commands = sdk(new FetchService(client))
       _ <- temporary.use { home => GraalManager.resource(home, IO.pure(commands)).use { manager => (for
-        first <- manager.start("await tools.fetch({url:'http://example.com/wait'});", "5s", "10s")
+        first <- manager.start(JavaScript.source("await tools.fetch({url:'http://example.com/wait'});"), "5s", "10s")
         _ <- started.get.timeout(5.seconds)
         _ <- manager.cancel(first.id)
         _ <- finalizing.get.timeout(5.seconds)
@@ -318,7 +318,7 @@ class FetchSuite extends CatsEffectSuite:
         _ <- release.complete(())
         done <- awaitUntil(manager.status(first.id))(_.terminal)
         _ = assertEquals(done.state, "cancelled")
-        timed <- manager.start("await tools.fetch({url:'http://example.com/wait'});", "5s", "150ms")
+        timed <- manager.start(JavaScript.source("await tools.fetch({url:'http://example.com/wait'});"), "5s", "150ms")
         timeout <- awaitUntil(manager.status(timed.id))(_.terminal)
         _ = assertEquals(timeout.error.map(_.code), Some("timeout"))
         count <- active.get
