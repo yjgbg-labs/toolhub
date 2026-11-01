@@ -15,7 +15,7 @@ class GraalSdkSuite extends CatsEffectSuite:
 
   private def run(manager: GraalManager, source: String, cpu: String = "5s", timeout: String = "10s"): IO[(GraalTask, String)] =
     for
-      submitted <- manager.start(source, cpu, timeout)
+      submitted <- manager.start(JavaScript.source(source), cpu, timeout)
       task <- awaitUntil(manager.status(submitted.id))(_.terminal)
       log <- manager.logs(task.id)
     yield (task, log.toString)
@@ -260,9 +260,9 @@ class GraalSdkSuite extends CatsEffectSuite:
         }
         _ <- GraalManager.managed(home.resolve("data"), GraalRunner.resource(IO.pure(GraalCommandSdk(app))), Limits.taskBytes).use { manager =>
           (for
-            first <- manager.start("await tools.wait();", "5s", "10s")
+            first <- manager.start(JavaScript.source("await tools.wait();"), "5s", "10s")
             _ <- started.get.timeout(5.seconds)
-            second <- manager.start("console.log('next');", "5s", "10s")
+            second <- manager.start(JavaScript.source("console.log('next');"), "5s", "10s")
             _ <- manager.cancel(first.id)
             _ <- finalizing.get.timeout(5.seconds)
             waiting <- manager.status(second.id)

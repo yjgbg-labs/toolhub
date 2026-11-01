@@ -5,7 +5,7 @@ import java.nio.file.{Files, Path}
 import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
 
-private[graaljs] object GraalTestSupport:
+private[groot] object GraalTestSupport:
   def temporary: Resource[IO, Path] = Resource.make(
     IO.blocking(Files.createTempDirectory(Path.of("/tmp/opencode"), "graaljs-test-"))
   )(path => IO.blocking {

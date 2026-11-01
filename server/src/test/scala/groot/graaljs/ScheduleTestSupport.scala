@@ -3,10 +3,11 @@ package groot.graaljs
 import cats.effect.{Deferred, IO, Ref, Resource}
 import cats.syntax.all.*
 import java.nio.file.Path
+import org.graalvm.polyglot.Source
 
 /** Uses the real admission, persistence, completion and cancellation machinery with controllable guests. */
 object ScheduleTestSupport:
-  case class Call(task: GraalTask, source: String, done: Deferred[IO, RunResult], cancelled: Deferred[IO, TaskError], snapshot: GraalSource)
+  case class Call(task: GraalTask, source: String, done: Deferred[IO, RunResult], cancelled: Deferred[IO, TaskError], snapshot: Source)
 
   class Control private[ScheduleTestSupport] (val calls: Ref[IO, Vector[Call]]):
     def finish(id: String, state: String = "succeeded"): IO[Unit] = calls.get.flatMap { values =>
@@ -18,11 +19,12 @@ object ScheduleTestSupport:
     for
       calls <- Resource.eval(Ref.of[IO, Vector[Call]](Vector.empty))
       runner = new GraalRunner:
-        def start(task: GraalTask, source: GraalSource, log: Path): IO[GraalExecution] =
+        def start(task: GraalTask, source: Source, log: Path): IO[GraalExecution] =
           for
             done <- Deferred[IO, RunResult]
             cancelled <- Deferred[IO, TaskError]
-            _ <- calls.update(_ :+ Call(task, source.text, done, cancelled, source))
+            text = source.getCharacters.toString.stripPrefix("(async () => {\n").stripSuffix("\n})()")
+            _ <- calls.update(_ :+ Call(task, text, done, cancelled, source))
             _ <- IO.whenA(autoFinish)(done.complete(RunResult("succeeded", Some(1d), 2d, None)).void)
           yield new GraalExecution:
             def result = done.get

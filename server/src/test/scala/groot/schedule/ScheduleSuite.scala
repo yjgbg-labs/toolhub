@@ -1,6 +1,6 @@
 package groot.schedule
 
-import cats.effect.{Deferred, IO, Resource}
+import cats.effect.{Deferred, IO, Ref, Resource}
 import cats.syntax.all.*
 import framework.model.JsonModel
 import framework.runtime.Application
@@ -273,7 +273,7 @@ class ScheduleSuite extends ScriptFixtures:
           yield ()
         }
         // Simulate process loss after schedule persisted its ID but before GraalJS accepted it.
-        _ <- store.writeState("sample", saved.copy(lastTaskId = Some(GraalManager.taskId()), attempt = 2, nextRetryAt = None, inFlight = true))
+        _ <- store.writeState("sample", saved.copy(lastTaskId = Some("gjs_" + java.util.UUID.randomUUID().toString.replace("-", "")), attempt = 2, nextRetryAt = None, inFlight = true))
         _ <- Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
           for
             rows <- eventually(scheduler.list)(_.head.nextRetryAt.nonEmpty)
@@ -376,6 +376,34 @@ class ScheduleSuite extends ScriptFixtures:
           _ <- scheduler.delete("a/b 空")
           history <- new Store(home).log("a/b 空", 100)
         yield assert(history.contains(task.id))
+      }
+    } }
+  }
+
+  test("schedule saves the returned task ID and retains live ownership if that state write fails") {
+    temporary.use { home => Stub.resource(home.resolve("graaljs")).use { (manager, control) =>
+      Ref.of[IO, Boolean](true).flatMap { failOnce =>
+        val store = new Store(home):
+          override def writeState(name: String, state: JobState) =
+            if state.inFlight then failOnce.getAndSet(false).flatMap { fail =>
+              if fail then IO.raiseError(new java.io.IOException("injected post-admission persistence failure"))
+              else super.writeState(name, state)
+            }
+            else super.writeState(name, state)
+        Scheduler.managed(manager, store, startLoop = false).use { scheduler =>
+          for
+            _ <- scheduler.put("sample", job())
+            failed <- scheduler.dispatch.attempt
+            _ = assert(failed.isLeft)
+            calls <- control.calls.get
+            _ = assertEquals(calls.size, 1)
+            _ <- scheduler.dispatch
+            still <- control.calls.get
+            _ = assertEquals(still.size, 1)
+            _ <- control.finish(calls.head.task.id)
+            rows <- eventually(scheduler.list)(_.head.lastExitCode.contains(0))
+          yield assertEquals(rows.head.lastTaskId, Some(calls.head.task.id))
+        }
       }
     } }
   }

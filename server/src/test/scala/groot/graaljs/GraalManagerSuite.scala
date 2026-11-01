@@ -11,6 +11,7 @@ import munit.CatsEffectSuite
 import org.http4s.{Header, MediaType, Method, Request, Status, Uri}
 import org.http4s.circe.*
 import org.typelevel.ci.CIString
+import org.graalvm.polyglot.Source
 import scala.concurrent.duration.*
 import scala.util.Using
 import GraalTestSupport.*
@@ -18,11 +19,11 @@ import GraalTestSupport.*
 class GraalManagerSuite extends CatsEffectSuite:
   private case class Invocation(task: GraalTask, source: String, done: Deferred[IO, RunResult], cancellation: Deferred[IO, TaskError])
   private class StubRunner(val calls: Ref[IO, Vector[Invocation]], cleanup: IO[Unit]) extends GraalRunner:
-    def start(task: GraalTask, source: GraalSource, log: Path): IO[GraalExecution] =
+    def start(task: GraalTask, source: Source, log: Path): IO[GraalExecution] =
       for
         done <- Deferred[IO, RunResult]
         cancellation <- Deferred[IO, TaskError]
-        _ <- calls.update(_ :+ Invocation(task, source.text, done, cancellation))
+        _ <- calls.update(_ :+ Invocation(task, source.getCharacters.toString, done, cancellation))
       yield new GraalExecution:
         def result = done.get
         def cancel(reason: TaskError) =
@@ -34,7 +35,8 @@ class GraalManagerSuite extends CatsEffectSuite:
 
   private def stub(cleanup: IO[Unit] = IO.unit): IO[StubRunner] = Ref.of[IO, Vector[Invocation]](Vector.empty).map(new StubRunner(_, cleanup))
   private val source = "  const message = '中文🙂';\nconsole.log(message, \"quoted\");\n"
-  private def submit(manager: GraalManager, timeout: String = "30s") = manager.start(source, "10s", timeout)
+  private def submit(manager: GraalManager, timeout: String = "30s") =
+    manager.start(Source.newBuilder("js", source, "test.js").buildLiteral(), "10s", timeout)
   private def append(path: Path, text: String): IO[Unit] = IO.blocking { Files.writeString(path, text, StandardOpenOption.APPEND); () }
 
   test("completion waiters are independent and observe terminal state only after context cleanup and log persistence") {
@@ -252,7 +254,7 @@ class GraalManagerSuite extends CatsEffectSuite:
             _ = assertEquals(created.status, Status.Ok)
             id = json.hcursor.get[String]("id").toOption.get
             call <- runner.invocation(id)
-            _ = assertEquals(call.source, source)
+            _ = assertEquals(call.source, JavaScript.source(source).getCharacters.toString)
             _ = assert(!json.asObject.get.contains("script") && !json.asObject.get.contains("cwd"))
             missingCpu <- app.httpApp(start(input.filterNot(_._1 == "cpu")))
             _ = assertEquals(missingCpu.status, Status.BadRequest)

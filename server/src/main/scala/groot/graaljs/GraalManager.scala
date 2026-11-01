@@ -7,6 +7,8 @@ import framework.rpc.{PlainText, SSE}
 import java.nio.file.Path
 import java.time.Instant
 import java.util.UUID
+import org.graalvm.polyglot.Source
+import java.nio.charset.StandardCharsets.UTF_8
 import scala.concurrent.duration.*
 
 final class GraalManager private (
@@ -19,7 +21,7 @@ final class GraalManager private (
   private case class Running(execution: GraalExecution, done: Deferred[IO, Unit])
   private var running = Map.empty[String, Running]
   private var submitted = Map.empty[String, FiniteDuration]
-  private var sources = Map.empty[String, GraalSource]
+  private var sources = Map.empty[String, Source]
   private var completions = Map.empty[String, Deferred[IO, Either[Throwable, GraalTask]]]
   private var accepting = true
 
@@ -33,14 +35,15 @@ final class GraalManager private (
       )(start => (now - start).toNanos.toDouble / 1000000d))
     }
 
-  def start(source: String, cpu: String, timeout: String): IO[GraalTask] =
-    IO(GraalManager.taskId()).flatMap(id => IO(GraalSource.inline(source, id)).flatMap(code => submit(id, Right(code), cpu, timeout)))
+  def start(source: Source, cpu: String, timeout: String): IO[GraalTask] =
+    IO(GraalManager.taskId()).flatMap(id => submit(id, source, cpu, timeout))
 
-  /** Internal admission with a preallocated ID, so schedule can durably link an attempt before it runs. */
-  private[groot] def submit(id: String, source: Either[TaskError, GraalSource], cpu: String, timeout: String): IO[GraalTask] =
+  private def submit(id: String, source: Source, cpu: String, timeout: String): IO[GraalTask] =
     for
-      _ <- IO.raiseUnless(id.matches("gjs_[0-9a-f]{32}"))(InvalidGraalTask("Invalid task ID"))
       limits <- IO((Validation.durationMs("cpu", cpu), Validation.durationMs("timeout", timeout)))
+      _ <- IO.raiseUnless(source.getLanguage == "js" && source.hasCharacters)(InvalidGraalTask("Source must contain JavaScript characters"))
+      text <- IO(source.getCharacters.toString)
+      _ <- IO.raiseWhen(text.trim.isEmpty || text.getBytes(UTF_8).length > JavaScript.maxExecutableBytes)(InvalidGraalTask("Invalid JavaScript Source size"))
       task <- serial {
         for
           _ <- IO.raiseUnless(accepting)(GraalStopping())
@@ -51,12 +54,9 @@ final class GraalManager private (
           task = GraalTask(id, "queued", limits._1, limits._2,
             Limits.taskBytes, now.toString, None, None, None, 0d, None, store.logPath(id).toAbsolutePath.toString, None)
           _ <- store.createLog(id)
-          _ <- store.insert(task, source.fold(_ => "", _.text))
+          _ <- store.insert(task, text)
           completed <- Deferred[IO, Either[Throwable, GraalTask]]
-          _ <- IO { submitted += id -> clock; completions += id -> completed }
-          _ <- source match
-            case Right(code) => IO { sources += id -> code }
-            case Left(error) => complete(task, RunResult("failed", None, 0d, Some(error))) *> IO { submitted -= id }
+          _ <- IO { submitted += id -> clock; completions += id -> completed; sources += id -> source }
           _ <- dispatch
           current <- store.get(id).flatMap(elapsed)
         yield current
@@ -163,7 +163,7 @@ final class GraalManager private (
     }
 
 object GraalManager:
-  private[groot] def taskId(): String = "gjs_" + UUID.randomUUID().toString.replace("-", "")
+  private def taskId(): String = "gjs_" + UUID.randomUUID().toString.replace("-", "")
   def resource(home: Path = GraalStore.defaultHome, commands: IO[GraalCommandSdk] = IO.pure(GraalCommandSdk.empty)): Resource[IO, GraalManager] =
     managed(home, GraalRunner.resource(commands))
 

@@ -7,7 +7,7 @@ import java.lang.management.ManagementFactory
 import java.nio.file.{Files, Path, StandardOpenOption}
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
-import org.graalvm.polyglot.{Context, Engine, HostAccess, PolyglotException, SandboxPolicy}
+import org.graalvm.polyglot.{Context, Engine, HostAccess, PolyglotException, SandboxPolicy, Source}
 import scala.util.control.NonFatal
 
 private[graaljs] case class RunResult(
@@ -23,7 +23,7 @@ private[graaljs] trait GraalExecution:
   def cancel(reason: TaskError): IO[Unit]
 
 private[graaljs] trait GraalRunner:
-  def start(task: GraalTask, source: GraalSource, log: Path): IO[GraalExecution]
+  def start(task: GraalTask, source: Source, log: Path): IO[GraalExecution]
 
 private[graaljs] object GraalRunner:
   val cancelled = TaskError("cancelled", "Cancelled by user")
@@ -66,7 +66,7 @@ private[graaljs] object GraalRunner:
       if !cpu.isCurrentThreadCpuTimeSupported then None
       else Option(cpu.getCurrentThreadCpuTime).filter(_ >= 0)
 
-    def start(task: GraalTask, source: GraalSource, log: Path): IO[GraalExecution] = commands.flatMap { sdk => IO {
+    def start(task: GraalTask, source: Source, log: Path): IO[GraalExecution] = commands.flatMap { sdk => IO {
       val context = new AtomicReference[Context]()
       val stop = new AtomicReference[TaskError]()
       val completed = new CompletableFuture[RunResult]()
@@ -116,8 +116,10 @@ private[graaljs] object GraalRunner:
                 settled = true
                 null
               }
-              current.eval(source.value).invokeMember("then", success, rejected)
-              while !settled && stop.get() == null do session.next()
+              val value = current.eval(source)
+              if value.hasMember("then") && value.getMember("then").canExecute then
+                value.invokeMember("then", success, rejected)
+                while !settled && stop.get() == null do session.next()
           returned = true
         catch case NonFatal(cause) => error = Some(failure(cause))
         finally

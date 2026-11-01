@@ -1,5 +1,6 @@
 package groot.graaljs
 
+import cats.effect.IO
 import framework.http.ErrorBody
 import framework.rpc.CommandsScope
 import framework.rpcDsl.*
@@ -23,7 +24,7 @@ object GraalJsRoutes:
       val source = body.text("JavaScript source code, sent directly as text/plain") { minLength(1) }
       val cpu = param[String]("cpu", "Cumulative guest CPU time limit, e.g. 500ms or 2s") { minLength(1) }
       val timeout = param[String]("timeout", "Wall-clock execution timeout, excluding queue time, e.g. 30s") { minLength(1) }
-      handle { manager.start(source.value, cpu.value, timeout.value) }
+      handle { IO(JavaScript.source(source.value)).flatMap(manager.start(_, cpu.value, timeout.value)) }
     }
 
     command[List[GraalTask]]("list") {
