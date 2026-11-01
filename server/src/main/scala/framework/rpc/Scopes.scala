@@ -8,7 +8,6 @@ sealed trait CommandsScope:
 sealed trait CommandScope[A] extends CommandsScope:
   private[framework] def http: EndpointScope
   private[framework] def success: Output[A]
-  private[framework] def encoding: SuccessResponse[A]
 
 private[framework] final class CommandGroup(
     val routes: RoutesScope,
@@ -23,6 +22,5 @@ private[framework] final class CommandGroup(
 
 private[framework] final class Command[A](
     val http: EndpointScope,
-    val success: Output[A],
-    val encoding: SuccessResponse[A]
+    val success: Output[A]
 ) extends CommandScope[A]

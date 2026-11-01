@@ -26,8 +26,8 @@ object KubeRoutes:
         val config = body[ContextConfig]("Apiserver origin, default namespace, optional CA PEM, client certificate/key PEM pair and bearer token")
         handle { service.putContext(name.value, config.value) }
       }
-      command[Vector[ContextSummary]]("list") {
-        description("List saved context summaries without credentials")
+      command[KubeItems[ContextSummary]]("list") {
+        description("Return saved context summaries in items without credentials")
         handle { service.listContexts }
       }
       command[Boolean]("delete") {
@@ -36,14 +36,14 @@ object KubeRoutes:
         handle { service.deleteContext(name.value) }
       }
     }
-    command[Vector[ApiResource]]("resources") {
-      description("Refresh API discovery, including CRDs; lists preferred versions unless apiVersion is supplied")
+    command[KubeItems[ApiResource]]("resources") {
+      description("Refresh API discovery and return items, including CRDs; uses preferred versions unless apiVersion is supplied")
       val ctx = context
       val version = param[Option[String]]("apiVersion", "Optional exact version, e.g. apps/v1")
       handle { service.resources(ctx.value, version.value) }
     }
-    command[WithHeaders[Vector[Json]]]("get") {
-      description("Get a collection or [named resource]; pagination headers: X-Kube-Continue, X-Kube-Resource-Version, X-Kube-Remaining-Item-Count")
+    command[KubeGetResult]("get") {
+      description("Return items and pagination in the body; named requests return one item and pagination=null; pagination.continue=null marks the last page")
       val ctx = context
       val res = resource
       val ns = namespace
@@ -52,11 +52,11 @@ object KubeRoutes:
       val labels = param[Option[String]]("labelSelector", "Kubernetes label selector")
       val fields = param[Option[String]]("fieldSelector", "Kubernetes field selector")
       val limit = param[Option[Int]]("limit", "Page size; use smaller pages if the response exceeds 768 KiB")
-      val next = param[Option[String]]("continue", "Opaque cursor from X-Kube-Continue")
+      val next = param[Option[String]]("continue", "Opaque cursor from body.pagination.continue")
       handle { service.get(ctx.value, res.value, name.value, ns.value, all.value, labels.value, fields.value, limit.value, next.value) }
     }
-    command[Vector[Json]]("apply") {
-      description("Server-Side Apply objects sequentially; conflict is 409, force defaults false; a failed batch may be partially applied")
+    command[KubeItems[Json]]("apply") {
+      description("Server-Side Apply objects sequentially and return items; conflict is 409, force defaults false; a failed batch may be partially applied")
       val ctx = context
       val input = body[ApplyRequest]("Resource objects with apiVersion/kind/metadata.name, optional fieldManager, force and dryRun")
       handle { service.apply(ctx.value, input.value) }

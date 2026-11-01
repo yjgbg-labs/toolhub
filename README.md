@@ -239,13 +239,14 @@ groot-cli kube contexts delete --name old-cluster
 `clientCertificate`、`clientKey`、`token`。证书和私钥使用 PEM 文本；客户端证书和未加密私钥必须成对提供，
 支持 PKCS#8、RSA PKCS#1、EC PEM。未配置 CA 时使用 JVM 信任库；始终校验服务端证书及主机名，不跟随重定向。
 
-- `contexts.put` 是完整覆盖，返回摘要；`list` 仅返回名称、地址、默认 namespace 以及认证/TLS 配置是否存在。
+- `contexts.put` 是完整覆盖，返回摘要；`list` 返回 `{items: [...]}`，仅包含名称、地址、默认 namespace 以及认证/TLS 配置是否存在。
 - 配置原子写入 `$SPROUT_HOME/kube/contexts.json`（权限 `0600`）；默认根目录为 `~/.config/sprout`。
   更新或删除后，新请求使用最新配置；已开始的请求完成后再释放旧连接池。
 - 所有集群操作都要求显式 `context`，缺失为 `400`，未知名称为 `404`。
-- `resources` 刷新 discovery；默认使用各组 preferredVersion，可指定 `apiVersion`。资源支持复数、单数、Kind、shortName 和 `resource.group`，包含 CRD。
-- `get` 始终返回数组；指定 `name` 时返回 `[object]`，不存在保留 `404`。支持 namespace、allNamespaces、labelSelector、fieldSelector、limit、continue。
-  列表元数据通过 `X-Kube-Continue`、`X-Kube-Resource-Version`、`X-Kube-Remaining-Item-Count` 响应头返回。
+- `resources` 刷新 discovery，返回 `{items: [...]}`；默认使用各组 preferredVersion，可指定 `apiVersion`。资源支持复数、单数、Kind、shortName 和 `resource.group`，包含 CRD。
+- `get` 返回 `{items: [...], pagination: {...}}`。指定 `name` 时 `items` 为 `[object]`、`pagination` 为 `null`，不存在保留 `404`。
+  支持 namespace、allNamespaces、labelSelector、fieldSelector、limit、continue。分页信息全部在响应体中：
+  `pagination.continue` 为下一页游标，最后一页为 `null`；`resourceVersion` 为字符串、`remainingItemCount` 为数字，未提供时为 `null`。
 - 单次上游请求限时 30 秒、响应上限 768 KiB；SDK 仍保留原有 1 MiB 上限，超限时缩小分页或日志限额。
 - `logs` 默认末尾 100 行、最多请求 64 KiB，支持 container、tail、since（秒）、previous、limitBytes。
   `request` 只支持 GET，JSON 原样返回，文本作为 JSON 字符串返回。
@@ -256,8 +257,8 @@ let cursor;
 do {
   const page = await tools.kube.get({context: "microk8s", resource: "pods", allNamespaces: true,
     limit: 50, ...(cursor ? {continue: cursor} : {})});
-  pods.push(...page.body);
-  cursor = page.headers["x-kube-continue"];
+  pods.push(...page.body.items);
+  cursor = page.body.pagination?.continue;
 } while (cursor);
 
 await tools.kube.apply({context: "microk8s", body: {
@@ -269,7 +270,7 @@ await tools.kube.delete({context: "microk8s", resource: "configmaps", namespace:
 ```
 
 `apply` 使用 Server-Side Apply，按对象的精确 `apiVersion/kind` 定位资源；缺少 namespace 时使用 context 默认值。
-最多 100 个对象，依次执行并返回数组；失败时已完成的写入不会回滚。字段归属冲突保留 `409`，默认不强制覆盖。
+最多 100 个对象，依次执行并返回 `{items: [...]}`；失败时已完成的写入不会回滚。字段归属冲突保留 `409`，默认不强制覆盖。
 `delete` 要求明确名称，支持传播策略、`gracePeriodSeconds`、`dryRun`；忽略不存在时返回原始 NotFound Status。
 删除请求成功不表示 finalizer 已完成。项目交付仍通过 `jobs.yaml` 和 `groot k8s sync` 管理 project/inventory。
 

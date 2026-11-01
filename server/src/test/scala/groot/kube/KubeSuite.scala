@@ -39,13 +39,27 @@ class KubeSuite extends CatsEffectSuite:
       KubeService.resource(home).use { service =>
         val app = httpApp { KubeRoutes.register(service) }
         val sdk = GraalCommandSdk(app)
+        val document = json(app.openApiJson)
+        def responseSchema(path: String, method: String = "get"): Json =
+          val ref = document.hcursor.downField("paths").downField(path).downField(method).downField("responses")
+            .downField("200").downField("content").downField("application/json").downField("schema").get[String]("$ref").toOption.get
+          document.hcursor.downField("components").downField("schemas").downField(ref.stripPrefix("#/components/schemas/")).focus.get
+        assertEquals(responseSchema("/kube/get").hcursor.downField("properties").keys.map(_.toSet), Some(Set("items", "pagination")))
+        Vector("/kube/contexts/list" -> "get", "/kube/resources" -> "get", "/kube/apply" -> "post").foreach { (path, method) =>
+          val properties = responseSchema(path, method).hcursor.downField("properties")
+          assertEquals(properties.keys.map(_.toSet), Some(Set("items")))
+          assertEquals(properties.downField("items").get[String]("type"), Right("array"))
+        }
         for
           saved <- service.putContext("test", config)
           _ = assert(!JsonModel[ContextSummary].encoder(saved).noSpaces.contains("secret-token"))
           bad <- service.putContext("test", config.copy(clientKey = Some("secret-invalid-key"))).attempt
           _ = assertEquals(bad.swap.toOption.get.asInstanceOf[KubeFailure].status, 400)
           listed <- service.listContexts
-          _ = assertEquals(listed, Vector(saved))
+          _ = assertEquals(listed.items, Vector(saved))
+          listedResponse <- sdk.call("kube.contexts.list")
+          _ = assertEquals(listedResponse.hcursor.downField("body").downField("items").as[Vector[Json]], Right(Vector(JsonModel[ContextSummary].encoder(saved))))
+          _ = assertEquals(listedResponse.hcursor.downField("body").keys.map(_.toSet), Some(Set("items")))
           permissions <- IO.blocking(Files.getPosixFilePermissions(home.resolve("contexts.json")))
           _ = assertEquals(PosixFilePermissions.toString(permissions), "rw-------")
           noContext <- sdk.call("kube.get", json("""{"resource":"pods"}"""))
@@ -60,19 +74,21 @@ class KubeSuite extends CatsEffectSuite:
         yield ()
       } *> KubeService.resource(home).use { service => for
         entries <- service.listContexts
-        _ = assertEquals(entries.map(_.name), Vector("test"))
+        _ = assertEquals(entries.items.map(_.name), Vector("test"))
         removed <- service.deleteContext("test")
         again <- service.deleteContext("test")
         _ = assert(removed && !again)
-      yield () } *> KubeService.resource(home).use(_.listContexts.map(entries => assertEquals(entries, Vector.empty)))
+      yield () } *> KubeService.resource(home).use(_.listContexts.map(entries => assertEquals(entries.items, Vector.empty)))
     }
   }
 
-  test("discovery resolves aliases, grouped resources and CRDs; get arrays retain pagination and Kubernetes errors through the SDK") {
+  test("discovery resolves aliases, groups and CRDs; SDK bodies carry items, pagination, null terminal fields and Kubernetes errors") {
     temporary.use { home => Ref.of[IO, Vector[Request[IO]]](Vector.empty).flatMap { requests =>
       val handler = mock { request => requests.update(_ :+ request) *> (request.uri.path.renderString match
         case "/api/v1/namespaces/team/pods/p" => response(pod)
         case path if path.endsWith("/missing") => response(KubeFailure.local(404, "NotFound", "missing").body, Status.NotFound)
+        case _ if request.uri.query.params.get("continue").contains("last") => response(json("""{"items":[],"metadata":{"continue":"","remainingItemCount":0}}"""))
+        case _ if request.uri.query.params.get("continue").contains("no-metadata") => response(json("""{"items":[]}"""))
         case _ => response(Json.obj("items" -> Json.arr(pod), "metadata" -> json("""{"continue":"a+/= b","resourceVersion":"123","remainingItemCount":5}"""))))
       }
       server(handler).use { url => KubeService.resource(home).use { service =>
@@ -80,10 +96,13 @@ class KubeSuite extends CatsEffectSuite:
         for
           _ <- service.putContext("test", ContextConfig(url, "team", token = Some("token")))
           page <- sdk.call("kube.get", json("""{"context":"test","resource":"po","allNamespaces":true,"limit":1,"continue":"a+/= b","labelSelector":"app in (x,y)","fieldSelector":"status.phase=Running"}"""))
-          _ = assertEquals(page.hcursor.downField("body").as[Vector[Json]], Right(Vector(pod)))
-          _ = assertEquals(page.hcursor.downField("headers").get[String]("x-kube-continue"), Right("a+/= b"))
+          _ = assertEquals(page.hcursor.downField("body").downField("items").as[Vector[Json]], Right(Vector(pod)))
+          _ = assertEquals(page.hcursor.downField("body").downField("pagination").focus,
+            Some(json("""{"continue":"a+/= b","resourceVersion":"123","remainingItemCount":5}""")))
+          _ = assert(!page.hcursor.downField("headers").keys.toVector.flatten.exists(_.startsWith("x-kube-")))
           one <- get(service, Some("p"))
-          _ = assertEquals(one.body, Vector(pod))
+          _ = assertEquals(one.items, Vector(pod))
+          _ = assertEquals(one.pagination, None)
           _ <- get(service, resource = "deployments.apps")
           _ <- get(service, resource = "gadgets.example.test")
           _ <- get(service, resource = "namespaces")
@@ -95,10 +114,21 @@ class KubeSuite extends CatsEffectSuite:
             "/apis/apps/v1/namespaces/team/deployments", "/apis/example.test/v1/namespaces/team/gadgets", "/api/v1/namespaces"))
           missing <- sdk.call("kube.get", json("""{"context":"test","resource":"pods","name":"missing"}"""))
           _ = assertEquals(missing.hcursor.get[Int]("status"), Right(404))
+          _ = assertEquals(missing.hcursor.downField("body").get[String]("kind"), Right("Status"))
+          named <- sdk.call("kube.get", json("""{"context":"test","resource":"pods","name":"p"}"""))
+          _ = assertEquals(named.hcursor.downField("body").focus, Some(Json.obj("items" -> Json.arr(pod), "pagination" -> Json.Null)))
+          last <- sdk.call("kube.get", json("""{"context":"test","resource":"pods","continue":"last"}"""))
+          _ = assertEquals(last.hcursor.downField("body").focus, Some(json("""{"items":[],"pagination":{"continue":null,"resourceVersion":null,"remainingItemCount":0}}""")))
+          noMetadata <- sdk.call("kube.get", json("""{"context":"test","resource":"pods","continue":"no-metadata"}"""))
+          _ = assertEquals(noMetadata.hcursor.downField("body").downField("pagination").focus,
+            Some(json("""{"continue":null,"resourceVersion":null,"remainingItemCount":null}""")))
           bad <- get(service, Some("p"), all = true).attempt
           _ = assertEquals(bad.swap.toOption.get.asInstanceOf[KubeFailure].status, 400)
           resourceList <- service.resources("test", None)
-          _ = assertEquals(resourceList.size, 4)
+          _ = assertEquals(resourceList.items.size, 4)
+          resourceResponse <- sdk.call("kube.resources", json("""{"context":"test"}"""))
+          _ = assertEquals(resourceResponse.hcursor.downField("body").downField("items").as[Vector[Json]].map(_.size), Right(4))
+          _ = assertEquals(resourceResponse.hcursor.downField("body").keys.map(_.toSet), Some(Set("items")))
         yield ()
       } }
     } }
@@ -119,7 +149,7 @@ class KubeSuite extends CatsEffectSuite:
         for
           _ <- service.putContext("test", ContextConfig(url, "team"))
           applied <- service.apply("test", ApplyRequest(Vector(obj), "test-manager", dryRun = true))
-          _ = assertEquals(applied.head.hcursor.downField("metadata").get[String]("namespace"), Right("team"))
+          _ = assertEquals(applied.items.head.hcursor.downField("metadata").get[String]("namespace"), Right("team"))
           conflict <- sdk.call("kube.apply", Json.obj("context" -> Json.fromString("test"), "body" -> JsonModel[ApplyRequest].encoder(
             ApplyRequest(Vector(obj.mapObject(_.add("metadata", json("""{"name":"conflict"}"""))))))))
           _ = assertEquals(conflict.hcursor.get[Int]("status"), Right(409))
@@ -139,6 +169,10 @@ class KubeSuite extends CatsEffectSuite:
           after <- requests.get
           _ = assert(invalid.isLeft)
           _ = assertEquals(after.size, before.size)
+          appliedResponse <- sdk.call("kube.apply", Json.obj("context" -> Json.fromString("test"),
+            "body" -> JsonModel[ApplyRequest].encoder(ApplyRequest(Vector(obj)))))
+          _ = assertEquals(appliedResponse.hcursor.downField("body").downField("items").as[Vector[Json]], Right(applied.items))
+          _ = assertEquals(appliedResponse.hcursor.downField("body").keys.map(_.toSet), Some(Set("items")))
         yield ()
       } }
     } }
@@ -213,13 +247,13 @@ class KubeSuite extends CatsEffectSuite:
     } }
   }
 
-  test("real GraalJS SDK consumes array bodies and pagination headers without a subprocess") {
+  test("real GraalJS SDK consumes items and pagination from the body without a subprocess") {
     temporary.use { home => server(mock(_ => response(Json.obj("items" -> Json.arr(pod), "metadata" -> json("""{"continue":"next"}""")))))
       .use { url => KubeService.resource(home.resolve("kube")).use { service =>
         val sdk = GraalCommandSdk(httpApp { KubeRoutes.register(service) })
         service.putContext("test", ContextConfig(url)) *> GraalManager.resource(home.resolve("tasks"), IO.pure(sdk)).use { manager =>
           for
-            task <- manager.start(JavaScript.source("const r=await tools.kube.get({context:'test',resource:'pods',allNamespaces:true,limit:1}); if(r.body.length!==1||r.headers['x-kube-continue']!=='next')throw Error(JSON.stringify(r));"), "1s", "10s")
+            task <- manager.start(JavaScript.source("const r=await tools.kube.get({context:'test',resource:'pods',allNamespaces:true,limit:1}); if(r.body.items.length!==1||r.body.pagination.continue!=='next'||r.body.pagination.resourceVersion!==null||Object.keys(r.headers).some(k=>k.startsWith('x-kube-')))throw Error(JSON.stringify(r));"), "1s", "10s")
             finished <- manager.await(task.id)
           yield assertEquals(finished.state, "succeeded", finished.error.toString)
         }

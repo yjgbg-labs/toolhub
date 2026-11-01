@@ -244,20 +244,6 @@ command[String]("label") { handle { IO.pure("ok") } }
 `health` returns the bytes `ok` as `text/plain`; `label` returns `"ok"` as
 `application/json`. The health and scheduler log endpoints use `PlainText`.
 
-### Response headers
-
-`WithHeaders[A]` attaches response headers while retaining `A`'s body and OpenAPI schema:
-
-```scala
-command[WithHeaders[Vector[Json]]]("page") {
-  handle { IO.pure(WithHeaders(Vector.empty, Map("X-Continue" -> "next-page"))) }
-}
-```
-
-Generated SDK responses expose these fields in `headers` using lowercase names.
-Header names and values are validated; body/framing headers remain owned by the framework.
-HTTP DSL results can use `result.withHeaders(Map(...))` directly.
-
 ### Client-side shell scripts
 
 The CLI automatically supplies any declared string parameter named `cwd` from

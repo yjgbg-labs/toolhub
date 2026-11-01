@@ -13,24 +13,6 @@ import framework.rpcDsl.*
 class CommandResultSuite extends CatsEffectSuite:
   private def request(path: String): Request[IO] = Request[IO](Method.GET, Uri.unsafeFromString(path))
 
-  test("WithHeaders preserves the body contract and validates response header syntax") {
-    val app = httpApp {
-      command[WithHeaders[Vector[Int]]]("page") { handle { IO.pure(WithHeaders(Vector(1), Map("X-Continue" -> "next"))) } }
-      command[WithHeaders[Int]]("bad") { handle { IO.pure(WithHeaders(1, Map("X-Continue" -> "a\r\nb"))) } }
-    }
-    val schema = io.circe.parser.parse(app.openApiJson).toOption.get.hcursor.downField("paths").downField("/page")
-      .downField("get").downField("responses").downField("200").downField("content").downField("application/json").downField("schema")
-    assertEquals(schema.get[String]("type"), Right("array"))
-    for
-      page <- app.httpApp(request("/page"))
-      body <- page.as[Json]
-      invalid <- app.httpApp(request("/bad"))
-    yield
-      assertEquals(body, Json.arr(Json.fromInt(1)))
-      assertEquals(page.headers.headers.find(_.name == org.typelevel.ci.CIString("X-Continue")).map(_.value), Some("next"))
-      assertEquals(invalid.status, Status.InternalServerError)
-  }
-
   test("the command type declares HTTP 200 and encodes IO success values") {
     val user = User(7, "Ada")
     val app = httpApp {

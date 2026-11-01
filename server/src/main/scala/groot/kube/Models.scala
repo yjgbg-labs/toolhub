@@ -10,6 +10,9 @@ case class ContextSummary(name: String, server: String, namespace: String, custo
     clientCertificate: Boolean, token: Boolean) derives JsonModel
 case class ApiResource(apiVersion: String, name: String, kind: String, namespaced: Boolean,
     singularName: String, shortNames: Vector[String], verbs: Vector[String]) derives JsonModel
+case class KubeItems[A](items: Vector[A]) derives JsonModel
+case class KubePagination(continue: Option[String], resourceVersion: Option[String], remainingItemCount: Option[Long]) derives JsonModel
+case class KubeGetResult(items: Vector[Json], pagination: Option[KubePagination]) derives JsonModel
 case class ApplyRequest(objects: Vector[Json], fieldManager: String = "sprout", force: Boolean = false,
     dryRun: Boolean = false) derives JsonModel
 private[kube] case class KubeFailure(status: Int, body: Json) extends RuntimeException("Kubernetes request failed")

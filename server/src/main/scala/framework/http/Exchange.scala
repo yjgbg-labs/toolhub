@@ -29,15 +29,8 @@ private[framework] enum ResponseBody:
 
 final class EndpointResult private[framework] (
     private[framework] val key: ResponseKey[?],
-    private[framework] val payload: Option[ResponseBody],
-    private[framework] val headers: Map[String, String] = Map.empty
-):
-  def withHeaders(values: Map[String, String]): EndpointResult =
-    values.foreach { (name, value) =>
-      require(name.matches("[!#$%&'*+.^_`|~0-9A-Za-z-]+") && !value.exists(c => c < ' ' || c > '~'), "Invalid response header")
-      require(!Set("content-type", "content-length", "transfer-encoding", "connection").contains(name.toLowerCase(java.util.Locale.ROOT)), "Reserved response header")
-    }
-    new EndpointResult(key, payload, headers ++ values)
+    private[framework] val payload: Option[ResponseBody]
+)
 
 private[framework] final class RaisedResponse(val result: EndpointResult) extends RuntimeException(null, null, false, false)
 

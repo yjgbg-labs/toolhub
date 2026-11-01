@@ -2,19 +2,20 @@ package groot.kube
 
 import cats.effect.{IO, Resource}
 import cats.syntax.all.*
-import framework.rpc.{PlainText, WithHeaders}
+import framework.rpc.PlainText
 import io.circe.Json
 import java.nio.file.Path
 
 final class KubeService private[kube] (private[kube] val contexts: Contexts):
   import KubeService.*
-  def listContexts: IO[Vector[ContextSummary]] = contexts.list
+  def listContexts: IO[KubeItems[ContextSummary]] = contexts.list.map(KubeItems(_))
   def putContext(name: String, config: ContextConfig): IO[ContextSummary] = contexts.put(name, config)
   def deleteContext(name: String): IO[Boolean] = contexts.delete(name)
-  def resources(context: String, apiVersion: Option[String]): IO[Vector[ApiResource]] = contexts.lease(context).use(_.discovery.resources(apiVersion, refresh = true))
+  def resources(context: String, apiVersion: Option[String]): IO[KubeItems[ApiResource]] =
+    contexts.lease(context).use(_.discovery.resources(apiVersion, refresh = true)).map(KubeItems(_))
 
   def get(context: String, resource: String, name: Option[String], namespace: Option[String], allNamespaces: Boolean,
-      labelSelector: Option[String], fieldSelector: Option[String], limit: Option[Int], continue: Option[String]): IO[WithHeaders[Vector[Json]]] =
+      labelSelector: Option[String], fieldSelector: Option[String], limit: Option[Int], continue: Option[String]): IO[KubeGetResult] =
     contexts.lease(context).use { client => IO.defer {
       KubeFailure.require(!allNamespaces || (namespace.isEmpty && name.isEmpty), "allNamespaces cannot be combined with namespace or name")
       KubeFailure.require(name.isEmpty || (labelSelector.isEmpty && fieldSelector.isEmpty && limit.isEmpty && continue.isEmpty), "Selectors and pagination require a collection request")
@@ -22,19 +23,18 @@ final class KubeService private[kube] (private[kube] val contexts: Contexts):
       client.discovery.resolve(resource).flatMap { r =>
         val query = params("labelSelector" -> labelSelector, "fieldSelector" -> fieldSelector, "limit" -> limit.map(_.toString), "continue" -> continue)
         client.json("GET", resourcePath(client, r, namespace, name, allNamespaces), query).map { json =>
-          if name.nonEmpty then WithHeaders(Vector(json))
+          if name.nonEmpty then KubeGetResult(Vector(json), None)
           else
             val values = json.hcursor.get[Vector[Json]]("items").fold(_ => throw KubeFailure.local(502, "InvalidResponse", "Apiserver response has no items array"), identity)
             val metadata = json.hcursor.downField("metadata")
-            val headers = Vector("X-Kube-Continue" -> metadata.get[String]("continue").toOption.filter(_.nonEmpty),
-              "X-Kube-Resource-Version" -> metadata.get[String]("resourceVersion").toOption,
-              "X-Kube-Remaining-Item-Count" -> metadata.get[Long]("remainingItemCount").toOption.map(_.toString)).collect { case (key, Some(value)) => key -> value }.toMap
-            WithHeaders(values, headers)
+            val pagination = KubePagination(metadata.get[String]("continue").toOption.filter(_.nonEmpty),
+              metadata.get[String]("resourceVersion").toOption.filter(_.nonEmpty), metadata.get[Long]("remainingItemCount").toOption)
+            KubeGetResult(values, Some(pagination))
         }
       }
     } }
 
-  def apply(context: String, input: ApplyRequest): IO[Vector[Json]] = contexts.lease(context).use { client => IO.defer {
+  def apply(context: String, input: ApplyRequest): IO[KubeItems[Json]] = contexts.lease(context).use { client => IO.defer {
     KubeFailure.require(input.objects.nonEmpty && input.objects.size <= 100, "objects must contain 1 to 100 resources")
     KubeFailure.require(input.fieldManager.nonEmpty && input.fieldManager.length <= 128 && !input.fieldManager.exists(Character.isISOControl), "Invalid fieldManager")
     val query = Vector("fieldManager" -> input.fieldManager, "force" -> input.force.toString) ++ Option.when(input.dryRun)("dryRun" -> "All")
@@ -52,7 +52,7 @@ final class KubeService private[kube] (private[kube] val contexts: Contexts):
         val normalized = if resource.namespaced && namespace.isEmpty then obj.mapObject(_.add("metadata", metadata.mapObject(_.add("namespace", Json.fromString(client.config.namespace))))) else obj
         path -> normalized
       }
-    }.flatMap(_.traverse { (path, obj) => client.json("PATCH", path, query, Some(obj), "application/apply-patch+yaml") })
+    }.flatMap(_.traverse { (path, obj) => client.json("PATCH", path, query, Some(obj), "application/apply-patch+yaml") }).map(KubeItems(_))
   } }
 
   def delete(context: String, resource: String, name: String, namespace: Option[String], propagationPolicy: String,
