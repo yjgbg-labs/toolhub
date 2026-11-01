@@ -7,15 +7,25 @@ import fs2.{Chunk, Stream}
 import java.nio.charset.StandardCharsets.UTF_8
 import scala.util.NotGiven
 
+/** Response metadata does not change the declared body schema. */
+case class WithHeaders[A](body: A, headers: Map[String, String] = Map.empty)
+
 trait SuccessResponse[A]:
   private[framework] def mediaType: Option[String]
   private[framework] def schema: Option[Schema[?]]
   private[framework] def encode(value: A): Option[ResponseBody]
+  private[framework] def headers(value: A): Map[String, String] = Map.empty
 
   private[framework] final def declare(scope: EndpointScope): Output[A] =
     scope.output[A](200, mediaType, schema, encode)
 
 object SuccessResponse extends JsonSuccessResponses:
+  given [A](using element: SuccessResponse[A]): SuccessResponse[WithHeaders[A]] with
+    private[framework] def mediaType = element.mediaType
+    private[framework] def schema = element.schema
+    private[framework] def encode(value: WithHeaders[A]) = element.encode(value.body)
+    override private[framework] def headers(value: WithHeaders[A]) = element.headers(value.body) ++ value.headers
+
   given SuccessResponse[PlainText] with
     private[framework] val mediaType = Some("text/plain")
     private[framework] val schema = Some(JsonModel[String].schema)

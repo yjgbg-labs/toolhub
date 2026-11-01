@@ -38,6 +38,15 @@ public class AssemblySmoke {
              var rows = statement.executeQuery("SELECT 42")) {
             if (!rows.next() || rows.getInt(1) != 42) throw new AssertionError("SQLite query failed");
         }
-        System.out.println("Assembly smoke passed: GraalJS isolate, command SDK and SQLite");
+        var pair = java.security.KeyPairGenerator.getInstance("RSA").generateKeyPair();
+        var buffer = new java.io.StringWriter();
+        try (var writer = new org.bouncycastle.openssl.jcajce.JcaPEMWriter(buffer)) { writer.writeObject(pair); }
+        try (var parser = new org.bouncycastle.openssl.PEMParser(new java.io.StringReader(buffer.toString()))) {
+            var parsed = (org.bouncycastle.openssl.PEMKeyPair) parser.readObject();
+            var key = new org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter()
+                .setProvider(new org.bouncycastle.jce.provider.BouncyCastleProvider()).getPrivateKey(parsed.getPrivateKeyInfo());
+            if (!key.getAlgorithm().equals("RSA")) throw new AssertionError("Kubernetes PEM key loading failed");
+        }
+        System.out.println("Assembly smoke passed: GraalJS isolate, command SDK, SQLite and Kubernetes PEM keys");
     }
 }

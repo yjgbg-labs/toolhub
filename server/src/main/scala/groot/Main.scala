@@ -9,6 +9,7 @@ import groot.sqlite.{SqliteRoutes, SqliteService}
 import groot.fetch.{FetchRoutes, FetchService}
 import groot.fs.{FsRoutes, FsService}
 import groot.bash.{BashRoutes, BashService}
+import groot.kube.{KubeRoutes, KubeService}
 import groot.widget.{WidgetRoutes, WidgetService}
 
 object Main extends IOApp.Simple:
@@ -17,9 +18,10 @@ object Main extends IOApp.Simple:
     sqlite <- SqliteService.resource()
     fetch <- FetchService.resource
     widget <- WidgetService.resource()
+    kube <- KubeService.resource()
     graaljs <- GraalManager.resource(commands = commands.get)
     scheduler <- Scheduler.resource(graaljs, startLoop = false)
-  yield (scheduler, sqlite, fetch, widget, graaljs, commands)).use { (scheduler, sqlite, fetch, widget, graaljs, commands) =>
+  yield (scheduler, sqlite, fetch, widget, kube, graaljs, commands)).use { (scheduler, sqlite, fetch, widget, kube, graaljs, commands) =>
     val app = httpApp {
       server {
         host("0.0.0.0")
@@ -41,6 +43,7 @@ object Main extends IOApp.Simple:
       FetchRoutes.register(fetch)
       FsRoutes.register(new FsService)
       BashRoutes.register(new BashService)
+      KubeRoutes.register(kube)
       WidgetRoutes.register(widget)
       command[PlainText]("health") {
         handle { IO.pure(PlainText("ok")) }

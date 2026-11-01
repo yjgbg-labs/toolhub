@@ -9,7 +9,7 @@ object rpcDsl:
   export framework.Client
   export framework.Client.{cli, codemode, graaljs}
   export framework.model.JsonModel
-  export framework.rpc.{PlainText, Shell, SSE, SuccessResponse}
+  export framework.rpc.{PlainText, Shell, SSE, SuccessResponse, WithHeaders}
   export framework.http.{ParamCodec, RequestContext, EndpointResult, Handler, Input, Output}
   export httpDsl.{server, host, port, maxBodyBytes, openapi, endpoint, info, title, version,
     default, constraint, minimum, maximum, minLength, maxLength, pattern, value}
@@ -44,7 +44,7 @@ object rpcDsl:
     httpDsl.register(http => if (ancestors :+ http).exists(_.hasBody) then "POST" else "GET", names.mkString("/", "/", ""), ancestors) {
       val http = summon[EndpointScope]
       httpDsl.operationId(names.mkString("."))
-      init(using new Command(http, success.declare(http)))
+      init(using new Command(http, success.declare(http), success))
     }(using parent.routes)
 
   def param[A](using codec: ParamCodec[A], scope: CommandsScope)(name: String, description: String): Input[A] =
@@ -86,4 +86,4 @@ object rpcDsl:
     middleware { next => next.recover(handler) }
 
   def handle[A](using scope: CommandScope[A])(logic: RequestContext ?=> IO[A]): Unit =
-    httpDsl.handle(using scope.http) { logic.map(value => scope.success(value)) }
+    httpDsl.handle(using scope.http) { logic.map(value => scope.success(value).withHeaders(scope.encoding.headers(value))) }

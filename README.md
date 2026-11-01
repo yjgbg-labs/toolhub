@@ -220,6 +220,59 @@ if (result.exitCode !== 0) throw Error(result.stderr || `bash exit ${result.exit
 - 命令正常返回时不终止后台进程；启动常驻进程须重定向其 stdin/stdout/stderr，避免继承调用的管道。
 - GraalJS 的 CPU/内存额度只计 JS；子进程不计入这些额度。任务总超时仍会取消未完成的 Bash 调用。
 
+### 原生 Kubernetes 命令
+
+`kube` 在 JVM 中直接访问 apiserver，按 context 复用 HTTP/TLS 连接，普通声明同时生成 CLI、Code Mode 和 GraalJS 接口。
+
+```sh
+groot-cli kube contexts put --name microk8s --body @context.json
+groot-cli kube contexts list
+groot-cli kube resources --context microk8s
+groot-cli kube get --context microk8s --resource pods --allNamespaces true --limit 100
+groot-cli kube get --context microk8s --resource deployments.apps --namespace demo --name web
+groot-cli kube logs --context microk8s --namespace demo --name web-pod --tail 100
+groot-cli kube request --context microk8s --path /version
+groot-cli kube contexts delete --name old-cluster
+```
+
+`context.json` 接受 `server`（HTTP(S) origin）、`namespace`（默认 `default`）、可选 `caCertificate`、
+`clientCertificate`、`clientKey`、`token`。证书和私钥使用 PEM 文本；客户端证书和未加密私钥必须成对提供，
+支持 PKCS#8、RSA PKCS#1、EC PEM。未配置 CA 时使用 JVM 信任库；始终校验服务端证书及主机名，不跟随重定向。
+
+- `contexts.put` 是完整覆盖，返回摘要；`list` 仅返回名称、地址、默认 namespace 以及认证/TLS 配置是否存在。
+- 配置原子写入 `$SPROUT_HOME/kube/contexts.json`（权限 `0600`）；默认根目录为 `~/.config/sprout`。
+  更新或删除后，新请求使用最新配置；已开始的请求完成后再释放旧连接池。
+- 所有集群操作都要求显式 `context`，缺失为 `400`，未知名称为 `404`。
+- `resources` 刷新 discovery；默认使用各组 preferredVersion，可指定 `apiVersion`。资源支持复数、单数、Kind、shortName 和 `resource.group`，包含 CRD。
+- `get` 始终返回数组；指定 `name` 时返回 `[object]`，不存在保留 `404`。支持 namespace、allNamespaces、labelSelector、fieldSelector、limit、continue。
+  列表元数据通过 `X-Kube-Continue`、`X-Kube-Resource-Version`、`X-Kube-Remaining-Item-Count` 响应头返回。
+- 单次上游请求限时 30 秒、响应上限 768 KiB；SDK 仍保留原有 1 MiB 上限，超限时缩小分页或日志限额。
+- `logs` 默认末尾 100 行、最多请求 64 KiB，支持 container、tail、since（秒）、previous、limitBytes。
+  `request` 只支持 GET，JSON 原样返回，文本作为 JSON 字符串返回。
+
+```js
+const pods = [];
+let cursor;
+do {
+  const page = await tools.kube.get({context: "microk8s", resource: "pods", allNamespaces: true,
+    limit: 50, ...(cursor ? {continue: cursor} : {})});
+  pods.push(...page.body);
+  cursor = page.headers["x-kube-continue"];
+} while (cursor);
+
+await tools.kube.apply({context: "microk8s", body: {
+  objects: [{apiVersion: "v1", kind: "ConfigMap", metadata: {name: "example", namespace: "demo"}, data: {hello: "world"}}],
+  fieldManager: "sprout", force: false, dryRun: true
+}});
+await tools.kube.delete({context: "microk8s", resource: "configmaps", namespace: "demo", name: "example",
+  propagationPolicy: "Background", ignoreNotFound: true});
+```
+
+`apply` 使用 Server-Side Apply，按对象的精确 `apiVersion/kind` 定位资源；缺少 namespace 时使用 context 默认值。
+最多 100 个对象，依次执行并返回数组；失败时已完成的写入不会回滚。字段归属冲突保留 `409`，默认不强制覆盖。
+`delete` 要求明确名称，支持传播策略、`gracePeriodSeconds`、`dryRun`；忽略不存在时返回原始 NotFound Status。
+删除请求成功不表示 finalizer 已完成。项目交付仍通过 `jobs.yaml` 和 `groot k8s sync` 管理 project/inventory。
+
 ### 客户端暴露范围
 
 `framework.rpcDsl.*` 提供 `exposeOn(cli, codemode, graaljs)`，可在 `commands` 或
