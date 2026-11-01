@@ -220,6 +220,34 @@ if (result.exitCode !== 0) throw Error(result.stderr || `bash exit ${result.exit
 - 命令正常返回时不终止后台进程；启动常驻进程须重定向其 stdin/stdout/stderr，避免继承调用的管道。
 - GraalJS 的 CPU/内存额度只计 JS；子进程不计入这些额度。任务总超时仍会取消未完成的 Bash 调用。
 
+### Windows PowerShell
+
+`powershell` 是普通命令声明，`exposeOn(cli, graaljs, codemode)`，通过服务器上的 OpenSSH 直连 Windows。
+默认目标为服务用户 SSH 配置中的 `windows` 别名；本机指向 Headscale 地址 `100.64.0.6:22`、用户 `12394`。
+使用现有 SSH 密钥和 known_hosts，非交互认证并严格校验主机密钥。
+
+```sh
+groot-cli powershell --timeout 30s --body '"Get-Date; Get-Process | Select-Object -First 3"'
+```
+
+```js
+const result = (await tools.powershell({body: "Get-Date", timeout: "30s"})).body;
+console.log(result.stdout);
+if (result.exitCode !== 0) throw Error(result.stderr || `PowerShell exit ${result.exitCode}`);
+```
+
+- 返回 `{exitCode, stdout, stderr}`；非零退出码正常返回，脚本自行决定是否抛错。
+- UTF-8 脚本最大 64 KiB，多行和中文按原文传输；每路输出最多 64 KiB。
+  使用 Windows PowerShell 5.1，关闭 profile 和交互提示，终止性脚本错误返回非零状态。
+- 脚本由 `body[String]` 接收，HTTP body 是 `application/json` 字符串；CLI 的 `--body` 也需保留 JSON 字符串引号。
+- `timeout` 由普通参数接收（HTTP query、CLI `--timeout`、SDK `timeout`），默认 `30s`，接受正整数 `ms/s/m/h/d`；覆盖连接和执行时间，超时返回 504。
+- 超时、取消或输出超限时，关闭本地会话并通过独立 SSH 会话请求终止本次 Windows 进程树，清理最多等待 5 秒。
+  使用请求专属标记及 PID 创建时间定位进程；远程网络已断开时记录清理失败。
+- OpenSSH `ControlMaster` 复用同一传输连接，每次调用创建独立会话和 PowerShell 进程；并发调用互不共享变量。
+  空闲 **5 分钟**自动关闭，下次调用重连；服务正常关闭时释放自己持有的 master。
+- `config.env` 的 `POWERSHELL_SSH_TARGET`、`POWERSHELL_SSH_IDLE` 分别配置目标和空闲时长。
+  SSH 配置和凭据属于运行服务的本机用户；命令不会在连接故障后自动重跑远程脚本。
+
 ### GraalJS 跨周期状态
 
 `state.set/get/clear` 是普通命令声明，仅 `exposeOn(graaljs)`，通过现有 SDK 调用。
