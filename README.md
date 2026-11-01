@@ -81,7 +81,7 @@ Native 编译还需要 Clang 和 libcurl 等开发库，
 ```sh
 groot-cli --help
 groot-cli health
-groot-cli schedule new --name hello --body '{"source":"console.log(\"hi\")","every":"1h"}'
+groot-cli schedule new --name hello --body '{"script":"/home/user/.config/sprout/scripts/hello.js","every":"1h"}'
 groot-cli jobs --job build --parallel 2
 ```
 
@@ -120,7 +120,7 @@ Code Mode 和 GraalJS 使用相同的参数规则，由命令声明自动映射�
 // 普通参数直接放在顶层；混合参数时保留 body。
 await tools.schedule.new({
   name: "example",
-  body: {every: "5m", source: "console.log('hello')", enabled: false}
+  body: {every: "5m", script: "/home/user/.config/sprout/scripts/hello.js", enabled: false}
 });
 await tools.schedule.log({name: "example", lines: 20});
 
@@ -139,14 +139,14 @@ await tools.schedule.config.write(config);
 
 ### GraalJS 定时任务与重试
 
-`schedule` 仅接受 JavaScript `source`，每次周期执行和每次重试都发布独立的 GraalJS 任务。
+`schedule` 使用 `script` 指向服务端 JavaScript 文件的绝对路径，每次周期执行和重试都发布独立的 GraalJS 任务。
 脚本可用 `console` 和声明自动生成的 `tools.*`（含 `tools.fetch`）；不支持 Bun/Node 模块或进程命令。
-`command`、`cwd` 和运行状态字段会被拒绝。旧配置升级前应先备份，迁移成源码后通过 API 写入。
+内联 `source`、`command`、`cwd` 和运行状态字段会被拒绝。旧配置升级前应先备份，将源码保存为文件后通过 API 写入路径。
 
 ```json
 {
   "every": "5m",
-  "source": "const response = await tools.health(); console.log(response.body);",
+  "script": "/home/user/.config/sprout/scripts/health.js",
   "cpu": "1s",
   "timeout": "30s",
   "retry": {"maxRetries": 3, "delay": "1s", "backoff": 2, "maxDelay": "30s"},
@@ -173,6 +173,19 @@ await tools.schedule.config.write(config);
   完整配置写入会保留未修改任务的状态。
 
 完整操作见 [schedule skill](skills/schedule/SKILL.md)。
+
+#### 脚本热更新
+
+- `script` 是服务器本地路径，不是客户端路径、URL 或 `file:` URI；文件须为非空 UTF-8 JavaScript，最大 1 MiB。
+- 使用 NIO `WatchService` 监听文件及父目录事件；修改、原子替换、删除/重建、目录替换和符号链接更新时刷新缓存。
+  同一路径的多个任务共用实际 `org.graalvm.polyglot.Source` 对象；内容不变时保留对象身份及 engine 代码缓存。
+- 每个任务在提交 GraalJS 时获取不可变源码快照，源码文本持久化到任务数据库。
+  已提交（包括 GraalJS 内部排队）的任务继续执行旧快照；尚在等待 schedule 逻辑资源的任务和后续重试使用最新快照。
+- 文件更新及时替换缓存中的 `Source`，不会重置周期、尝试次数或打断正在运行的 Context。
+  缺失、不可读、空文件、编码或大小错误会使后续尝试以 `source_error` 失败并按策略重试，不回退到旧源码。
+  语法错误由隔离 Context 执行时报告；修复文件后下次尝试自动使用新版。
+- 移除最后一个路径引用后释放对应监听和缓存；服务关闭时取消阻塞监听并关闭 WatchService。
+  独立的 `graaljs start` 继续接受内联 `source`，用于一次性执行。
 
 调度采用事件驱动：启动时恢复状态，创建/修改/删除/reset/资源配额变更和任务完成时唤醒调度，
 平时仅等待最近一次执行或重试的截止时间。队列等待资源释放事件；没有可到期任务时无限等待，

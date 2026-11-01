@@ -4,12 +4,13 @@ import io.circe.{Decoder, DecodingFailure}
 import framework.model.JsonModel
 import groot.graaljs.{TaskError, InvalidGraalTask, Validation as GraalValidation}
 import java.time.Instant
+import java.nio.file.{Path, InvalidPathException}
 
 case class RetryPolicy(maxRetries: Int = 3, delay: String = "1s", backoff: Double = 2, maxDelay: String = "30s") derives JsonModel
 
 case class ScheduleJob(
     every: String,
-    source: String,
+    script: String,
     cpu: String = "1s",
     timeout: String = "30s",
     retry: RetryPolicy = RetryPolicy(),
@@ -24,10 +25,10 @@ object ScheduleJob:
     val schema = derived.schema
     val encoder = derived.encoder
     val decoder = Decoder.instance { cursor =>
-      val allowed = Set("every", "source", "cpu", "timeout", "retry", "resource", "enabled")
+      val allowed = Set("every", "script", "cpu", "timeout", "retry", "resource", "enabled")
       val unsupported = cursor.keys.toList.flatten.toSet -- allowed
       if unsupported.nonEmpty then
-        Left(DecodingFailure(s"Unsupported schedule fields: ${unsupported.toList.sorted.mkString(", ")}; tasks accept JavaScript source, not command/cwd or runtime state", cursor.history))
+        Left(DecodingFailure(s"Unsupported schedule fields: ${unsupported.toList.sorted.mkString(", ")}; use script with an absolute server-side JavaScript file path", cursor.history))
       else derived.decoder(cursor)
     }
 
@@ -55,7 +56,7 @@ case class JobState(
 case class ScheduleEntry(
     name: String,
     every: String,
-    source: String,
+    script: String,
     cpu: String,
     timeout: String,
     retry: RetryPolicy,
@@ -94,13 +95,19 @@ object Validation:
     if values.exists { case (key, value) => key.isEmpty || !value.isFinite || value < 0 } then
       throw InvalidSchedule("Resources must be an object of non-negative finite numbers with non-empty names")
 
+  def script(value: String): Unit =
+    try
+      if value.trim.isEmpty || !Path.of(value).isAbsolute then
+        throw InvalidSchedule("script must be an absolute server-side JavaScript file path")
+    catch case error: InvalidPathException => throw InvalidSchedule(s"Invalid script path: ${error.getMessage}")
+
   def config(value: ScheduleConfig): Unit =
     resources(value.resources)
     value.jobs.foreach { case (key, job) =>
       name(key)
       durationMs(job.every)
       try
-        GraalValidation.source(job.source)
+        script(job.script)
         GraalValidation.durationMs("cpu", job.cpu)
         GraalValidation.durationMs("timeout", job.timeout)
       catch case error: InvalidGraalTask => throw InvalidSchedule(error.getMessage)

@@ -177,9 +177,10 @@ class GraalSdkSuite extends CatsEffectSuite:
           val app = httpApp { groot.schedule.ScheduleRoutes.register(scheduler) }
           commands.complete(GraalCommandSdk(app)) *>
           run(manager, """
-            const body = {every:"5m", source:"console.log('hello')", enabled:false};
+            const body = {every:"5m", script:"/scripts/hello.js", enabled:false};
             const created = await tools.schedule.new({name:"example", body});
             if (created.body.every !== "5m") throw Error("wrong creation result");
+            if (created.body.script !== body.script || "source" in created.body) throw Error("wrong script contract");
             const config = (await tools.schedule.config.read()).body;
             if (config.jobs.example.enabled !== false) throw Error("job missing");
             config.jobs.example.every = "10m";

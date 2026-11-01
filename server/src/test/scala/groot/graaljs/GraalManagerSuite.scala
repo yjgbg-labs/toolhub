@@ -18,11 +18,11 @@ import GraalTestSupport.*
 class GraalManagerSuite extends CatsEffectSuite:
   private case class Invocation(task: GraalTask, source: String, done: Deferred[IO, RunResult], cancellation: Deferred[IO, TaskError])
   private class StubRunner(val calls: Ref[IO, Vector[Invocation]], cleanup: IO[Unit]) extends GraalRunner:
-    def start(task: GraalTask, source: String, log: Path): IO[GraalExecution] =
+    def start(task: GraalTask, source: GraalSource, log: Path): IO[GraalExecution] =
       for
         done <- Deferred[IO, RunResult]
         cancellation <- Deferred[IO, TaskError]
-        _ <- calls.update(_ :+ Invocation(task, source, done, cancellation))
+        _ <- calls.update(_ :+ Invocation(task, source.text, done, cancellation))
       yield new GraalExecution:
         def result = done.get
         def cancel(reason: TaskError) =

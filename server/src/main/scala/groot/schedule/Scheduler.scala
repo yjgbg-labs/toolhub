@@ -4,7 +4,7 @@ import cats.effect.{Deferred, IO, Resource}
 import cats.effect.std.{Mutex, Queue, Supervisor}
 import cats.syntax.all.*
 import framework.model.JsonModel
-import groot.graaljs.{GraalManager, GraalTask, MissingGraalTask, TaskError}
+import groot.graaljs.{GraalManager, GraalTask, MissingGraalTask, TaskError, ScriptSources}
 import java.nio.file.Path
 import java.time.Instant
 import scala.concurrent.duration.*
@@ -14,7 +14,8 @@ final class Scheduler private (
     graaljs: GraalManager,
     mutex: Mutex[IO],
     supervisor: Supervisor[IO],
-    changed: Queue[IO, Unit]
+    changed: Queue[IO, Unit],
+    sources: ScriptSources
 ):
   private case class Running(job: ScheduleJob, state: JobState, done: Deferred[IO, Unit], record: Boolean = true)
   private var running = Map.empty[String, Running]
@@ -30,6 +31,9 @@ final class Scheduler private (
   private def requireJob(config: ScheduleConfig, name: String): IO[ScheduleJob] =
     IO.fromOption(config.jobs.get(name))(MissingJob(name))
 
+  private def watch(config: ScheduleConfig): IO[Unit] =
+    sources.retain(config.jobs.values.map(job => Path.of(job.script)).toSet)
+
   private def definitionHash(job: ScheduleJob): String =
     val json = JsonModel[ScheduleJob].encoder(job).printWith(io.circe.Printer.noSpaces.copy(sortKeys = true))
     java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
@@ -41,6 +45,7 @@ final class Scheduler private (
     for
       previous <- store.config
       _ <- store.writeConfig(value)
+      _ <- watch(value)
       _ <- (previous.jobs.keySet ++ value.jobs.keySet).toList.traverse_ { name =>
         IO.whenA(previous.jobs.get(name) != value.jobs.get(name))(invalidate(name))
       }
@@ -57,6 +62,7 @@ final class Scheduler private (
     for
       config <- store.config
       _ <- store.writeConfig(config.copy(jobs = config.jobs.updated(name, job)))
+      _ <- watch(config.copy(jobs = config.jobs.updated(name, job)))
       _ <- invalidate(name)
     yield job
   }.guarantee(wake)
@@ -65,6 +71,7 @@ final class Scheduler private (
     for
       config <- store.config
       _ <- store.writeConfig(config.copy(jobs = config.jobs - name))
+      _ <- watch(config.copy(jobs = config.jobs - name))
       _ <- invalidate(name)
     yield ()
   }.guarantee(wake)
@@ -105,7 +112,7 @@ final class Scheduler private (
             else if state.nextRetryAt.nonEmpty then "retrying"
             else if next.forall(!_.isAfter(now)) then "due"
             else "waiting"
-          ScheduleEntry(name, job.every, job.source, job.cpu, job.timeout, job.retry, job.resource, job.enabled,
+          ScheduleEntry(name, job.every, job.script, job.cpu, job.timeout, job.retry, job.resource, job.enabled,
             state.lastRunAt, state.lastExitCode, state.lastTaskId, task.map(_.state).orElse(state.lastTaskState),
             state.lastFinishedAt, state.lastError, state.attempt, state.nextRetryAt,
             if job.enabled && status != "running" then next.map(_.toString) else None, status)
@@ -188,7 +195,7 @@ final class Scheduler private (
       // Persist before admission: a crash cannot leave an unlinked running task or replay this attempt.
       _ <- store.writeState(name, state)
       _ <- appendLog(name, s"\n[$now] start task=$id attempt=${state.attempt}\n")
-      submitted <- graaljs.submit(id, job.source, job.cpu, job.timeout).attempt
+      submitted <- sources.snapshot(Path.of(job.script)).flatMap(source => graaljs.submit(id, source, job.cpu, job.timeout)).attempt
       fallback = submitted.fold(error => TaskError("submission_error", error.toString.take(8192)),
         _ => TaskError("missing_task", "GraalJS task disappeared"))
       _ <- observe(name, job, state, result(state), fallback)
@@ -263,7 +270,8 @@ object Scheduler:
       mutex <- Resource.eval(Mutex[IO])
       supervisor <- Supervisor[IO](await = true)
       changed <- Resource.eval(Queue.bounded[IO, Unit](1))
-      scheduler = new Scheduler(store, graaljs, mutex, supervisor, changed)
-      _ <- Resource.make(scheduler.serial((store.config, IO.realTimeInstant).tupled.flatMap(scheduler.recover)))(_ => scheduler.shutdown)
+      sources <- ScriptSources.resource
+      scheduler = new Scheduler(store, graaljs, mutex, supervisor, changed, sources)
+      _ <- Resource.make(scheduler.serial(store.config.flatTap(scheduler.watch).flatMap(config => IO.realTimeInstant.flatMap(scheduler.recover(config, _)))))(_ => scheduler.shutdown)
       _ <- if startLoop then scheduler.loop.background.void else Resource.unit[IO]
     yield scheduler

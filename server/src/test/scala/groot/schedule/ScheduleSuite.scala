@@ -16,7 +16,7 @@ import java.time.Instant
 import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
 
-class ScheduleSuite extends CatsEffectSuite:
+class ScheduleSuite extends ScriptFixtures:
   private def temporary: Resource[IO, Path] = Resource.make(
     IO.blocking(Files.createTempDirectory(Path.of("/tmp/opencode"), "sprout-schedule-test-"))
   )(path => IO.blocking {
@@ -27,9 +27,6 @@ class ScheduleSuite extends CatsEffectSuite:
 
   private def eventually[A](io: IO[A])(check: A => Boolean): IO[A] =
     io.flatMap(value => if check(value) then IO.pure(value) else IO.sleep(10.millis) *> eventually(io)(check)).timeout(10.seconds)
-
-  private def job(source: String = "console.log('hello')", cpu: Double = 0): ScheduleJob =
-    ScheduleJob("1h", source, resource = if cpu == 0 then Map.empty else Map("cpu" -> cpu))
 
   private def scheduler(home: Path): Resource[IO, Scheduler] =
     Stub.resource(home.resolve("graaljs"), autoFinish = true).flatMap { (manager, _) => Scheduler.resource(manager, home, startLoop = false) }
@@ -51,7 +48,8 @@ class ScheduleSuite extends CatsEffectSuite:
     }
     intercept[InvalidSchedule](Validation.config(ScheduleConfig.empty.copy(resources = Map("cpu" -> Double.NaN))))
     intercept[InvalidSchedule](Validation.config(ScheduleConfig.empty.copy(resources = Map("cpu" -> -1d))))
-    List(job(" "), job().copy(cpu = "0s"), job().copy(timeout = "0ms"),
+    List(job().copy(script = " "), job().copy(script = "relative.js"), job().copy(script = "https://example.com/task.js"),
+      job().copy(script = "/bad\u0000.js"), job().copy(cpu = "0s"), job().copy(timeout = "0ms"),
       job().copy(retry = RetryPolicy(maxRetries = -1)), job().copy(retry = RetryPolicy(maxRetries = 101)),
       job().copy(retry = RetryPolicy(backoff = Double.PositiveInfinity)), job().copy(retry = RetryPolicy(backoff = 0.5)),
       job().copy(retry = RetryPolicy(delay = "2s", maxDelay = "1s"))).foreach { invalid =>
@@ -62,19 +60,19 @@ class ScheduleSuite extends CatsEffectSuite:
     assertEquals(Store.fileName("a/b 空 +%"), "a%2Fb%20%E7%A9%BA%20%2B%25")
   }
 
-  test("HTTP accepts JavaScript with defaults and rejects command, cwd, runtime state and invalid retries atomically") {
+  test("HTTP accepts script paths with defaults and rejects inline source, command, cwd, state and invalid retries atomically") {
     temporary.use { home => scheduler(home).use { scheduler =>
       val http = app(scheduler)
       for
-        created <- http.httpApp(request("/schedule/new?name=sample", Some("""{"every":"1h","source":"console.log('hello')"}""")))
+        created <- http.httpApp(request("/schedule/new?name=sample", Some("""{"every":"1h","script":"/scripts/sample.js"}""")))
         _ = assertEquals(created.status, Status.Ok)
         createdJson <- created.as[Json]
         _ = assertEquals(createdJson.hcursor.get[String]("cpu"), Right("1s"))
         _ = assertEquals(createdJson.hcursor.downField("retry").get[Int]("maxRetries"), Right(3))
         _ <- new Store(home).writeState("sample", JobState(Some("2026-09-19T00:00:00Z"), Some(7)))
-        _ <- List(""""command":["/bin/true"]""", """"cwd":"/tmp"""", """"lastExitCode":0""",
+        _ <- List(""""source":"console.log(1)"""", """"command":["/bin/true"]""", """"cwd":"/tmp"""", """"lastExitCode":0""",
           """"resource":{"cpu":1}""", """"retry":{"maxRetries":-1}""").traverse_ { extra =>
-          http.httpApp(request("/schedule/new?name=sample", Some(s"""{"every":"1h","source":"1",$extra}""")))
+          http.httpApp(request("/schedule/new?name=sample", Some(s"""{"every":"1h","script":"/scripts/sample.js",$extra}""")))
             .map(response => assertEquals(response.status, Status.BadRequest))
         }
         persisted <- scheduler.list

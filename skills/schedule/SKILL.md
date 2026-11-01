@@ -11,7 +11,7 @@ description: 创建、修改或排查Sprout定时任务及迁移groot调度时�
 
 - 使用 `groot-cli schedule` 管理任务；一次性构建使用 `groot-cli jobs --job <job>`。
 - CLI、Code Mode 和 GraalJS SDK 都由普通命令声明生成，不添加业务专用适配器。
-- 仅接受 JavaScript `source`；不接受 `command`、`cwd` 或运行状态字段。
+- `script` 为服务端 JavaScript 文件的绝对路径；不接受内联 `source`、`command`、`cwd` 或运行状态字段。
 - 脚本使用 `console`、`tools.*`（HTTP 用 `tools.fetch`）；不能导入 Bun/Node 模块或启动进程。
 - 调度循环随 `groot-sprout-http.service` 启动；不要重启旧 `groot-schedule.service`。
 - 调度由配置变更、任务完成和最近截止时间唤醒；空闲/等待资源时休眠，不轮询文件。
@@ -38,7 +38,7 @@ systemctl --user is-active groot-sprout-http.service
 ## 任务操作
 
 ```bash
-groot-cli schedule new --name sample --body '{"every":"10m","source":"console.log(await tools.health())"}'
+groot-cli schedule new --name sample --body '{"every":"10m","script":"/home/user/.config/sprout/scripts/sample.js"}'
 groot-cli schedule list
 groot-cli schedule log --name sample --lines 200
 groot-cli schedule reset --name sample
@@ -56,6 +56,17 @@ groot-cli graaljs logs --id gjs_...
 - `lastExitCode` 为结果标记：成功 0、取消/中断 143、其他失败 1，不是进程退出码。
 - `log --lines` 范围 1–10000，默认 100，包含每次尝试的 ID、输出、结果和下次重试时间。
 - 删除任务保留历史日志。一次性执行使用 `graaljs start`，没有 `schedule run`。
+
+## 脚本文件与热更新
+
+- 路径在服务端解析，必须为绝对本地路径；不支持 URL、`file:` URI、`~` 展开或相对路径。
+- 文件为非空 UTF-8，最多 1 MiB。使用普通 `.js` 文件，内容可直接使用顶层 `await`。
+- WatchService 监听文件及父目录；修改、原子替换、删除/重建、目录替换和符号链接变化会及时更新实际 GraalJS `Source`。
+- 同一路径共用缓存，内容不变复用原 `Source`。删除最后一个引用后释放监听；关闭服务时清理 watcher。
+- 已提交 GraalJS 的任务（包括其内部队列）保留原快照；等待 schedule 逻辑资源、后续周期及重试使用新版。
+- 编辑脚本不重置周期/重试状态，不中断活动 Context。建议原子替换，避免读到尚未写完的源码。
+- 文件不可读、缺失、为空、编码或大小错误使后续尝试以 `source_error` 失败，不继续执行旧缓存。
+- 语法错误在执行时报告；修复文件后自动被后续尝试使用。一次性 `graaljs start` 仍接受内联 `source`。
 
 ## 重试
 
@@ -78,7 +89,7 @@ groot-cli graaljs logs --id gjs_...
   "jobs": {
     "sample": {
       "every": "10m",
-      "source": "console.log(await tools.health())",
+      "script": "/home/user/.config/sprout/scripts/sample.js",
       "cpu": "1s",
       "timeout": "30s",
       "retry": {"maxRetries": 3, "delay": "1s", "backoff": 2, "maxDelay": "30s"},
@@ -107,7 +118,7 @@ groot-cli schedule config read | jq '.jobs.sample.enabled = false' | groot-cli s
 Code Mode 先用 `search` 获取当前准确签名。JavaScript SDK 普通参数扁平化，混合输入保留 `body`，仅请求体直接传对象：
 
 ```js
-await tools.schedule.new({name: "sample", body: {every: "10m", source: "console.log('hello')"}});
+await tools.schedule.new({name: "sample", body: {every: "10m", script: "/home/user/.config/sprout/scripts/sample.js"}});
 await tools.schedule.log({name: "sample", lines: 100});
 const config = (await tools.schedule.config.read()).body;
 await tools.schedule.config.write(config);
@@ -115,8 +126,8 @@ await tools.schedule.config.write(config);
 
 ## 升级与排障
 
-- 升级旧 `command` 配置前，备份配置、状态、日志及引用脚本；旧配置不能直接由新版启动。
-- 先通过旧 API 写入空任务配置，再部署新版，再通过新 API 写入已迁移的 JavaScript。
+- 升级旧 `command`/内联 `source` 配置前，备份配置、状态、日志及引用脚本；旧配置不能直接由新版启动。
+- 将内联源码保存为持久 `.js` 文件；通过旧 API 写入空任务配置，部署新版，再通过新 API 写入 `script` 路径。
 - 依赖系统命令、SSH、Windows 命令且无法直接迁移的任务先保留备份，明确告知暂停的任务。
 - 部署使用项目的 `groot-cli jobs --job server-deploy`，再验证 health、task ID、真实终态和重试。
 - 用 `schedule log` 与 `graaljs logs/status` 定位脚本错误；重试耗尽不会自动停用后续周期。
