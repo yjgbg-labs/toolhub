@@ -9,7 +9,7 @@ import java.util.HexFormat
 import scala.util.control.NonFatal
 
 /** Read and hash once at admission. Unchanged content shares its actual Source across attempts. */
-private[groot] final class ScriptSources private:
+private[groot] final class ScriptSources private ():
   private case class Entry(digest: String, source: GraalSource)
   private var retained = Set.empty[Path]
   private var entries = Map.empty[Path, Entry]
@@ -46,4 +46,4 @@ private[groot] final class ScriptSources private:
 
 private[groot] object ScriptSources:
   def resource: Resource[IO, ScriptSources] =
-    Resource.make(IO(new ScriptSources))(_.retain(Set.empty))
+    Resource.make(IO(new ScriptSources()))(_.retain(Set.empty))

@@ -136,7 +136,8 @@ class ScriptSourcesSuite extends CatsEffectSuite:
           _ = assert(removed.isLeft)
           _ <- sources.retain(Set(path))
           second <- source(sources, path, "1")
-          _ = assert(!(first.value eq second.value))
+          // Graal may intern identical Sources; our evicted admission snapshot must be rebuilt.
+          _ = assert(!(first eq second))
         yield ()).guarantee(close.timeout(2.seconds))
         closed <- sources.cachedPaths
       yield assertEquals(closed, Set.empty[Path])
