@@ -21,5 +21,5 @@ object PowerShellRoutes:
       case error: PowerShellFailure => failed(ErrorBody(error.code, error.getMessage))
       case error: java.io.IOException => failed(ErrorBody("powershell_io", error.getMessage))
     }
-    handle { service(PowerShellRequest(script.value, timeout.value)) }
+    handle { service(script.value, timeout.value) }
   }

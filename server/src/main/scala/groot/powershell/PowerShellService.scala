@@ -35,7 +35,7 @@ final class PowerShellService private (
         IO.raiseError(PowerShellFailure("powershell_ssh", result.stderr.trim)))
   }
 
-  def apply(request: PowerShellRequest): IO[PowerShellResult] = validate(request).flatMap { (payload, deadline) =>
+  def apply(script: String, timeout: String = "30s"): IO[PowerShellResult] = validate(script, timeout).flatMap { (payload, deadline) =>
     val run = Resource.make(IO.blocking {
       val file = Files.createTempFile(directory, "script-", ".ps1", PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
       try
@@ -52,11 +52,11 @@ final class PowerShellService private (
       connect *> Resource.makeCase(IO.unit) { (_, exit) =>
         if exit == ExitCase.Succeeded then IO.unit else cancelRemote(token)
       }.use { _ =>
-        bash(BashRequest(s"$execute < ${quote(file.toString)}", timeout = request.timeout))
+        bash(BashRequest(s"$execute < ${quote(file.toString)}", timeout = timeout))
           .map(result => PowerShellResult(result.exitCode, result.stdout, result.stderr))
       }
     }
-    run.timeoutTo(deadline, IO.raiseError(PowerShellFailure("powershell_timeout", s"PowerShell exceeded ${request.timeout}")))
+    run.timeoutTo(deadline, IO.raiseError(PowerShellFailure("powershell_timeout", s"PowerShell exceeded $timeout")))
   }.handleErrorWith {
     case error: BashFailure if error.code == "bash_limit" => IO.raiseError(PowerShellFailure("powershell_limit", error.getMessage))
     case error: BashFailure if error.code == "bash_timeout" => IO.raiseError(PowerShellFailure("powershell_timeout", error.getMessage))
@@ -90,11 +90,11 @@ object PowerShellService:
     try Validation.durationMs("timeout", value).millis
     catch case error: InvalidGraalTask => throw PowerShellFailure("invalid_powershell", error.getMessage)
 
-  private def validate(request: PowerShellRequest): IO[(Array[Byte], FiniteDuration)] = IO {
-    val source = request.script.stripPrefix("\uFEFF")
+  private def validate(script: String, timeout: String): IO[(Array[Byte], FiniteDuration)] = IO {
+    val source = script.stripPrefix("\uFEFF")
     if source.trim.isEmpty || source.contains('\u0000') then throw PowerShellFailure("invalid_powershell", "script must be nonblank and contain no NUL")
     if source.getBytes(UTF_8).length > maxBytes then throw PowerShellFailure("powershell_limit", "PowerShell script exceeds 64 KiB")
-    (("\uFEFF" + source + "\n").getBytes(UTF_8), duration(request.timeout))
+    (("\uFEFF" + source + "\n").getBytes(UTF_8), duration(timeout))
   }
 
   // Windows OpenSSH may leave stdin open: read the exact byte count rather than waiting for EOF.
