@@ -12,7 +12,7 @@ description: 创建、修改或排查Sprout定时任务及迁移groot调度时�
 - 使用 `groot-cli schedule` 管理任务；一次性构建使用 `groot-cli jobs --job <job>`。
 - CLI、Code Mode 和 GraalJS SDK 都由普通命令声明生成，不添加业务专用适配器。
 - `script` 为服务端 JavaScript 文件的绝对路径；不接受内联 `source`、`command`、`cwd` 或运行状态字段。
-- 脚本使用 `console`、`tools.*`（HTTP 用 `tools.fetch`）；不能导入 Bun/Node 模块或启动进程。
+- 脚本使用 `console`、`tools.*`（HTTP 用 `tools.fetch`，宿主命令用 `tools.bash`）；JS 环境不能导入 Bun/Node 模块。
 - 调度循环随 `groot-sprout-http.service` 启动；不要重启旧 `groot-schedule.service`。
 - 调度由配置变更、任务完成和最近截止时间唤醒；空闲/等待资源时休眠，不轮询文件。
 - 除非用户指定，不创建 cron 或 systemd timer。
@@ -125,7 +125,12 @@ await tools.schedule.new({name: "sample", body: {every: "10m", script: "/home/us
 await tools.schedule.log({name: "sample", lines: 100});
 const config = (await tools.schedule.config.read()).body;
 await tools.schedule.config.write(config);
+const result = (await tools.bash({script: "df -Pk /", timeout: "3s"})).body;
+if (result.exitCode !== 0) throw Error(result.stderr || `bash exit ${result.exitCode}`);
 ```
+
+`bash` 仅对 GraalJS 暴露；支持可选绝对 `cwd`、默认 `30s` 超时，返回 `exitCode/stdout/stderr`。
+脚本及每路输出上限各 64 KiB。超时/取消会清理进程组；正常返回保留已重定向 IO 的后台进程。JS CPU/内存限额不限制子进程。
 
 ## 升级与排障
 

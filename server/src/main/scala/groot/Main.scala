@@ -8,6 +8,7 @@ import groot.schedule.{Scheduler, ScheduleRoutes}
 import groot.sqlite.{SqliteRoutes, SqliteService}
 import groot.fetch.{FetchRoutes, FetchService}
 import groot.fs.{FsRoutes, FsService}
+import groot.bash.{BashRoutes, BashService}
 import groot.widget.{WidgetRoutes, WidgetService}
 
 object Main extends IOApp.Simple:
@@ -39,6 +40,7 @@ object Main extends IOApp.Simple:
       SqliteRoutes.register(sqlite)
       FetchRoutes.register(fetch)
       FsRoutes.register(new FsService)
+      BashRoutes.register(new BashService)
       WidgetRoutes.register(widget)
       command[PlainText]("health") {
         handle { IO.pure(PlainText("ok")) }
