@@ -72,7 +72,8 @@ server/cli/plugin 在本机完成构建与安装，交付方式为构建、测�
 
 CLI 安装会移走 `cli/dist/groot-cli`，再次安装前需重新构建；服务端和插件保留 `dist` 产物。
 
-开发环境需要 Bun、groot（提供 `use-jdk`）、JDK 25、Scala CLI 和 curl；
+开发环境使用 Bun、groot-cli、JDK 25、Scala CLI 和 curl；
+通过 `groot-cli use-jdk --version 25 --command '…'` 选择 JDK 并执行命令，需要可访问 Sprout HTTP 服务。
 Native 编译还需要 Clang 和 libcurl 等开发库，
 `cli-deploy` 会在需要时准备用户级工具链缓存。所有流程直接定义在 `jobs.yaml` 中。
 
@@ -112,7 +113,27 @@ OpenCode 插件在 setup 时发现命令并注册 Code Mode 工具及 namespace�
 支持通过插件 options 配置 `baseUrl`、`schemaUrl`、`headers`、`tokenEnv`、`timeoutMs`。
 安装后的入口由 OpenCode 自动发现，文件变更自动加载。
 
-#### JavaScript 调用参数
+### 临时选择 JDK
+
+```sh
+groot-cli use-jdk --version 25 --command 'java --version'
+groot-cli use-jdk --version 21 --command './gradlew test'
+groot-cli use-jdk --version 25 --command 'javac Main.java && java Main'
+```
+
+`use-jdk` 声明为 `command[Shell]`，仅 `exposeOn(cli)`。`version` 是正整数主版本，
+`command` 是交给 `/bin/sh -c` 执行的命令字符串；用单引号可将 `$JAVA_HOME` 等变量留到子进程展开。
+服务端只生成脚本，CLI 在调用方继承当前目录和标准输入/输出/错误，返回命令退出码。
+
+- 在子进程中设置 `JAVA_HOME` 并将其 `bin` 加到 `PATH` 最前面。
+- 复用 `$GROOT_HOME/jdks/temurin-<version>`；`GROOT_HOME` 默认 `~/.config/groot`，与旧命令缓存兼容。
+- 缓存不存在时按调用方 Linux/macOS 和 CPU 架构选择 Eclipse Temurin 最新 GA JDK，
+  从 Adoptium 元数据取得明确的发布包地址及 SHA-256，校验后解压并发布到缓存。
+- 首次安装需要 `curl`、`jq`、`tar` 和 `sha256sum` 或 `shasum`；macOS 支持 `Contents/Home` 布局。
+  缓存不完整或版本不符时返回错误，下载失败会清理临时目录。
+- `command` 最多 64 KiB UTF-8，支持管道、重定向和多行 shell 内容。命令通过现有 HTTP 服务生成。
+
+### JavaScript 调用参数
 
 Code Mode 和 GraalJS 使用相同的参数规则，由命令声明自动映射：
 
