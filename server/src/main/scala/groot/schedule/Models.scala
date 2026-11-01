@@ -33,12 +33,11 @@ object ScheduleJob:
 
 case class ScheduleConfig(
     resources: Map[String, Double],
-    tickMs: Double,
     jobs: Map[String, ScheduleJob]
 ) derives JsonModel
 
 object ScheduleConfig:
-  val empty: ScheduleConfig = ScheduleConfig(Map.empty, 1000, Map.empty)
+  val empty: ScheduleConfig = ScheduleConfig(Map.empty, Map.empty)
 
 case class JobState(
     lastRunAt: Option[String] = None,
@@ -97,8 +96,6 @@ object Validation:
 
   def config(value: ScheduleConfig): Unit =
     resources(value.resources)
-    if !value.tickMs.isFinite || value.tickMs <= 0 || value.tickMs > Int.MaxValue then
-      throw InvalidSchedule("tickMs must be positive and at most 2147483647 milliseconds")
     value.jobs.foreach { case (key, job) =>
       name(key)
       durationMs(job.every)

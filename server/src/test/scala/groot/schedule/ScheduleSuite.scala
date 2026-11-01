@@ -49,7 +49,7 @@ class ScheduleSuite extends CatsEffectSuite:
     List("1.5h", "1h30m", "-1s", "1w", "99999999999999999999d").foreach { value =>
       intercept[InvalidSchedule](Validation.durationMs(value))
     }
-    intercept[InvalidSchedule](Validation.config(ScheduleConfig.empty.copy(tickMs = Double.NaN)))
+    intercept[InvalidSchedule](Validation.config(ScheduleConfig.empty.copy(resources = Map("cpu" -> Double.NaN))))
     intercept[InvalidSchedule](Validation.config(ScheduleConfig.empty.copy(resources = Map("cpu" -> -1d))))
     List(job(" "), job().copy(cpu = "0s"), job().copy(timeout = "0ms"),
       job().copy(retry = RetryPolicy(maxRetries = -1)), job().copy(retry = RetryPolicy(maxRetries = 101)),
@@ -104,7 +104,7 @@ class ScheduleSuite extends CatsEffectSuite:
         config <- scheduler.config
         _ = assertEquals(config.jobs.size, 20)
         before <- IO.blocking(Files.readString(home.resolve("schedule.json")))
-        _ <- scheduler.tick
+        _ <- scheduler.dispatch
         rows <- eventually(scheduler.list)(_.forall(_.lastExitCode.contains(0)))
         _ = assertEquals(rows.flatMap(_.lastTaskId).distinct.size, 20)
         after <- IO.blocking(Files.readString(home.resolve("schedule.json")))
@@ -116,24 +116,24 @@ class ScheduleSuite extends CatsEffectSuite:
     temporary.use { home => Stub.resource(home.resolve("graaljs")).use { (manager, control) =>
       Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
         for
-          _ <- scheduler.writeConfig(ScheduleConfig(Map("cpu" -> 1d), 10, Map("a" -> job("a", 1), "b" -> job("b", 1), "c" -> job("c"))))
-          _ <- scheduler.tick
+          _ <- scheduler.writeConfig(ScheduleConfig(Map("cpu" -> 1d), Map("a" -> job("a", 1), "b" -> job("b", 1), "c" -> job("c"))))
+          _ <- scheduler.dispatch
           calls <- control.calls.get
           _ = assertEquals(calls.map(_.source), Vector("a", "c"))
           rows <- scheduler.list
           _ = assertEquals(rows.map(row => row.name -> row.status).toMap, Map("a" -> "running", "b" -> "queued", "c" -> "running"))
-          _ <- scheduler.tick
+          _ <- scheduler.dispatch
           count <- control.calls.get
           _ = assertEquals(count.size, 2)
           config <- scheduler.config
           _ <- scheduler.writeConfig(config.copy(jobs = config.jobs.updated("b", job("b", 1).copy(enabled = false))))
           _ <- calls.traverse_(call => control.finish(call.task.id))
           _ <- eventually(scheduler.list)(_.filter(_.name != "b").forall(_.status == "waiting"))
-          _ <- scheduler.tick
+          _ <- scheduler.dispatch
           disabled <- scheduler.list
           _ = assertEquals(disabled.find(_.name == "b").get.status, "disabled")
           _ <- scheduler.writeConfig(config)
-          _ <- scheduler.tick
+          _ <- scheduler.dispatch
           calls <- control.calls.get
           _ = assertEquals(calls.size, 3)
           _ <- control.finish(calls.last.task.id)
@@ -147,13 +147,13 @@ class ScheduleSuite extends CatsEffectSuite:
     temporary.use { home => Stub.resource(home.resolve("graaljs")).use { (manager, control) =>
       Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
         for
-          _ <- scheduler.writeConfig(ScheduleConfig(Map("cpu" -> 1d), 10, Map("a" -> job("fail", 1).copy(retry = RetryPolicy(maxDelay = "3s")), "b" -> job("other", 1))))
-          _ <- scheduler.tick
+          _ <- scheduler.writeConfig(ScheduleConfig(Map("cpu" -> 1d), Map("a" -> job("fail", 1).copy(retry = RetryPolicy(maxDelay = "3s")), "b" -> job("other", 1))))
+          _ <- scheduler.dispatch
           first <- control.calls.get
           _ <- control.finish(first.head.task.id, "failed")
           rows <- eventually(scheduler.list)(_.head.status == "retrying")
           _ = assertEquals(rows.head.attempt, 1)
-          _ <- scheduler.tick
+          _ <- scheduler.dispatch
           calls <- control.calls.get
           _ = assertEquals(calls.map(_.source), Vector("fail", "other"))
           _ <- control.finish(calls.last.task.id)
@@ -164,9 +164,9 @@ class ScheduleSuite extends CatsEffectSuite:
               delay = java.time.Duration.between(Instant.parse(state.lastFinishedAt.get), Instant.parse(state.nextRetryAt.get)).toMillis
               _ = assertEquals(delay, List(1000L, 2000L, 3000L)(attempt - 2))
               _ <- retryDue(home, "a")
-              _ <- scheduler.tick
+              _ <- scheduler.dispatch
               started <- control.calls.get
-              _ <- scheduler.tick
+              _ <- scheduler.dispatch
               unchanged <- control.calls.get
               _ = assertEquals(unchanged.size, started.size)
               _ <- control.finish(started.last.task.id, "failed")
@@ -177,7 +177,7 @@ class ScheduleSuite extends CatsEffectSuite:
           _ = assertEquals(rows.head.attempt, 4)
           _ = assertEquals(rows.head.nextRetryAt, None)
           _ = assertEquals(rows.head.status, "waiting")
-          _ <- scheduler.tick
+          _ <- scheduler.dispatch
           calls <- control.calls.get
         yield assertEquals(calls.map(_.task.id).distinct.size, 5)
       }
@@ -189,21 +189,21 @@ class ScheduleSuite extends CatsEffectSuite:
       Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
         for
           _ <- scheduler.put("sample", job().copy(every = "0ms", retry = RetryPolicy(delay = "0ms")))
-          _ <- scheduler.tick
+          _ <- scheduler.dispatch
           calls <- control.calls.get
           _ <- control.finish(calls.last.task.id, "failed")
           _ <- eventually(scheduler.list)(_.head.status == "retrying")
-          _ <- scheduler.tick
+          _ <- scheduler.dispatch
           calls <- control.calls.get
           _ <- control.finish(calls.last.task.id)
           rows <- eventually(scheduler.list)(_.head.lastExitCode.contains(0))
           _ = assertEquals(rows.head.attempt, 2)
           _ = assertEquals(rows.head.nextRetryAt, None)
-          _ <- scheduler.tick
+          _ <- scheduler.dispatch
           rows <- scheduler.list
           _ = assertEquals(rows.head.attempt, 1)
           _ <- scheduler.put("no-retry", job().copy(retry = RetryPolicy(maxRetries = 0)))
-          _ <- scheduler.tick
+          _ <- scheduler.dispatch
           calls <- control.calls.get
           _ <- control.finish(calls.last.task.id, "failed")
           rows <- eventually(scheduler.list)(_.find(_.name == "no-retry").get.lastExitCode.contains(1))
@@ -219,13 +219,13 @@ class ScheduleSuite extends CatsEffectSuite:
           _ <- scheduler.put("same", job("old"))
           _ <- List("recreate", "reset", "replace", "disable").traverse_ { operation =>
             for
-              _ <- scheduler.tick
+              _ <- scheduler.dispatch
               calls <- control.calls.get
               _ <- operation match
                 case "recreate" => scheduler.delete("same") *> scheduler.put("same", job("new")).void
                 case "reset" => scheduler.reset("same").void
                 case _ => scheduler.config.flatMap(config => scheduler.writeConfig(config.copy(jobs = Map("same" -> job(operation).copy(enabled = operation != "disable"))))).void
-              _ <- scheduler.tick
+              _ <- scheduler.dispatch
               still <- control.calls.get
               _ = assertEquals(still.size, calls.size)
               _ <- control.finish(calls.last.task.id, "failed")
@@ -247,7 +247,7 @@ class ScheduleSuite extends CatsEffectSuite:
         saved <- Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
           for
             _ <- scheduler.put("sample", job())
-            _ <- scheduler.tick
+            _ <- scheduler.dispatch
             calls <- control.calls.get
             _ <- control.finish(calls.head.task.id, "failed")
             _ <- eventually(scheduler.list)(_.head.nextRetryAt.nonEmpty)
@@ -258,7 +258,7 @@ class ScheduleSuite extends CatsEffectSuite:
           for
             state <- store.state("sample")
             _ = assertEquals(state, saved)
-            _ <- scheduler.tick
+            _ <- scheduler.dispatch
             calls <- control.calls.get
             _ = assertEquals(calls.size, 1)
           yield ()
@@ -282,7 +282,7 @@ class ScheduleSuite extends CatsEffectSuite:
             _ = assertEquals(rows.head.attempt, 2)
             _ = assertEquals(rows.head.lastTaskState, Some("interrupted"))
             _ <- retryDue(home, "sample")
-            _ <- scheduler.tick
+            _ <- scheduler.dispatch
             rows <- scheduler.list
             _ = assertEquals(rows.head.attempt, 3)
             calls <- control.calls.get
@@ -299,7 +299,7 @@ class ScheduleSuite extends CatsEffectSuite:
           allocated <- Scheduler.resource(manager, home, startLoop = false).allocated
           (scheduler, close) = allocated
           _ <- scheduler.put("sample", job())
-          _ <- scheduler.tick
+          _ <- scheduler.dispatch
           calls <- control.calls.get
           closing <- close.start
           _ <- calls.head.cancelled.get
@@ -327,7 +327,7 @@ class ScheduleSuite extends CatsEffectSuite:
         saved <- Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
           for
             _ <- scheduler.put("sample", job("old"))
-            _ <- scheduler.tick
+            _ <- scheduler.dispatch
             calls <- control.calls.get
             _ <- control.finish(calls.head.task.id, "failed")
             _ <- eventually(scheduler.list)(_.head.nextRetryAt.nonEmpty)
@@ -341,7 +341,7 @@ class ScheduleSuite extends CatsEffectSuite:
             rows <- eventually(scheduler.list)(_.head.status == "due")
             _ = assertEquals(rows.head.lastExitCode, None)
             _ = assertEquals(rows.head.nextRetryAt, None)
-            _ <- scheduler.tick
+            _ <- scheduler.dispatch
             rows <- scheduler.list
             _ = assertEquals(rows.head.attempt, 1)
             calls <- control.calls.get
@@ -367,7 +367,7 @@ class ScheduleSuite extends CatsEffectSuite:
         for
           _ <- scheduler.put("a/b 空", job("console.log('中文🙂'); console.error('stderr'); throw Error('broken')"))
           _ <- scheduler.put("timeout", job("await new Promise(() => {})").copy(timeout = "500ms"))
-          _ <- scheduler.tick
+          _ <- scheduler.dispatch
           rows <- eventually(scheduler.list)(_.forall(_.lastExitCode.nonEmpty))
           _ = assertEquals(rows.map(_.lastTaskState).distinct, List(Some("failed")))
           _ = assertEquals(rows.last.lastError.map(_.code), Some("timeout"))
