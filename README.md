@@ -220,6 +220,24 @@ if (result.exitCode !== 0) throw Error(result.stderr || `bash exit ${result.exit
 - 命令正常返回时不终止后台进程；启动常驻进程须重定向其 stdin/stdout/stderr，避免继承调用的管道。
 - GraalJS 的 CPU/内存额度只计 JS；子进程不计入这些额度。任务总超时仍会取消未完成的 Bash 调用。
 
+### GraalJS 跨周期状态
+
+`state.set/get/clear` 是普通命令声明，仅 `exposeOn(graaljs)`，通过现有 SDK 调用。
+键和值均为字符串；所有任务共享同一个键空间，建议用任务名前缀区分用途。
+
+```js
+const key = "my-task:last-value";
+const previous = (await tools.state.get({key})).body; // 不存在时为 null
+await tools.state.set({key, value: "下一周期读取的值"});
+const removed = (await tools.state.clear({key})).body; // 存在并删除返回 true，否则 false
+```
+
+- `set` 创建或覆盖值，成功响应无正文；空字符串按原样保存，与不存在的 `null` 区分。
+- 键为 1–128 个字符，不含 NUL；值最大 64 KiB（UTF-8），支持多行和 Unicode，不做 trim 或 JSON 转换。
+- 默认存储在 `$SPROUT_HOME/state/state.sqlite3`（默认 `~/.config/sprout/state/state.sqlite3`）。
+  单次操作原子提交，跨任务、周期、重试和服务重启保留；任务失败或被取消不会撤销已经提交的状态。
+- 并发覆盖同一键时，最后提交的值生效；多个 `get/set` 调用组合不构成事务。
+
 ### 客户端暴露范围
 
 `framework.rpcDsl.*` 提供 `exposeOn(cli, codemode, graaljs)`，可在 `commands` 或
