@@ -273,6 +273,33 @@ if (result.exitCode !== 0) throw Error(result.stderr || `Zsh exit ${result.exitC
 - `config.env` 中的 `ZSH_ON_MAC_SSH_TARGET` 和 `ZSH_ON_MAC_SSH_IDLE` 配置目标及空闲时长。
   使用服务用户的 SSH 密钥及 known_hosts，严格校验主机密钥；执行故障不自动重跑脚本。
 
+### R6S Bash
+
+R6S 运行 Armbian/Debian 13，默认 shell 为 Bash 5.2。`bash-on-r6s` 通过 Headscale SSH
+连接 `router@100.64.0.7:22`，`exposeOn(cli, graaljs, codemode)`。
+
+```sh
+groot-cli bash-on-r6s --timeout 30s --body '"printf \"%s\\n\" \"$BASH_VERSION\"; uname -a"'
+```
+
+```js
+const result = (await tools["bash-on-r6s"]({body: "hostname; uptime", timeout: "30s"})).body;
+console.log(result.stdout);
+if (result.exitCode !== 0) throw Error(result.stderr || `Bash exit ${result.exitCode}`);
+```
+
+- 脚本由 `body[String]` 接收，HTTP/CLI body 为 JSON 字符串；`timeout` 是普通参数，默认 `30s`，接受正整数 `ms/s/m/h/d`。
+- Service 直接接收 `script`、`timeout`，返回 `{exitCode, stdout, stderr}`；非零退出码正常返回。
+- 执行 `/bin/bash --noprofile --norc`，移除 `BASH_ENV`，以 `router` 用户从 home 目录执行；需要提权的命令可显式使用现有 `sudo -n`。
+- UTF-8 脚本及每路输出各限 64 KiB，脚本通过 stdin 按字节数传输，执行时 stdin 为 `/dev/null`。
+- OpenSSH ControlMaster 复用连接，空闲 **5 分钟**自动释放。每次调用独立 shell 和进程组；超时、取消、输出超限会清理本次进程组，清理最多等待 5 秒。
+  主动脱离进程组的守护进程自行管理，网络断开时记录远程清理失败；连接故障不自动重跑脚本。
+- `BASH_ON_R6S_SSH_TARGET`、`BASH_ON_R6S_SSH_IDLE` 配置 SSH 目标和空闲时长，使用服务用户的 SSH 密钥及 known_hosts。
+- 路由器已安装官方 Tailscale 1.104.4，服务开机自启，加入 `https://headscale.yjgbg.com:28443` 的 `emma` 网络。
+  节点名 `r6s`，地址 `100.64.0.7` / `fd7a:115c:a1e0::7`；关闭接管 DNS、接受子网路由、出口节点及 Tailscale SSH，使用现有 OpenSSH。
+  `netfilter-mode=off` 配合 nftables 的 `tailscale0` 入站规则；systemd drop-in 在防火墙启动和 reload 后补回该规则。
+  Mihomo hosts 中 `headscale.yjgbg.com` 指向 `49.235.170.57`，避免控制域名走 fake-IP。
+
 ### GraalJS 跨周期状态
 
 `state.set/get/clear` 是普通命令声明，仅 `exposeOn(graaljs)`，通过现有 SDK 调用。
