@@ -55,8 +55,14 @@ class PowerShellSuite extends CatsEffectSuite:
         val sdk = GraalCommandSdk(app)
         for
           _ <- IO(assertEquals(app.endpoints.head.exposedOn, Set(framework.Client.cli, framework.Client.graaljs, framework.Client.codemode)))
-          response <- app.httpApp(Request[IO](Method.POST, Uri.unsafeFromString("/powershell"))
-            .withEntity(JsonModel[PowerShellRequest].encoder(PowerShellRequest(source)).noSpaces)
+          operation = io.circe.parser.parse(app.openApiJson).toOption.get.hcursor.downField("paths").downField("/powershell").downField("post")
+          _ = assertEquals(operation.downField("requestBody").downField("content").downField("application/json").downField("schema").get[String]("type"), Right("string"))
+          timeout = operation.get[Vector[Json]]("parameters").toOption.get.find(_.hcursor.get[String]("name") == Right("timeout")).get.hcursor
+          _ = assertEquals(timeout.get[String]("in"), Right("query"))
+          _ = assertEquals(timeout.get[Boolean]("required"), Right(false))
+          _ = assertEquals(timeout.downField("schema").get[String]("default"), Right("30s"))
+          response <- app.httpApp(Request[IO](Method.POST, Uri.unsafeFromString("/powershell?timeout=10s"))
+            .withEntity(Json.fromString(source).noSpaces)
             .putHeaders(org.http4s.Header.Raw(org.typelevel.ci.CIString("Content-Type"), "application/json")))
           body <- response.as[String]
           _ = assertEquals(response.status, Status.Ok)
@@ -64,7 +70,7 @@ class PowerShellSuite extends CatsEffectSuite:
           payload <- IO.blocking(Files.readString(home.resolve("received")))
           _ = assertEquals(payload, "\uFEFF" + source + "\n")
           _ <- GraalManager.resource(home.resolve("tasks"), IO.pure(sdk)).use { manager => for
-            task <- manager.start(JavaScript.source("const r=(await tools.powershell({script:'Get-Date'})).body;if(r.exitCode!==7||r.stdout!=='中文🙂\\n'||r.stderr!=='stderr\\n')throw Error(JSON.stringify(r));"), "1s", "10s")
+            task <- manager.start(JavaScript.source("const r=(await tools.powershell({body:'Get-Date'})).body;if(r.exitCode!==7||r.stdout!=='中文🙂\\n'||r.stderr!=='stderr\\n')throw Error(JSON.stringify(r));"), "1s", "10s")
             done <- manager.await(task.id)
             _ = assertEquals(done.state, "succeeded", done.error.toString)
           yield () }
@@ -82,9 +88,9 @@ class PowerShellSuite extends CatsEffectSuite:
       ssh <- transport(home)
       _ <- PowerShellService.resource(home.resolve("pool"), ssh = ssh.toString).use { service =>
         val sdk = GraalCommandSdk(httpApp { PowerShellRoutes.register(service) })
-        def call(input: PowerShellRequest) = sdk.call("powershell", JsonModel[PowerShellRequest].encoder(input))
+        def call(input: PowerShellRequest) = sdk.call("powershell", Json.obj("body" -> Json.fromString(input.script), "timeout" -> Json.fromString(input.timeout)))
         for
-          _ <- List(PowerShellRequest(" "), PowerShellRequest("x\u0000"), PowerShellRequest("x", "0s"), PowerShellRequest("x", "oops"))
+          _ <- List(PowerShellRequest(" "), PowerShellRequest("x\u0000"), PowerShellRequest("x", ""), PowerShellRequest("x", "0s"), PowerShellRequest("x", "oops"))
             .traverse_(input => call(input).map(result => assertEquals(result.hcursor.get[Int]("status"), Right(400))))
           largeInput <- call(PowerShellRequest("x" * (PowerShellService.maxBytes + 1)))
           _ = assertEquals(largeInput.hcursor.get[Int]("status"), Right(413))
