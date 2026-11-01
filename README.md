@@ -248,6 +248,31 @@ if (result.exitCode !== 0) throw Error(result.stderr || `PowerShell exit ${resul
 - `config.env` 的 `POWERSHELL_SSH_TARGET`、`POWERSHELL_SSH_IDLE` 分别配置目标和空闲时长。
   SSH 配置和凭据属于运行服务的本机用户；命令不会在连接故障后自动重跑远程脚本。
 
+### macOS Zsh
+
+Mac 用户的默认 shell 为 `/bin/zsh`（已实测 5.9），因此命令名为 `zsh-on-mac`，
+`exposeOn(cli, graaljs, codemode)`。默认经 Headscale SSH 连接 `weichenglong@100.64.0.5:22`。
+
+```sh
+groot-cli zsh-on-mac --timeout 30s --body '"print -r -- $ZSH_VERSION; sw_vers"'
+```
+
+```js
+const result = (await tools["zsh-on-mac"]({body: "pwd; print -r -- '你好🙂'", timeout: "30s"})).body;
+console.log(result.stdout);
+if (result.exitCode !== 0) throw Error(result.stderr || `Zsh exit ${result.exitCode}`);
+```
+
+- 脚本通过 `body[String]` 接收（HTTP/CLI body 是 JSON 字符串）；`timeout` 为普通参数，默认 `30s`，接受正整数 `ms/s/m/h/d`。
+- Service 直接接收 `script` 和 `timeout`，返回 `{exitCode, stdout, stderr}`，非零退出码正常返回。
+- 实际执行 `/bin/zsh -f`，非交互、非登录模式，默认从远程用户 home 开始；每次调用使用独立 shell、临时脚本和进程组。
+  UTF-8 脚本最大 64 KiB，每路输出最多 64 KiB；脚本从 stdin 按字节数传输，执行时 stdin 为 `/dev/null`。
+- OpenSSH `ControlMaster` 复用连接，空闲 **5 分钟**释放，下次调用重连；服务正常关闭时释放所属 master。
+- 超时、取消或输出超限时，清理本次远程进程组（包括通常继承该组的子进程），清理最多等待 5 秒。
+  使用请求标记、进程启动时间和进程组身份校验；远程网络断开时记录清理失败。主动脱离进程组的守护进程自行管理。
+- `config.env` 中的 `ZSH_ON_MAC_SSH_TARGET` 和 `ZSH_ON_MAC_SSH_IDLE` 配置目标及空闲时长。
+  使用服务用户的 SSH 密钥及 known_hosts，严格校验主机密钥；执行故障不自动重跑脚本。
+
 ### GraalJS 跨周期状态
 
 `state.set/get/clear` 是普通命令声明，仅 `exposeOn(graaljs)`，通过现有 SDK 调用。

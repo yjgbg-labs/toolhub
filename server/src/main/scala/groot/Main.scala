@@ -12,6 +12,7 @@ import groot.bash.{BashRoutes, BashService}
 import groot.widget.{WidgetRoutes, WidgetService}
 import groot.state.{StateRoutes, StateService}
 import groot.powershell.{PowerShellRoutes, PowerShellService}
+import groot.zshonmac.{ZshOnMacRoutes, ZshOnMacService}
 
 object Main extends IOApp.Simple:
   def run: IO[Unit] = (for
@@ -21,9 +22,10 @@ object Main extends IOApp.Simple:
     widget <- WidgetService.resource()
     state <- StateService.resource()
     powershell <- PowerShellService.resource()
+    zshOnMac <- ZshOnMacService.resource()
     graaljs <- GraalManager.resource(commands = commands.get)
     scheduler <- Scheduler.resource(graaljs, startLoop = false)
-  yield (scheduler, sqlite, fetch, widget, state, powershell, graaljs, commands)).use { (scheduler, sqlite, fetch, widget, state, powershell, graaljs, commands) =>
+  yield (scheduler, sqlite, fetch, widget, state, powershell, zshOnMac, graaljs, commands)).use { (scheduler, sqlite, fetch, widget, state, powershell, zshOnMac, graaljs, commands) =>
     val app = httpApp {
       server {
         host("0.0.0.0")
@@ -48,6 +50,7 @@ object Main extends IOApp.Simple:
       WidgetRoutes.register(widget)
       StateRoutes.register(state)
       PowerShellRoutes.register(powershell)
+      ZshOnMacRoutes.register(zshOnMac)
       command[PlainText]("health") {
         handle { IO.pure(PlainText("ok")) }
       }
