@@ -140,7 +140,7 @@ await tools.schedule.config.write(config);
 ### GraalJS 定时任务与重试
 
 `schedule` 使用 `script` 指向服务端 JavaScript 文件的绝对路径，每次成功提交的周期执行和重试都有独立的 GraalJS 任务 ID。
-脚本可用 `console` 和声明自动生成的 `tools.*`（含 `tools.fetch`）；不支持 Bun/Node 模块或进程命令。
+脚本可用 `console` 和声明自动生成的 `tools.*`（含 `tools.fetch`、`tools.bash`）；宿主命令通过 `tools.bash` 执行，JS 环境不提供 Bun/Node 模块。
 内联 `source`、`command`、`cwd` 和运行状态字段会被拒绝。旧配置升级前应先备份，将源码保存为文件后通过 API 写入路径。
 
 ```json
@@ -198,6 +198,27 @@ await tools.schedule.config.write(config);
 
 完整配置现在仅包含 `resources` 和 `jobs`；旧文件的 `tickMs` 可读取但被忽略，新 API 不再返回它。
 配置通过 API 更新会立即唤醒调度。`every: "0ms"` 表示前次完成后立即再次执行。
+
+### GraalJS Bash 命令
+
+`bash` 是普通命令声明，仅 `exposeOn(graaljs)`，通过现有 SDK 调用；不向 CLI、Code Mode 或公共 HTTP 暴露。
+
+```js
+const result = (await tools.bash({
+  script: "set -euo pipefail\nprintf 'hello\\n'\ndf -Pk /",
+  cwd: "/home/user", // 可省略，默认服务的工作目录
+  timeout: "10s"    // 默认 30s；接受正整数 ms/s/m/h/d
+})).body;
+console.log(result.stdout);
+if (result.exitCode !== 0) throw Error(result.stderr || `bash exit ${result.exitCode}`);
+```
+
+- Linux 上通过 `setsid` 在独立进程组中执行 `/bin/bash --noprofile --norc -c`，继承服务环境（去除 `BASH_ENV`），stdin 为 EOF。
+- 脚本最多 64 KiB；stdout、stderr 并发收集，各最多 64 KiB，返回 UTF-8 文本（无效字节替换）。
+- 非零退出码正常返回，由调用脚本决定是否抛错重试；参数错误、输出超限和命令超时会拒绝 Promise。
+- 命令超时、SDK 调用取消、任务取消/超时/关闭会终止进程组及已发现的后代，完成清理后才释放任务。
+- 命令正常返回时不终止后台进程；启动常驻进程须重定向其 stdin/stdout/stderr，避免继承调用的管道。
+- GraalJS 的 CPU/内存额度只计 JS；子进程不计入这些额度。任务总超时仍会取消未完成的 Bash 调用。
 
 ### 客户端暴露范围
 
