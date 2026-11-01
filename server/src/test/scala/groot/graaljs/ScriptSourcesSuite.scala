@@ -12,38 +12,40 @@ import GraalTestSupport.*
 class ScriptSourcesSuite extends CatsEffectSuite:
   private def write(path: Path, text: String): IO[Unit] = IO.blocking(Files.writeString(path, text)).void
   private def source(sources: ScriptSources, path: Path, text: String): IO[GraalSource] =
-    awaitUntil(sources.snapshot(path))(_.exists(_.text == text)).map(_.toOption.get).timeout(2.seconds)
+    sources.snapshot(path).map { result =>
+      assertEquals(result.map(_.text), Right(text))
+      result.toOption.get
+    }
 
-  test("watch events replace the actual cached Source; unchanged text and normalized aliases reuse it") {
+  test("each snapshot hashes current bytes even with unchanged size/mtime; identical content reuses Source") {
     temporary.use { home => ScriptSources.resource.use { sources =>
       val path = home.resolve("中文 script.js")
       for
         _ <- write(path, "console.log('v1')")
         _ <- sources.retain(Set(path, home.resolve("./中文 script.js")))
+        lazyCache <- sources.cachedPaths
+        _ = assertEquals(lazyCache, Set.empty[Path])
         first <- source(sources, path, "console.log('v1')")
-        same <- sources.snapshot(path)
+        same <- sources.snapshot(home.resolve("./中文 script.js"))
         _ = assert(same.toOption.get.value eq first.value)
         _ = assertEquals(first.value.getURI, path.toUri)
+        modified <- IO.blocking(Files.getLastModifiedTime(path))
         _ <- write(path, "console.log('v2')")
+        _ <- IO.blocking(Files.setLastModifiedTime(path, modified))
         second <- source(sources, path, "console.log('v2')")
         _ = assert(!(first.value eq second.value))
         _ = assert(first.value.getCharacters.toString.contains("v1"))
-        _ <- write(home.resolve("replace.tmp"), "console.log('v3')")
-        _ <- IO.blocking(Files.move(home.resolve("replace.tmp"), path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING))
+        external <- IO.blocking(Files.createDirectories(home.resolve("elsewhere/nested")))
+        _ <- write(external.resolve("replace.tmp"), "console.log('v3')")
+        _ <- IO.blocking(Files.move(external.resolve("replace.tmp"), path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING))
         third <- source(sources, path, "console.log('v3')")
         _ <- write(path, "console.log('v3')")
-        // A subsequent different file event is a barrier for the unchanged-content notification.
-        other = home.resolve("other.js")
-        _ <- write(other, "1")
-        _ <- sources.retain(Set(path, other))
-        _ <- write(other, "2")
-        _ <- source(sources, other, "2")
         unchanged <- sources.snapshot(path)
       yield assert(unchanged.toOption.get.value eq third.value)
     } }
   }
 
-  test("missing files/parents, delete/recreate and atomic directory replacement recover through events") {
+  test("the next snapshot immediately observes missing files, recreated parents and replaced directories") {
     temporary.use { home => ScriptSources.resource.use { sources =>
       val directory = home.resolve("scripts")
       val path = directory.resolve("task.js")
@@ -55,7 +57,8 @@ class ScriptSourcesSuite extends CatsEffectSuite:
         _ <- write(path, "1")
         _ <- source(sources, path, "1")
         _ <- IO.blocking(Files.delete(path))
-        _ <- awaitUntil(sources.snapshot(path))(_.isLeft)
+        deleted <- sources.snapshot(path)
+        _ = assert(deleted.isLeft)
         _ <- write(path, "2")
         _ <- source(sources, path, "2")
         _ <- IO.blocking {
@@ -70,7 +73,7 @@ class ScriptSourcesSuite extends CatsEffectSuite:
     } }
   }
 
-  test("symlinks track target edits, dangling targets and link retargeting") {
+  test("each snapshot resolves current symlink targets, including newly created and retargeted files") {
     temporary.use { home => ScriptSources.resource.use { sources =>
       val link = home.resolve("task.js")
       val target = home.resolve("targets/task.js")
@@ -103,7 +106,8 @@ class ScriptSourcesSuite extends CatsEffectSuite:
         _ <- List(Array.emptyByteArray, Array.fill[Byte](Limits.maxSourceBytes + 1)(65), Array(0xc3.toByte, 0x28.toByte)).traverse_ { bytes =>
           for
             _ <- IO.blocking(Files.write(path, bytes))
-            error <- awaitUntil(sources.snapshot(path))(_.isLeft)
+            error <- sources.snapshot(path)
+            _ = assert(error.isLeft)
             _ = assertEquals(error.swap.toOption.get.code, "source_error")
             _ <- write(path, "1")
             _ <- source(sources, path, "1")
@@ -113,26 +117,33 @@ class ScriptSourcesSuite extends CatsEffectSuite:
     } }
   }
 
-  test("removing the last reference releases watches and closing cancels the blocked watcher") {
+  test("removing the last reference and closing release cached Sources without preloading files") {
     temporary.use { home =>
+      val path = home.resolve("task.js")
       for
         allocated <- ScriptSources.resource.allocated
         (sources, close) = allocated
         _ <- (for
-          _ <- sources.retain(Set(home.resolve("task.js")))
-          watched <- sources.watchedDirectories
-          _ = assert(watched.nonEmpty)
+          _ <- write(path, "1")
+          _ <- sources.retain(Set(path))
+          first <- source(sources, path, "1")
+          cached <- sources.cachedPaths
+          _ = assertEquals(cached, Set(path))
           _ <- sources.retain(Set.empty)
-          empty <- sources.watchedDirectories
+          empty <- sources.cachedPaths
           _ = assertEquals(empty, Set.empty[Path])
-          _ <- sources.retain(Set(home.resolve("task.js")))
+          removed <- sources.snapshot(path)
+          _ = assert(removed.isLeft)
+          _ <- sources.retain(Set(path))
+          second <- source(sources, path, "1")
+          _ = assert(!(first.value eq second.value))
         yield ()).guarantee(close.timeout(2.seconds))
-        closed <- sources.watchedDirectories
+        closed <- sources.cachedPaths
       yield assertEquals(closed, Set.empty[Path])
     }
   }
 
-  test("GraalJS queue and active tasks retain Source identity and persisted text across hot reload and unwatch") {
+  test("GraalJS queue and active tasks retain Source identity and persisted text across reload and cache eviction") {
     temporary.use { home => ScriptSources.resource.use { sources =>
       ScheduleTestSupport.resource(home.resolve("graaljs"), budgetBytes = Limits.taskBytes).use { (manager, control) =>
         val path = home.resolve("task.js")
@@ -186,7 +197,7 @@ class ScriptSourcesSuite extends CatsEffectSuite:
     } }
   }
 
-  test("real scheduler hot reloads syntax failures and missing files into successful retries with distinct IDs") {
+  test("real scheduler rereads scripts on retries, recovering syntax and missing-file failures with distinct IDs") {
     temporary.use { home => GraalManager.resource(home.resolve("graaljs")).use { manager =>
       Scheduler.resource(manager, home).use { scheduler =>
         val path = home.resolve("task.js")
@@ -200,7 +211,7 @@ class ScriptSourcesSuite extends CatsEffectSuite:
           _ = assert(success.head.attempt >= 2)
           _ = assert(success.head.lastTaskId.get != firstId)
           _ <- IO.blocking(Files.delete(path))
-          // Repeat intervals until the deletion event is observed; each failed read still creates a real task.
+          // The next admission reads the deleted path and still creates a real failed task.
           _ <- scheduler.put("sample", ScheduleJob("100ms", path.toString, retry = RetryPolicy(delay = "300ms", maxDelay = "300ms")))
           missing <- awaitUntil(scheduler.list)(_.head.lastError.exists(_.code == "source_error"))
           task <- manager.status(missing.head.lastTaskId.get)

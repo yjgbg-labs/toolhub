@@ -21,7 +21,7 @@ object ScheduleRoutes:
     }
 
     command[ScheduleJob]("new") {
-      description("Schedule a watched JavaScript file; each execution and retry snapshots its current Source into a new GraalJS task")
+      description("Schedule a JavaScript file; each execution and retry reads and SHA-256 hashes its contents, reusing the Source when unchanged")
       val name = param[String]("name", "Job name") { minLength(1) }
       val input = body[ScheduleJob]("script: absolute server-side JavaScript file path; interval, execution limits and retry policy")
       handle { scheduler.put(name.value, input.value) }

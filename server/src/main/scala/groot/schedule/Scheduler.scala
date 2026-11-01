@@ -31,7 +31,7 @@ final class Scheduler private (
   private def requireJob(config: ScheduleConfig, name: String): IO[ScheduleJob] =
     IO.fromOption(config.jobs.get(name))(MissingJob(name))
 
-  private def watch(config: ScheduleConfig): IO[Unit] =
+  private def retainSources(config: ScheduleConfig): IO[Unit] =
     sources.retain(config.jobs.values.map(job => Path.of(job.script)).toSet)
 
   private def definitionHash(job: ScheduleJob): String =
@@ -45,7 +45,7 @@ final class Scheduler private (
     for
       previous <- store.config
       _ <- store.writeConfig(value)
-      _ <- watch(value)
+      _ <- retainSources(value)
       _ <- (previous.jobs.keySet ++ value.jobs.keySet).toList.traverse_ { name =>
         IO.whenA(previous.jobs.get(name) != value.jobs.get(name))(invalidate(name))
       }
@@ -62,7 +62,7 @@ final class Scheduler private (
     for
       config <- store.config
       _ <- store.writeConfig(config.copy(jobs = config.jobs.updated(name, job)))
-      _ <- watch(config.copy(jobs = config.jobs.updated(name, job)))
+      _ <- retainSources(config.copy(jobs = config.jobs.updated(name, job)))
       _ <- invalidate(name)
     yield job
   }.guarantee(wake)
@@ -71,7 +71,7 @@ final class Scheduler private (
     for
       config <- store.config
       _ <- store.writeConfig(config.copy(jobs = config.jobs - name))
-      _ <- watch(config.copy(jobs = config.jobs - name))
+      _ <- retainSources(config.copy(jobs = config.jobs - name))
       _ <- invalidate(name)
     yield ()
   }.guarantee(wake)
@@ -272,6 +272,6 @@ object Scheduler:
       changed <- Resource.eval(Queue.bounded[IO, Unit](1))
       sources <- ScriptSources.resource
       scheduler = new Scheduler(store, graaljs, mutex, supervisor, changed, sources)
-      _ <- Resource.make(scheduler.serial(store.config.flatTap(scheduler.watch).flatMap(config => IO.realTimeInstant.flatMap(scheduler.recover(config, _)))))(_ => scheduler.shutdown)
+      _ <- Resource.make(scheduler.serial(store.config.flatTap(scheduler.retainSources).flatMap(config => IO.realTimeInstant.flatMap(scheduler.recover(config, _)))))(_ => scheduler.shutdown)
       _ <- if startLoop then scheduler.loop.background.void else Resource.unit[IO]
     yield scheduler
