@@ -19,6 +19,7 @@ final class GraalManager private (
   private case class Running(execution: GraalExecution, done: Deferred[IO, Unit])
   private var running = Map.empty[String, Running]
   private var submitted = Map.empty[String, FiniteDuration]
+  private var completions = Map.empty[String, Deferred[IO, Either[Throwable, GraalTask]]]
   private var accepting = true
 
   private def serial[A](operation: => IO[A]): IO[A] = mutex.lock.surround(IO.uncancelable(_ => IO.defer(operation)))
@@ -32,7 +33,12 @@ final class GraalManager private (
     }
 
   def start(source: String, cpu: String, timeout: String): IO[GraalTask] =
+    IO(GraalManager.taskId()).flatMap(submit(_, source, cpu, timeout))
+
+  /** Internal admission with a preallocated ID, so schedule can durably link an attempt before it runs. */
+  private[groot] def submit(id: String, source: String, cpu: String, timeout: String): IO[GraalTask] =
     for
+      _ <- IO.raiseUnless(id.matches("gjs_[0-9a-f]{32}"))(InvalidGraalTask("Invalid task ID"))
       limits <- IO((Validation.durationMs("cpu", cpu), Validation.durationMs("timeout", timeout)))
       _ <- IO(Validation.source(source))
       task <- serial {
@@ -42,12 +48,12 @@ final class GraalManager private (
           _ <- IO.raiseWhen(pending.count(_.state == "queued") >= Limits.maxQueued)(GraalQueueFull())
           now <- IO.realTimeInstant
           clock <- IO.monotonic
-          id = "gjs_" + UUID.randomUUID().toString.replace("-", "")
           task = GraalTask(id, "queued", limits._1, limits._2,
             Limits.taskBytes, now.toString, None, None, None, 0d, None, store.logPath(id).toAbsolutePath.toString, None)
           _ <- store.createLog(id)
           _ <- store.insert(task, source)
-          _ <- IO { submitted += id -> clock }
+          completed <- Deferred[IO, Either[Throwable, GraalTask]]
+          _ <- IO { submitted += id -> clock; completions += id -> completed }
           _ <- dispatch
           current <- store.get(id).flatMap(elapsed)
         yield current
@@ -55,6 +61,11 @@ final class GraalManager private (
     yield task
 
   def status(id: String): IO[GraalTask] = serial(store.get(id).flatMap(elapsed))
+  /** Waiting is cancellable and never owns the worker. Completion follows Context cleanup and persistence. */
+  def await(id: String): IO[GraalTask] = serial {
+    store.get(id).map(task => if task.terminal then IO.pure(task) else completions.get(id).fold(
+      IO.raiseError[GraalTask](new IllegalStateException(s"Cannot await untracked GraalJS task $id")))(_.get.rethrow))
+  }.flatten
   def list: IO[List[GraalTask]] = serial(store.active.flatMap(_.traverse(elapsed)))
   def logs(id: String): IO[PlainText] = store.logs(id).map(PlainText(_))
   def follow(id: String): IO[SSE[PlainText]] = store.get(id).as(SSE(store.follow(id).map(PlainText(_))))
@@ -95,7 +106,10 @@ final class GraalManager private (
         }) *> dispatch
       } }
     }.handleErrorWith { error =>
-      serial(IO { accepting = false }) *> IO(scribe.error(s"Cannot finalize GraalJS task ${task.id}", error))
+      serial {
+        IO { accepting = false } *> completions.get(task.id).traverse_(_.complete(Left(error)).void) *>
+          IO { completions -= task.id }
+      } *> IO(scribe.error(s"Cannot finalize GraalJS task ${task.id}", error))
     }
 
   private def summary(task: GraalTask): String =
@@ -114,6 +128,8 @@ final class GraalManager private (
       persisted = output.fold(error => finished.copy(state = "failed",
         error = Some(TaskError("log_error", error.toString.take(8192)))), _ => finished)
       _ <- store.save(persisted)
+      _ <- completions.get(task.id).traverse_(_.complete(Right(persisted)).void)
+      _ <- IO { completions -= task.id }
     yield ()
 
   def cancel(id: String): IO[GraalTask] = serial {
@@ -144,6 +160,7 @@ final class GraalManager private (
     }
 
 object GraalManager:
+  private[groot] def taskId(): String = "gjs_" + UUID.randomUUID().toString.replace("-", "")
   def resource(home: Path = GraalStore.defaultHome, commands: IO[GraalCommandSdk] = IO.pure(GraalCommandSdk.empty)): Resource[IO, GraalManager] =
     managed(home, GraalRunner.resource(commands))
 

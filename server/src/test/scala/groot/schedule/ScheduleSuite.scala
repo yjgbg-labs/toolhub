@@ -1,15 +1,18 @@
 package groot.schedule
 
-import cats.effect.{Deferred, IO, Ref, Resource}
+import cats.effect.{Deferred, IO, Resource}
 import cats.syntax.all.*
+import framework.model.JsonModel
+import framework.runtime.Application
+import framework.rpcDsl.*
+import groot.graaljs.{GraalManager, ScheduleTestSupport as Stub}
 import io.circe.Json
 import munit.CatsEffectSuite
 import org.http4s.{Header, Method, Request, Status, Uri}
 import org.http4s.circe.*
 import org.typelevel.ci.CIString
-import framework.runtime.Application
-import framework.rpcDsl.*
 import java.nio.file.{Files, Path}
+import java.time.Instant
 import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
 
@@ -23,17 +26,24 @@ class ScheduleSuite extends CatsEffectSuite:
   })
 
   private def eventually[A](io: IO[A])(check: A => Boolean): IO[A] =
-    io.flatMap(value => if check(value) then IO.pure(value) else IO.sleep(10.millis) *> eventually(io)(check)).timeout(5.seconds)
+    io.flatMap(value => if check(value) then IO.pure(value) else IO.sleep(10.millis) *> eventually(io)(check)).timeout(10.seconds)
 
-  private def job(command: String, cpu: Double = 0): ScheduleJob =
-    ScheduleJob("1h", List(command), if cpu == 0 then Map.empty else Map("cpu" -> cpu))
+  private def job(source: String = "console.log('hello')", cpu: Double = 0): ScheduleJob =
+    ScheduleJob("1h", source, resource = if cpu == 0 then Map.empty else Map("cpu" -> cpu))
+
+  private def scheduler(home: Path): Resource[IO, Scheduler] =
+    Stub.resource(home.resolve("graaljs"), autoFinish = true).flatMap { (manager, _) => Scheduler.resource(manager, home, startLoop = false) }
 
   private def app(scheduler: Scheduler): Application = httpApp { ScheduleRoutes.register(scheduler) }
   private def request(path: String, json: Option[String] = None): Request[IO] =
     val request = Request[IO](if json.isDefined then Method.POST else Method.GET, Uri.unsafeFromString(path))
     json.fold(request)(body => request.withEntity(body).putHeaders(Header.Raw(CIString("Content-Type"), "application/json")))
 
-  test("duration syntax, numeric capacities and commands are validated") {
+  private def retryDue(home: Path, name: String): IO[Unit] =
+    val store = new Store(home)
+    store.state(name).flatMap(state => store.writeState(name, state.copy(nextRetryAt = Some("2000-01-01T00:00:00Z"))))
+
+  test("duration, limits, resource capacities and retry policy are validated") {
     assertEquals(Validation.durationMs("0ms"), 0L)
     assertEquals(Validation.durationMs("2d"), 172800000L)
     List("1.5h", "1h30m", "-1s", "1w", "99999999999999999999d").foreach { value =>
@@ -41,36 +51,45 @@ class ScheduleSuite extends CatsEffectSuite:
     }
     intercept[InvalidSchedule](Validation.config(ScheduleConfig.empty.copy(tickMs = Double.NaN)))
     intercept[InvalidSchedule](Validation.config(ScheduleConfig.empty.copy(resources = Map("cpu" -> -1d))))
-    intercept[InvalidSchedule](Validation.config(ScheduleConfig.empty.copy(jobs = Map("a" -> job("")))))
+    List(job(" "), job().copy(cpu = "0s"), job().copy(timeout = "0ms"),
+      job().copy(retry = RetryPolicy(maxRetries = -1)), job().copy(retry = RetryPolicy(maxRetries = 101)),
+      job().copy(retry = RetryPolicy(backoff = Double.PositiveInfinity)), job().copy(retry = RetryPolicy(backoff = 0.5)),
+      job().copy(retry = RetryPolicy(delay = "2s", maxDelay = "1s"))).foreach { invalid =>
+      intercept[InvalidSchedule](Validation.config(ScheduleConfig.empty.copy(jobs = Map("a" -> invalid))))
+    }
+    assertEquals((1 to 4).map(Validation.retryDelayMs(RetryPolicy(maxDelay = "3s"), _)).toList, List(1000L, 2000L, 3000L, 3000L))
+    assertEquals(Validation.retryDelayMs(RetryPolicy(backoff = Double.MaxValue), 100), 30000L)
     assertEquals(Store.fileName("a/b 空 +%"), "a%2Fb%20%E7%A9%BA%20%2B%25")
   }
 
-  test("HTTP operations expose typed schemas, explicit errors and atomic validation") {
-    temporary.use { home => Scheduler.resource(home, startLoop = false).use { scheduler =>
+  test("HTTP accepts JavaScript with defaults and rejects command, cwd, runtime state and invalid retries atomically") {
+    temporary.use { home => scheduler(home).use { scheduler =>
       val http = app(scheduler)
       for
-        created <- http.httpApp(request("/schedule/new?name=sample", Some("""{"every":"1h","command":["/bin/true"]}""")))
+        created <- http.httpApp(request("/schedule/new?name=sample", Some("""{"every":"1h","source":"console.log('hello')"}""")))
         _ = assertEquals(created.status, Status.Ok)
+        createdJson <- created.as[Json]
+        _ = assertEquals(createdJson.hcursor.get[String]("cpu"), Right("1s"))
+        _ = assertEquals(createdJson.hcursor.downField("retry").get[Int]("maxRetries"), Right(3))
         _ <- new Store(home).writeState("sample", JobState(Some("2026-09-19T00:00:00Z"), Some(7)))
-        invalid <- http.httpApp(request("/schedule/new?name=sample", Some("""{"every":"1h","command":["/bin/true"],"resource":{"cpu":1}}""")))
-        _ = assertEquals(invalid.status, Status.BadRequest)
+        _ <- List(""""command":["/bin/true"]""", """"cwd":"/tmp"""", """"lastExitCode":0""",
+          """"resource":{"cpu":1}""", """"retry":{"maxRetries":-1}""").traverse_ { extra =>
+          http.httpApp(request("/schedule/new?name=sample", Some(s"""{"every":"1h","source":"1",$extra}""")))
+            .map(response => assertEquals(response.status, Status.BadRequest))
+        }
         persisted <- scheduler.list
         _ = assertEquals(persisted.head.lastExitCode, Some(7))
         partial <- http.httpApp(request("/schedule/config/write", Some("{}")))
         _ = assertEquals(partial.status, Status.BadRequest)
-        badRuntime <- http.httpApp(request("/schedule/config/write", Some("""{"resources":{},"tickMs":1000,"jobs":{"sample":{"every":"1h","command":["true"],"lastExitCode":0}}}""")))
-        _ = assertEquals(badRuntime.status, Status.BadRequest)
         badLines <- http.httpApp(request("/schedule/log?name=sample&lines=0"))
         _ = assertEquals(badLines.status, Status.BadRequest)
         missing <- http.httpApp(request("/schedule/reset?name=missing"))
         _ = assertEquals(missing.status, Status.NotFound)
         reset <- http.httpApp(request("/schedule/reset?name=sample"))
         resetJson <- reset.as[Json]
-        _ = assertEquals(resetJson, Json.obj("lastRunAt" -> Json.Null, "lastExitCode" -> Json.Null))
+        _ = assertEquals(resetJson, JsonModel[JobState].encoder(JobState()))
         deleted <- http.httpApp(request("/schedule/delete?name=sample"))
         _ = assertEquals(deleted.status, Status.Ok)
-        deletedBody <- deleted.as[String]
-        _ = assertEquals(deletedBody, "")
         duplicate <- http.httpApp(request("/schedule/delete?name=sample"))
         _ = assertEquals(duplicate.status, Status.Ok)
         openapi <- http.httpApp(Request[IO](uri = Uri.unsafeFromString("/openapi.json"))).flatMap(_.as[Json])
@@ -78,147 +97,289 @@ class ScheduleSuite extends CatsEffectSuite:
     } }
   }
 
-  test("concurrent config updates keep every job and runtime state never rewrites static configuration") {
-    temporary.use { home => Scheduler.resource(home, startLoop = false).use { scheduler =>
+  test("concurrent config updates keep every job and runtime never rewrites configuration") {
+    temporary.use { home => scheduler(home).use { scheduler =>
       for
-        _ <- (1 to 20).toList.parTraverse_(i => scheduler.put(s"job-$i", job("/bin/true")))
+        _ <- (1 to 20).toList.parTraverse_(i => scheduler.put(s"job-$i", job()))
         config <- scheduler.config
         _ = assertEquals(config.jobs.size, 20)
         before <- IO.blocking(Files.readString(home.resolve("schedule.json")))
         _ <- scheduler.tick
-        _ <- eventually(scheduler.list)(_.forall(_.lastExitCode.contains(0)))
+        rows <- eventually(scheduler.list)(_.forall(_.lastExitCode.contains(0)))
+        _ = assertEquals(rows.flatMap(_.lastTaskId).distinct.size, 20)
         after <- IO.blocking(Files.readString(home.resolve("schedule.json")))
       yield assertEquals(after, before)
     } }
   }
 
-  test("resource queue skips blocked jobs, never overlaps a job, and honours hot reload") {
-    temporary.use { home =>
-      for
-        gates <- List("a", "b", "c").traverse(name => Deferred[IO, Int].map(name -> _)).map(_.toMap)
-        starts <- Ref.of[IO, List[String]](Nil)
-        runner: Scheduler.Runner = (job, _) => starts.update(_ :+ job.command.head) *> gates(job.command.head).get
-        _ <- Scheduler.resource(home, startLoop = false, runner = runner).use { scheduler =>
-          for
-            _ <- scheduler.writeConfig(ScheduleConfig(Map("cpu" -> 1d), 10, Map("a" -> job("a", 1), "b" -> job("b", 1), "c" -> job("c"))))
-            _ <- scheduler.tick
-            _ <- eventually(starts.get)(_.size == 2)
-            rows <- scheduler.list
-            _ = assertEquals(rows.map(row => row.name -> row.status).toMap, Map("a" -> "running", "b" -> "queued", "c" -> "running"))
-            _ <- scheduler.tick
-            count <- starts.get
-            _ = assertEquals(count.sorted, List("a", "c"))
-            config <- scheduler.config
-            _ <- scheduler.writeConfig(config.copy(jobs = config.jobs.updated("b", job("b", 1).copy(enabled = false))))
-            _ <- gates("a").complete(0)
-            _ <- gates("c").complete(0)
-            _ <- eventually(scheduler.list)(_.filter(_.name != "b").forall(_.status == "waiting"))
-            _ <- scheduler.tick
-            disabled <- scheduler.list
-            _ = assertEquals(disabled.find(_.name == "b").get.status, "disabled")
-            _ <- scheduler.writeConfig(config)
-            _ <- scheduler.tick
-            _ <- eventually(starts.get)(_.size == 3)
-            _ <- gates("b").complete(9)
-            rows <- eventually(scheduler.list)(_.find(_.name == "b").get.lastExitCode.contains(9))
-          yield assertEquals(rows.find(_.name == "b").get.status, "waiting")
-        }
-      yield ()
-    }
-  }
-
-  test("deleting and recreating an active job keeps its reservation and ignores stale completion") {
-    temporary.use { home =>
-      for
-        first <- Deferred[IO, Int]
-        second <- Deferred[IO, Int]
-        starts <- Ref.of[IO, Int](0)
-        runner: Scheduler.Runner = (job, _) => starts.update(_ + 1) *> (if job.command.head == "old" then first.get else second.get)
-        _ <- Scheduler.resource(home, startLoop = false, runner = runner).use { scheduler =>
-          for
-            _ <- scheduler.put("same", job("old"))
-            _ <- scheduler.tick
-            _ <- eventually(starts.get)(_ == 1)
-            _ <- scheduler.delete("same")
-            _ <- scheduler.put("same", job("new"))
-            _ <- scheduler.tick
-            count <- starts.get
-            _ = assertEquals(count, 1)
-            _ <- first.complete(7)
-            rows <- eventually(scheduler.list)(_.head.status == "due")
-            _ = assertEquals(rows.head.lastRunAt, None)
-            _ = assertEquals(rows.head.lastExitCode, None)
-            _ <- scheduler.tick
-            _ <- eventually(starts.get)(_ == 2)
-            _ <- scheduler.reset("same")
-            _ <- scheduler.tick
-            count <- starts.get
-            _ = assertEquals(count, 2)
-            _ <- second.complete(0)
-            rows <- eventually(scheduler.list)(_.head.status == "due")
-          yield assertEquals(rows.head.lastExitCode, None)
-        }
-      yield ()
-    }
-  }
-
-  test("real commands preserve argument boundaries, collect stdout and stderr, and record spawn errors") {
-    temporary.use { home => Scheduler.resource(home, startLoop = false).use { scheduler =>
-      for
-        _ <- scheduler.put("a/b 空", ScheduleJob("1h", List("/bin/sh", "-c", "printf '%s\\n' \"$1\"; printf 'stderr\\n' >&2; exit 7", "test", "literal $HOME && *")))
-        _ <- scheduler.put("missing", job("/no/such/executable"))
-        _ <- scheduler.tick
-        rows <- eventually(scheduler.list)(_.forall(_.lastExitCode.nonEmpty))
-        _ = assertEquals(rows.map(row => row.name -> row.lastExitCode.get).toMap, Map("a/b 空" -> 7, "missing" -> 1))
-        log <- scheduler.log("a/b 空", 3)
-        _ = assert(log.startsWith("literal $HOME && *\nstderr\n"))
-        _ = assert(log.endsWith("exit: 7"))
-        error <- scheduler.log("missing", 2)
-        _ = assert(error.contains("error:"))
-        _ <- scheduler.delete("a/b 空")
-        history <- new Store(home).log("a/b 空", 1)
-      yield assert(history.endsWith("exit: 7"))
+  test("resource queue skips blocked jobs, never overlaps and honours disabled jobs") {
+    temporary.use { home => Stub.resource(home.resolve("graaljs")).use { (manager, control) =>
+      Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
+        for
+          _ <- scheduler.writeConfig(ScheduleConfig(Map("cpu" -> 1d), 10, Map("a" -> job("a", 1), "b" -> job("b", 1), "c" -> job("c"))))
+          _ <- scheduler.tick
+          calls <- control.calls.get
+          _ = assertEquals(calls.map(_.source), Vector("a", "c"))
+          rows <- scheduler.list
+          _ = assertEquals(rows.map(row => row.name -> row.status).toMap, Map("a" -> "running", "b" -> "queued", "c" -> "running"))
+          _ <- scheduler.tick
+          count <- control.calls.get
+          _ = assertEquals(count.size, 2)
+          config <- scheduler.config
+          _ <- scheduler.writeConfig(config.copy(jobs = config.jobs.updated("b", job("b", 1).copy(enabled = false))))
+          _ <- calls.traverse_(call => control.finish(call.task.id))
+          _ <- eventually(scheduler.list)(_.filter(_.name != "b").forall(_.status == "waiting"))
+          _ <- scheduler.tick
+          disabled <- scheduler.list
+          _ = assertEquals(disabled.find(_.name == "b").get.status, "disabled")
+          _ <- scheduler.writeConfig(config)
+          _ <- scheduler.tick
+          calls <- control.calls.get
+          _ = assertEquals(calls.size, 3)
+          _ <- control.finish(calls.last.task.id)
+          _ <- eventually(scheduler.list)(_.forall(_.lastExitCode.contains(0)))
+        yield ()
+      }
     } }
   }
 
-  test("a second scheduler cannot acquire the same directory; state survives restart") {
-    temporary.use { home =>
-      Scheduler.resource(home, startLoop = false).use { scheduler =>
+  test("failures submit distinct tasks with capped exponential retries, release resources and stop at the limit") {
+    temporary.use { home => Stub.resource(home.resolve("graaljs")).use { (manager, control) =>
+      Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
         for
-          second <- Scheduler.resource(home, startLoop = false).use(_ => IO.unit).attempt
-          _ = assert(second.isLeft)
-          _ <- scheduler.put("sample", job("/bin/true"))
+          _ <- scheduler.writeConfig(ScheduleConfig(Map("cpu" -> 1d), 10, Map("a" -> job("fail", 1).copy(retry = RetryPolicy(maxDelay = "3s")), "b" -> job("other", 1))))
           _ <- scheduler.tick
-          _ <- eventually(scheduler.list)(_.head.lastExitCode.contains(0))
-        yield ()
-      } *> Scheduler.resource(home, startLoop = false).use { scheduler =>
-        scheduler.list.map(rows => assertEquals(rows.head.status, "waiting"))
+          first <- control.calls.get
+          _ <- control.finish(first.head.task.id, "failed")
+          rows <- eventually(scheduler.list)(_.head.status == "retrying")
+          _ = assertEquals(rows.head.attempt, 1)
+          _ <- scheduler.tick
+          calls <- control.calls.get
+          _ = assertEquals(calls.map(_.source), Vector("fail", "other"))
+          _ <- control.finish(calls.last.task.id)
+          _ <- eventually(scheduler.list)(_.last.lastExitCode.contains(0))
+          _ <- (2 to 4).toList.traverse_ { attempt =>
+            for
+              state <- new Store(home).state("a")
+              delay = java.time.Duration.between(Instant.parse(state.lastFinishedAt.get), Instant.parse(state.nextRetryAt.get)).toMillis
+              _ = assertEquals(delay, List(1000L, 2000L, 3000L)(attempt - 2))
+              _ <- retryDue(home, "a")
+              _ <- scheduler.tick
+              started <- control.calls.get
+              _ <- scheduler.tick
+              unchanged <- control.calls.get
+              _ = assertEquals(unchanged.size, started.size)
+              _ <- control.finish(started.last.task.id, "failed")
+              _ <- eventually(scheduler.list)(_.head.lastExitCode.contains(1))
+            yield ()
+          }
+          rows <- scheduler.list
+          _ = assertEquals(rows.head.attempt, 4)
+          _ = assertEquals(rows.head.nextRetryAt, None)
+          _ = assertEquals(rows.head.status, "waiting")
+          _ <- scheduler.tick
+          calls <- control.calls.get
+        yield assertEquals(calls.map(_.task.id).distinct.size, 5)
       }
+    } }
+  }
+
+  test("successful retries clear retry state and the next normal interval starts at attempt one; maxRetries zero disables retries") {
+    temporary.use { home => Stub.resource(home.resolve("graaljs")).use { (manager, control) =>
+      Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
+        for
+          _ <- scheduler.put("sample", job().copy(every = "0ms", retry = RetryPolicy(delay = "0ms")))
+          _ <- scheduler.tick
+          calls <- control.calls.get
+          _ <- control.finish(calls.last.task.id, "failed")
+          _ <- eventually(scheduler.list)(_.head.status == "retrying")
+          _ <- scheduler.tick
+          calls <- control.calls.get
+          _ <- control.finish(calls.last.task.id)
+          rows <- eventually(scheduler.list)(_.head.lastExitCode.contains(0))
+          _ = assertEquals(rows.head.attempt, 2)
+          _ = assertEquals(rows.head.nextRetryAt, None)
+          _ <- scheduler.tick
+          rows <- scheduler.list
+          _ = assertEquals(rows.head.attempt, 1)
+          _ <- scheduler.put("no-retry", job().copy(retry = RetryPolicy(maxRetries = 0)))
+          _ <- scheduler.tick
+          calls <- control.calls.get
+          _ <- control.finish(calls.last.task.id, "failed")
+          rows <- eventually(scheduler.list)(_.find(_.name == "no-retry").get.lastExitCode.contains(1))
+        yield assertEquals(rows.find(_.name == "no-retry").get.nextRetryAt, None)
+      }
+    } }
+  }
+
+  test("delete/recreate, reset and config replacement retain reservations but discard stale results and retries") {
+    temporary.use { home => Stub.resource(home.resolve("graaljs")).use { (manager, control) =>
+      Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
+        for
+          _ <- scheduler.put("same", job("old"))
+          _ <- List("recreate", "reset", "replace", "disable").traverse_ { operation =>
+            for
+              _ <- scheduler.tick
+              calls <- control.calls.get
+              _ <- operation match
+                case "recreate" => scheduler.delete("same") *> scheduler.put("same", job("new")).void
+                case "reset" => scheduler.reset("same").void
+                case _ => scheduler.config.flatMap(config => scheduler.writeConfig(config.copy(jobs = Map("same" -> job(operation).copy(enabled = operation != "disable"))))).void
+              _ <- scheduler.tick
+              still <- control.calls.get
+              _ = assertEquals(still.size, calls.size)
+              _ <- control.finish(calls.last.task.id, "failed")
+              rows <- eventually(scheduler.list)(_.head.status != "running")
+              _ = assertEquals(rows.head.lastExitCode, None)
+              _ = assertEquals(rows.head.lastTaskId, None)
+              _ = assertEquals(rows.head.nextRetryAt, None)
+            yield ()
+          }
+        yield ()
+      }
+    } }
+  }
+
+  test("retry deadlines and attempt counts survive restart; completed and never-admitted in-flight attempts recover without replay") {
+    temporary.use { home => Stub.resource(home.resolve("graaljs")).use { (manager, control) =>
+      val store = new Store(home)
+      for
+        saved <- Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
+          for
+            _ <- scheduler.put("sample", job())
+            _ <- scheduler.tick
+            calls <- control.calls.get
+            _ <- control.finish(calls.head.task.id, "failed")
+            _ <- eventually(scheduler.list)(_.head.nextRetryAt.nonEmpty)
+            state <- store.state("sample")
+          yield state
+        }
+        _ <- Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
+          for
+            state <- store.state("sample")
+            _ = assertEquals(state, saved)
+            _ <- scheduler.tick
+            calls <- control.calls.get
+            _ = assertEquals(calls.size, 1)
+          yield ()
+        }
+        // Simulate process loss after GraalJS finished but before schedule persisted the result.
+        _ <- store.writeState("sample", saved.copy(lastExitCode = None, nextRetryAt = None, inFlight = true))
+        _ <- Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
+          for
+            rows <- eventually(scheduler.list)(_.head.nextRetryAt.nonEmpty)
+            _ = assertEquals(rows.head.lastTaskId, saved.lastTaskId)
+            _ = assertEquals(rows.head.nextRetryAt, saved.nextRetryAt)
+            calls <- control.calls.get
+            _ = assertEquals(calls.size, 1)
+          yield ()
+        }
+        // Simulate process loss after schedule persisted its ID but before GraalJS accepted it.
+        _ <- store.writeState("sample", saved.copy(lastTaskId = Some(GraalManager.taskId()), attempt = 2, nextRetryAt = None, inFlight = true))
+        _ <- Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
+          for
+            rows <- eventually(scheduler.list)(_.head.nextRetryAt.nonEmpty)
+            _ = assertEquals(rows.head.attempt, 2)
+            _ = assertEquals(rows.head.lastTaskState, Some("interrupted"))
+            _ <- retryDue(home, "sample")
+            _ <- scheduler.tick
+            rows <- scheduler.list
+            _ = assertEquals(rows.head.attempt, 3)
+            calls <- control.calls.get
+          yield assertEquals(calls.size, 2)
+        }
+      yield ()
+    } }
+  }
+
+  test("shutdown waits for context cleanup before releasing scheduler ownership and persists retry state") {
+    temporary.use { home =>
+      Deferred[IO, Unit].flatMap { release => Stub.resource(home.resolve("graaljs"), cleanup = release.get).use { (manager, control) =>
+        (for
+          allocated <- Scheduler.resource(manager, home, startLoop = false).allocated
+          (scheduler, close) = allocated
+          _ <- scheduler.put("sample", job())
+          _ <- scheduler.tick
+          calls <- control.calls.get
+          closing <- close.start
+          _ <- calls.head.cancelled.get
+          second <- Scheduler.resource(manager, home, startLoop = false).use(_ => IO.unit).attempt
+          _ = assert(second.isLeft)
+          task <- manager.status(calls.head.task.id)
+          _ = assertEquals(task.state, "cancelling")
+          _ <- release.complete(())
+          _ <- closing.joinWithNever.timeout(5.seconds)
+          _ <- Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
+            scheduler.list.map { rows =>
+              assertEquals(rows.head.lastTaskState, Some("cancelled"))
+              assertEquals(rows.head.attempt, 1)
+              assert(rows.head.nextRetryAt.nonEmpty)
+            }
+          }
+        yield ()).guarantee(release.complete(()).void)
+      } }
     }
   }
 
-  test("commands use their configured cwd and shutdown terminates active children before releasing ownership") {
-    temporary.use { home =>
-      val pidFile = home.resolve("child.pid")
+  test("recovery ignores stale state if a crash interrupted invalidation after config replacement") {
+    temporary.use { home => Stub.resource(home.resolve("graaljs")).use { (manager, control) =>
       for
-        pid <- Scheduler.resource(home, startLoop = false).use { scheduler =>
+        saved <- Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
           for
-            _ <- scheduler.put("cwd", job("/bin/pwd").copy(cwd = Some(home.toString)))
-            _ <- scheduler.put("long", ScheduleJob("1h", List("/bin/sh", "-c", "echo $$ > \"$1\"; sleep 30", "test", pidFile.toString)))
+            _ <- scheduler.put("sample", job("old"))
             _ <- scheduler.tick
-            _ <- eventually(scheduler.list)(_.find(_.name == "cwd").get.lastExitCode.contains(0))
-            log <- scheduler.log("cwd", 2)
-            _ = assert(log.startsWith(home.toString + "\n"))
-            _ <- eventually(IO.blocking(Files.exists(pidFile)))(identity)
-            pid <- IO.blocking(Files.readString(pidFile).trim.toLong)
-          yield pid
+            calls <- control.calls.get
+            _ <- control.finish(calls.head.task.id, "failed")
+            _ <- eventually(scheduler.list)(_.head.nextRetryAt.nonEmpty)
+            state <- new Store(home).state("sample")
+          yield state
         }
-        _ <- IO(assert(!ProcessHandle.of(pid).isPresent || !ProcessHandle.of(pid).get().isAlive))
-        _ <- Scheduler.resource(home, startLoop = false).use { scheduler =>
-          scheduler.list.map(rows => assertEquals(rows.find(_.name == "long").get.lastExitCode, Some(143)))
+        _ <- new Store(home).writeConfig(ScheduleConfig.empty.copy(jobs = Map("sample" -> job("new"))))
+        _ <- new Store(home).writeState("sample", saved.copy(inFlight = true))
+        _ <- Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
+          for
+            rows <- eventually(scheduler.list)(_.head.status == "due")
+            _ = assertEquals(rows.head.lastExitCode, None)
+            _ = assertEquals(rows.head.nextRetryAt, None)
+            _ <- scheduler.tick
+            rows <- scheduler.list
+            _ = assertEquals(rows.head.attempt, 1)
+            calls <- control.calls.get
+          yield assertEquals(calls.map(_.source), Vector("old", "new"))
+        }
+        // A deletion can likewise have persisted config before removing its separate state file.
+        _ <- new Store(home).writeConfig(ScheduleConfig.empty)
+        _ <- new Store(home).writeState("sample", saved)
+        _ <- Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
+          scheduler.writeConfig(ScheduleConfig.empty.copy(jobs = Map("sample" -> job("old")))) *>
+            scheduler.list.map { rows =>
+              assertEquals(rows.head.attempt, 0)
+              assertEquals(rows.head.nextRetryAt, None)
+            }
         }
       yield ()
-    }
+    } }
+  }
+
+  test("real GraalJS tasks capture stdout/stderr, fail on script errors and retry timeouts") {
+    temporary.use { home => GraalManager.resource(home.resolve("graaljs")).use { manager =>
+      Scheduler.resource(manager, home, startLoop = false).use { scheduler =>
+        for
+          _ <- scheduler.put("a/b 空", job("console.log('中文🙂'); console.error('stderr'); throw Error('broken')"))
+          _ <- scheduler.put("timeout", job("await new Promise(() => {})").copy(timeout = "500ms"))
+          _ <- scheduler.tick
+          rows <- eventually(scheduler.list)(_.forall(_.lastExitCode.nonEmpty))
+          _ = assertEquals(rows.map(_.lastTaskState).distinct, List(Some("failed")))
+          _ = assertEquals(rows.last.lastError.map(_.code), Some("timeout"))
+          log <- scheduler.log("a/b 空", 100)
+          _ = assert(log.contains("中文🙂") && log.contains("stderr") && log.contains("broken"), log)
+          task <- manager.status(rows.head.lastTaskId.get)
+          _ = assertEquals(task.state, "failed")
+          _ <- scheduler.delete("a/b 空")
+          history <- new Store(home).log("a/b 空", 100)
+        yield assert(history.contains(task.id))
+      }
+    } }
   }
 
   test("log tails handle UTF-8, block boundaries, trailing newlines and missing files") {

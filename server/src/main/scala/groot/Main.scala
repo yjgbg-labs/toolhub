@@ -13,11 +13,11 @@ import groot.widget.{WidgetRoutes, WidgetService}
 object Main extends IOApp.Simple:
   def run: IO[Unit] = (for
     commands <- Resource.eval(Deferred[IO, GraalCommandSdk])
-    scheduler <- Scheduler.resource()
     sqlite <- SqliteService.resource()
     fetch <- FetchService.resource
     widget <- WidgetService.resource()
     graaljs <- GraalManager.resource(commands = commands.get)
+    scheduler <- Scheduler.resource(graaljs, startLoop = false)
   yield (scheduler, sqlite, fetch, widget, graaljs, commands)).use { (scheduler, sqlite, fetch, widget, graaljs, commands) =>
     val app = httpApp {
       server {
@@ -44,5 +44,5 @@ object Main extends IOApp.Simple:
         handle { IO.pure(PlainText("ok")) }
       }
     }
-    commands.complete(GraalCommandSdk(app)) *> app.serve
+    commands.complete(GraalCommandSdk(app)) *> scheduler.loop.background.use(_ => app.serve)
   }

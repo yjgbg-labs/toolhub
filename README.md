@@ -81,7 +81,7 @@ Native 编译还需要 Clang 和 libcurl 等开发库，
 ```sh
 groot-cli --help
 groot-cli health
-groot-cli schedule new --name hello --body '{"command":["echo","hi"],"every":"1h"}'
+groot-cli schedule new --name hello --body '{"source":"console.log(\"hi\")","every":"1h"}'
 groot-cli jobs --job build --parallel 2
 ```
 
@@ -120,7 +120,7 @@ Code Mode 和 GraalJS 使用相同的参数规则，由命令声明自动映射�
 // 普通参数直接放在顶层；混合参数时保留 body。
 await tools.schedule.new({
   name: "example",
-  body: {every: "5m", command: ["echo", "hello"], enabled: false}
+  body: {every: "5m", source: "console.log('hello')", enabled: false}
 });
 await tools.schedule.log({name: "example", lines: 20});
 
@@ -136,6 +136,43 @@ await tools.schedule.config.write(config);
 - 无参数命令可省略输入；省略参数或传 `undefined` 表示未提供输入，显式 `null` 则作为实际值校验。
 - 旧调用需去掉参数位置包装；仅请求体命令还需去掉外层 `body`。返回仍为 `{status, headers, body}`。
   CLI 参数与 HTTP/OpenAPI 契约保持原有格式。
+
+### GraalJS 定时任务与重试
+
+`schedule` 仅接受 JavaScript `source`，每次周期执行和每次重试都发布独立的 GraalJS 任务。
+脚本可用 `console` 和声明自动生成的 `tools.*`（含 `tools.fetch`）；不支持 Bun/Node 模块或进程命令。
+`command`、`cwd` 和运行状态字段会被拒绝。旧配置升级前应先备份，迁移成源码后通过 API 写入。
+
+```json
+{
+  "every": "5m",
+  "source": "const response = await tools.health(); console.log(response.body);",
+  "cpu": "1s",
+  "timeout": "30s",
+  "retry": {"maxRetries": 3, "delay": "1s", "backoff": 2, "maxDelay": "30s"},
+  "enabled": true
+}
+```
+
+- `cpu`、`timeout` 和 `retry` 可省略，默认值如上；超时不计 GraalJS 排队时间。
+- `maxRetries` 是额外重试次数（0–100，0 禁用），默认共最多 4 次尝试；失败后等待 1、2、4 秒。
+  第 n 次失败的延迟为 `min(delay × backoff^(n-1), maxDelay)`，从实际终态时间开始计算。
+- 脚本错误、超时、资源超限、取消、中断及提交失败都会进入重试。重试优先于普通周期，
+  等待期间释放逻辑资源；所有尝试都遵循同名不重叠和资源配额。
+- 普通周期按最近一次尝试开始时间加 `every` 计算；成功或重试耗尽后恢复周期调度，
+  新周期的 `attempt` 从 1 开始。重试/周期到期后在下一个 tick 检查，且可能等待资源。
+- `list` 包含 `lastTaskId`、`lastTaskState`、`lastFinishedAt`、`lastError`、`attempt`、`nextRetryAt`。
+  `status=retrying` 表示待重试，`queued` 表示等待调度资源；GraalJS 内部排队状态见 `lastTaskState`。
+  `lastExitCode` 是兼容结果标记：成功 0、取消/中断 143、其他失败 1，并非进程退出码。
+- `schedule log` 聚合尝试日志，运行期间包含实时输出；可按 `lastTaskId` 查询 `graaljs status/logs`。
+  删除任务保留历史日志。崩溃恢复可能重复一段日志，脚本副作用应具备幂等性。
+- 提交前持久化任务 ID；重启核对已完成/中断任务，继续已保存的重试次数和截止时间。
+  提交前发生中断计作一次失败，不重新提交旧 ID。服务关闭等待活动 Context 清理完成。
+- `new`、`reset`、删除或修改任务定义会清空运行记录及待重试；已提交的旧任务可以完成，
+  其结果不会覆盖新配置，也不会触发旧定义的重试。同名新任务等待旧 Context 完成后再运行。
+  完整配置写入会保留未修改任务的状态。
+
+完整操作见 [schedule skill](skills/schedule/SKILL.md)。
 
 ### 客户端暴露范围
 

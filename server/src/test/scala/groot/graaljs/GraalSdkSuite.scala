@@ -172,11 +172,12 @@ class GraalSdkSuite extends CatsEffectSuite:
 
   test("schedule new uses flat name plus body while config write accepts the config directly") {
     temporary.use { home =>
-      groot.schedule.Scheduler.resource(home.resolve("schedule"), startLoop = false).use { scheduler =>
-        val app = httpApp { groot.schedule.ScheduleRoutes.register(scheduler) }
-        GraalManager.resource(home.resolve("tasks"), IO.pure(GraalCommandSdk(app))).use { manager =>
+      Deferred[IO, GraalCommandSdk].flatMap { commands => GraalManager.resource(home.resolve("tasks"), commands.get).use { manager =>
+        groot.schedule.Scheduler.resource(manager, home.resolve("schedule"), startLoop = false).use { scheduler =>
+          val app = httpApp { groot.schedule.ScheduleRoutes.register(scheduler) }
+          commands.complete(GraalCommandSdk(app)) *>
           run(manager, """
-            const body = {every:"5m", command:["echo","hello"], enabled:false};
+            const body = {every:"5m", source:"console.log('hello')", enabled:false};
             const created = await tools.schedule.new({name:"example", body});
             if (created.body.every !== "5m") throw Error("wrong creation result");
             const config = (await tools.schedule.config.read()).body;
@@ -188,7 +189,7 @@ class GraalSdkSuite extends CatsEffectSuite:
             await tools.schedule.delete({name:"example"});
           """).map { (task, log) => assertEquals(task.state, "succeeded", s"${task.error}\n$log") }
         }
-      }
+      } }
     }
   }
 
