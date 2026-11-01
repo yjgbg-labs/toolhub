@@ -108,6 +108,8 @@ jobs:
       Environment=$(quote "POWERSHELL_SSH_IDLE=$POWERSHELL_SSH_IDLE")
       Environment=$(quote "ZSH_ON_MAC_SSH_TARGET=$ZSH_ON_MAC_SSH_TARGET")
       Environment=$(quote "ZSH_ON_MAC_SSH_IDLE=$ZSH_ON_MAC_SSH_IDLE")
+      Environment=$(quote "BASH_ON_R6S_SSH_TARGET=$BASH_ON_R6S_SSH_TARGET")
+      Environment=$(quote "BASH_ON_R6S_SSH_IDLE=$BASH_ON_R6S_SSH_IDLE")
       ExecStart=$(exec_quote "$groot") use-jdk "$JDK_MAJOR" -- java --enable-native-access=ALL-UNNAMED -XX:ActiveProcessorCount=4 -jar $(exec_quote "$target")
       UMask=0077
       Restart=on-failure
