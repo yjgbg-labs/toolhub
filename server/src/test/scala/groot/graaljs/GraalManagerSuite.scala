@@ -11,6 +11,7 @@ import munit.CatsEffectSuite
 import org.http4s.{Header, MediaType, Method, Request, Status, Uri}
 import org.http4s.circe.*
 import org.typelevel.ci.CIString
+import org.graalvm.polyglot.Source
 import scala.concurrent.duration.*
 import scala.util.Using
 import GraalTestSupport.*
@@ -18,11 +19,11 @@ import GraalTestSupport.*
 class GraalManagerSuite extends CatsEffectSuite:
   private case class Invocation(task: GraalTask, source: String, done: Deferred[IO, RunResult], cancellation: Deferred[IO, TaskError])
   private class StubRunner(val calls: Ref[IO, Vector[Invocation]], cleanup: IO[Unit]) extends GraalRunner:
-    def start(task: GraalTask, source: String, log: Path): IO[GraalExecution] =
+    def start(task: GraalTask, source: Source, log: Path): IO[GraalExecution] =
       for
         done <- Deferred[IO, RunResult]
         cancellation <- Deferred[IO, TaskError]
-        _ <- calls.update(_ :+ Invocation(task, source, done, cancellation))
+        _ <- calls.update(_ :+ Invocation(task, source.getCharacters.toString, done, cancellation))
       yield new GraalExecution:
         def result = done.get
         def cancel(reason: TaskError) =
@@ -34,8 +35,44 @@ class GraalManagerSuite extends CatsEffectSuite:
 
   private def stub(cleanup: IO[Unit] = IO.unit): IO[StubRunner] = Ref.of[IO, Vector[Invocation]](Vector.empty).map(new StubRunner(_, cleanup))
   private val source = "  const message = '中文🙂';\nconsole.log(message, \"quoted\");\n"
-  private def submit(manager: GraalManager, timeout: String = "30s") = manager.start(source, "10s", timeout)
+  private def submit(manager: GraalManager, timeout: String = "30s") =
+    manager.start(Source.newBuilder("js", source, "test.js").buildLiteral(), "10s", timeout)
   private def append(path: Path, text: String): IO[Unit] = IO.blocking { Files.writeString(path, text, StandardOpenOption.APPEND); () }
+
+  test("completion waiters are independent and observe terminal state only after context cleanup and log persistence") {
+    temporary.use { home =>
+      for
+        release <- Deferred[IO, Unit]
+        observed <- Deferred[IO, GraalTask]
+        runner <- stub(release.get)
+        _ <- GraalManager.managed(home.resolve("data"), Resource.pure(runner)).use { manager =>
+          (for
+            task <- submit(manager)
+            disconnected <- manager.await(task.id).start
+            _ <- disconnected.cancel
+            stillRunning <- manager.status(task.id)
+            _ = assertEquals(stillRunning.state, "running")
+            waiting <- manager.await(task.id).flatMap(observed.complete).start
+            _ <- manager.cancel(task.id)
+            call <- runner.invocation(task.id)
+            _ <- call.cancellation.get
+            pending <- observed.tryGet
+            _ = assertEquals(pending, None)
+            _ <- release.complete(())
+            result <- observed.get.timeout(5.seconds)
+            _ = assertEquals(result.state, "cancelled")
+            saved <- manager.status(task.id)
+            _ = assertEquals(result, saved)
+            logs <- manager.logs(task.id)
+            _ = assert(logs.contains("state=cancelled"))
+            completed <- manager.await(task.id)
+            _ = assertEquals(completed, saved)
+            _ <- waiting.joinWithNever
+          yield ()).guarantee(release.complete(()).void)
+        }
+      yield ()
+    }
+  }
 
   test("concurrent admissions reserve exactly sixteen slots and release them in FIFO order") {
     temporary.use { home =>
@@ -62,6 +99,28 @@ class GraalManagerSuite extends CatsEffectSuite:
             repeated <- manager.cancel(cancelled.id)
           yield assertEquals(repeated, cancelled)
         }
+      yield ()
+    }
+  }
+
+  test("a finalization failure releases completion waiters with an error instead of hanging shutdown") {
+    temporary.use { home =>
+      for
+        runner <- stub()
+        _ <- GraalManager.managed(home.resolve("data"), Resource.pure(runner)).use { manager =>
+          for
+            task <- submit(manager)
+            waiting <- manager.await(task.id).attempt.start
+            _ <- IO.sleep(20.millis)
+            _ <- IO.blocking {
+              Using.resource(DriverManager.getConnection(s"jdbc:sqlite:${home.resolve("data/tasks.sqlite3")}")) { db =>
+                Using.resource(db.createStatement())(_.executeUpdate("DELETE FROM tasks"))
+              }
+            }
+            _ <- runner.finish(task.id)
+            result <- waiting.joinWithNever.timeout(5.seconds)
+          yield assert(result.isLeft)
+        }.timeout(10.seconds)
       yield ()
     }
   }
@@ -195,7 +254,7 @@ class GraalManagerSuite extends CatsEffectSuite:
             _ = assertEquals(created.status, Status.Ok)
             id = json.hcursor.get[String]("id").toOption.get
             call <- runner.invocation(id)
-            _ = assertEquals(call.source, source)
+            _ = assertEquals(call.source, JavaScript.source(source).getCharacters.toString)
             _ = assert(!json.asObject.get.contains("script") && !json.asObject.get.contains("cwd"))
             missingCpu <- app.httpApp(start(input.filterNot(_._1 == "cpu")))
             _ = assertEquals(missingCpu.status, Status.BadRequest)

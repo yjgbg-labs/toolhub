@@ -4,7 +4,6 @@ import cats.effect.{IO, Resource}
 import cats.effect.std.Dispatcher
 import java.io.{IOException, InputStream, OutputStream}
 import java.lang.management.ManagementFactory
-import java.net.URI
 import java.nio.file.{Files, Path, StandardOpenOption}
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
@@ -24,7 +23,7 @@ private[graaljs] trait GraalExecution:
   def cancel(reason: TaskError): IO[Unit]
 
 private[graaljs] trait GraalRunner:
-  def start(task: GraalTask, source: String, log: Path): IO[GraalExecution]
+  def start(task: GraalTask, source: Source, log: Path): IO[GraalExecution]
 
 private[graaljs] object GraalRunner:
   val cancelled = TaskError("cancelled", "Cancelled by user")
@@ -67,7 +66,7 @@ private[graaljs] object GraalRunner:
       if !cpu.isCurrentThreadCpuTimeSupported then None
       else Option(cpu.getCurrentThreadCpuTime).filter(_ >= 0)
 
-    def start(task: GraalTask, source: String, log: Path): IO[GraalExecution] = commands.flatMap { sdk => IO {
+    def start(task: GraalTask, source: Source, log: Path): IO[GraalExecution] = commands.flatMap { sdk => IO {
       val context = new AtomicReference[Context]()
       val stop = new AtomicReference[TaskError]()
       val completed = new CompletableFuture[RunResult]()
@@ -107,9 +106,6 @@ private[graaljs] object GraalRunner:
             context.set(current)
             if stop.get() == null then
               session.install(current)
-              val name = s"${task.id}.graal.js"
-              val code = Source.newBuilder("js", s"(async () => {\n$source\n})()", name)
-                .uri(URI.create(s"graaljs:/$name")).cached(false).buildLiteral()
               var settled = false
               val success = GraalSdkSession.callback { _ => settled = true; null }
               val rejected = GraalSdkSession.callback { arguments =>
@@ -120,8 +116,10 @@ private[graaljs] object GraalRunner:
                 settled = true
                 null
               }
-              current.eval(code).invokeMember("then", success, rejected)
-              while !settled && stop.get() == null do session.next()
+              val value = current.eval(source)
+              if value.hasMember("then") && value.getMember("then").canExecute then
+                value.invokeMember("then", success, rejected)
+                while !settled && stop.get() == null do session.next()
           returned = true
         catch case NonFatal(cause) => error = Some(failure(cause))
         finally

@@ -6,7 +6,7 @@ import framework.rpcDsl.*
 
 object ScheduleRoutes:
   def register(scheduler: Scheduler)(using CommandsScope): Unit = commands("schedule") {
-    description("Manage scheduled jobs")
+    description("Event-driven scheduling of isolated GraalJS tasks with persistent retries")
 
     val invalid = response.json[ErrorBody](400) { description("Invalid schedule configuration") }
     val missing = response.json[ErrorBody](404) { description("Job not found") }
@@ -21,9 +21,9 @@ object ScheduleRoutes:
     }
 
     command[ScheduleJob]("new") {
-      description("Create or replace a scheduled command and clear its runtime state")
+      description("Schedule a JavaScript file; each execution and retry reads and SHA-256 hashes its contents, reusing the Source when unchanged")
       val name = param[String]("name", "Job name") { minLength(1) }
-      val input = body[ScheduleJob]("Scheduled command and interval")
+      val input = body[ScheduleJob]("script: absolute server-side JavaScript file path; interval, execution limits and retry policy")
       handle { scheduler.put(name.value, input.value) }
     }
 
@@ -55,7 +55,7 @@ object ScheduleRoutes:
       }
 
       command[ScheduleConfig]("write") {
-        description("Validate and atomically replace the full scheduler configuration; changes apply on the next tick")
+        description("Validate and atomically replace the full scheduler configuration, immediately waking the scheduler")
         val input = body[ScheduleConfig]("Complete scheduler configuration")
         handle { scheduler.writeConfig(input.value) }
       }

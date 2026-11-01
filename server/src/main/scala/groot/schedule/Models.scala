@@ -2,15 +2,20 @@ package groot.schedule
 
 import io.circe.{Decoder, DecodingFailure}
 import framework.model.JsonModel
+import groot.graaljs.{TaskError, InvalidGraalTask, Validation as GraalValidation}
 import java.time.Instant
-import scala.util.Try
+import java.nio.file.{Path, InvalidPathException}
+
+case class RetryPolicy(maxRetries: Int = 3, delay: String = "1s", backoff: Double = 2, maxDelay: String = "30s") derives JsonModel
 
 case class ScheduleJob(
     every: String,
-    command: List[String],
+    script: String,
+    cpu: String = "1s",
+    timeout: String = "30s",
+    retry: RetryPolicy = RetryPolicy(),
     resource: Map[String, Double] = Map.empty,
-    enabled: Boolean = true,
-    cwd: Option[String] = None
+    enabled: Boolean = true
 )
 
 object ScheduleJob:
@@ -20,31 +25,51 @@ object ScheduleJob:
     val schema = derived.schema
     val encoder = derived.encoder
     val decoder = Decoder.instance { cursor =>
-      if cursor.keys.exists(_.exists(key => key == "lastRunAt" || key == "lastExitCode")) then
-        Left(DecodingFailure("Runtime state must be changed with schedule reset", cursor.history))
+      val allowed = Set("every", "script", "cpu", "timeout", "retry", "resource", "enabled")
+      val unsupported = cursor.keys.toList.flatten.toSet -- allowed
+      if unsupported.nonEmpty then
+        Left(DecodingFailure(s"Unsupported schedule fields: ${unsupported.toList.sorted.mkString(", ")}; use script with an absolute server-side JavaScript file path", cursor.history))
       else derived.decoder(cursor)
     }
 
 case class ScheduleConfig(
     resources: Map[String, Double],
-    tickMs: Double,
     jobs: Map[String, ScheduleJob]
 ) derives JsonModel
 
 object ScheduleConfig:
-  val empty: ScheduleConfig = ScheduleConfig(Map.empty, 1000, Map.empty)
+  val empty: ScheduleConfig = ScheduleConfig(Map.empty, Map.empty)
 
-case class JobState(lastRunAt: Option[String] = None, lastExitCode: Option[Int] = None) derives JsonModel
+case class JobState(
+    lastRunAt: Option[String] = None,
+    lastExitCode: Option[Int] = None,
+    lastTaskId: Option[String] = None,
+    lastTaskState: Option[String] = None,
+    lastFinishedAt: Option[String] = None,
+    lastError: Option[TaskError] = None,
+    attempt: Int = 0,
+    nextRetryAt: Option[String] = None,
+    inFlight: Boolean = false,
+    definitionHash: Option[String] = None
+) derives JsonModel
 
 case class ScheduleEntry(
     name: String,
     every: String,
+    script: String,
+    cpu: String,
+    timeout: String,
+    retry: RetryPolicy,
     resource: Map[String, Double],
-    command: List[String],
-    cwd: Option[String],
     enabled: Boolean,
     lastRunAt: Option[String],
     lastExitCode: Option[Int],
+    lastTaskId: Option[String],
+    lastTaskState: Option[String],
+    lastFinishedAt: Option[String],
+    lastError: Option[TaskError],
+    attempt: Int,
+    nextRetryAt: Option[String],
     nextRunAt: Option[String],
     status: String
 ) derives JsonModel
@@ -70,23 +95,39 @@ object Validation:
     if values.exists { case (key, value) => key.isEmpty || !value.isFinite || value < 0 } then
       throw InvalidSchedule("Resources must be an object of non-negative finite numbers with non-empty names")
 
+  def script(value: String): Unit =
+    try
+      if value.trim.isEmpty || !Path.of(value).isAbsolute then
+        throw InvalidSchedule("script must be an absolute server-side JavaScript file path")
+    catch case error: InvalidPathException => throw InvalidSchedule(s"Invalid script path: ${error.getMessage}")
+
   def config(value: ScheduleConfig): Unit =
     resources(value.resources)
-    if !value.tickMs.isFinite || value.tickMs <= 0 || value.tickMs > Int.MaxValue then
-      throw InvalidSchedule("tickMs must be positive and at most 2147483647 milliseconds")
     value.jobs.foreach { case (key, job) =>
       name(key)
       durationMs(job.every)
+      try
+        script(job.script)
+        GraalValidation.durationMs("cpu", job.cpu)
+        GraalValidation.durationMs("timeout", job.timeout)
+      catch case error: InvalidGraalTask => throw InvalidSchedule(error.getMessage)
+      val retry = job.retry
+      if retry.maxRetries < 0 || retry.maxRetries > 100 then throw InvalidSchedule("retry.maxRetries must be between 0 and 100")
+      val delay = durationMs(retry.delay)
+      if durationMs(retry.maxDelay) < delay then throw InvalidSchedule("retry.maxDelay must be at least retry.delay")
+      if !retry.backoff.isFinite || retry.backoff < 1 then throw InvalidSchedule("retry.backoff must be finite and at least 1")
       resources(job.resource)
       job.resource.foreach { case (resource, requested) =>
         if !value.resources.contains(resource) then throw InvalidSchedule(s"Job $key resource $resource is not configured")
         if requested > value.resources(resource) then throw InvalidSchedule(s"Job $key resource $resource exceeds configured total")
       }
-      if job.command.isEmpty || job.command.head.isEmpty || job.command.exists(_.contains('\u0000')) then
-        throw InvalidSchedule(s"Job $key command must be a non-empty argument array with a non-empty executable and no NUL bytes")
-      if job.cwd.exists(value => value.contains('\u0000') || !java.nio.file.Path.of(value).isAbsolute) then
-        throw InvalidSchedule(s"Job $key cwd must be an absolute directory")
     }
 
   def nextRun(job: ScheduleJob, state: JobState): Option[Instant] =
-    state.lastRunAt.flatMap(value => Try(Instant.parse(value).plusMillis(durationMs(job.every))).toOption)
+    state.nextRetryAt.map(Instant.parse).orElse(state.lastRunAt.map(value => Instant.parse(value).plusMillis(durationMs(job.every))))
+
+  /** afterAttempt=1 schedules the first retry; cap before conversion to avoid exponential overflow. */
+  def retryDelayMs(policy: RetryPolicy, afterAttempt: Int): Long =
+    val initial = durationMs(policy.delay)
+    if initial == 0 then 0L
+    else math.min(durationMs(policy.maxDelay).toDouble, initial.toDouble * math.pow(policy.backoff, math.max(0, afterAttempt - 1))).toLong

@@ -37,7 +37,7 @@ case class MissingGraalTask(id: String) extends RuntimeException(s"No GraalJS ta
 case class GraalQueueFull() extends RuntimeException("GraalJS queue is full")
 case class GraalStopping() extends RuntimeException("GraalJS is stopping")
 
-private[graaljs] object Validation:
+private[groot] object Validation:
   private val duration = "^(\\d+)(ms|s|m|h|d)$".r
   private val units = Map("ms" -> 1L, "s" -> 1000L, "m" -> 60000L, "h" -> 3600000L, "d" -> 86400000L)
 

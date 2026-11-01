@@ -15,7 +15,7 @@ class GraalSdkSuite extends CatsEffectSuite:
 
   private def run(manager: GraalManager, source: String, cpu: String = "5s", timeout: String = "10s"): IO[(GraalTask, String)] =
     for
-      submitted <- manager.start(source, cpu, timeout)
+      submitted <- manager.start(JavaScript.source(source), cpu, timeout)
       task <- awaitUntil(manager.status(submitted.id))(_.terminal)
       log <- manager.logs(task.id)
     yield (task, log.toString)
@@ -172,13 +172,15 @@ class GraalSdkSuite extends CatsEffectSuite:
 
   test("schedule new uses flat name plus body while config write accepts the config directly") {
     temporary.use { home =>
-      groot.schedule.Scheduler.resource(home.resolve("schedule"), startLoop = false).use { scheduler =>
-        val app = httpApp { groot.schedule.ScheduleRoutes.register(scheduler) }
-        GraalManager.resource(home.resolve("tasks"), IO.pure(GraalCommandSdk(app))).use { manager =>
+      Deferred[IO, GraalCommandSdk].flatMap { commands => GraalManager.resource(home.resolve("tasks"), commands.get).use { manager =>
+        groot.schedule.Scheduler.resource(manager, home.resolve("schedule"), startLoop = false).use { scheduler =>
+          val app = httpApp { groot.schedule.ScheduleRoutes.register(scheduler) }
+          commands.complete(GraalCommandSdk(app)) *>
           run(manager, """
-            const body = {every:"5m", command:["echo","hello"], enabled:false};
+            const body = {every:"5m", script:"/scripts/hello.js", enabled:false};
             const created = await tools.schedule.new({name:"example", body});
             if (created.body.every !== "5m") throw Error("wrong creation result");
+            if (created.body.script !== body.script || "source" in created.body) throw Error("wrong script contract");
             const config = (await tools.schedule.config.read()).body;
             if (config.jobs.example.enabled !== false) throw Error("job missing");
             config.jobs.example.every = "10m";
@@ -188,7 +190,7 @@ class GraalSdkSuite extends CatsEffectSuite:
             await tools.schedule.delete({name:"example"});
           """).map { (task, log) => assertEquals(task.state, "succeeded", s"${task.error}\n$log") }
         }
-      }
+      } }
     }
   }
 
@@ -258,9 +260,9 @@ class GraalSdkSuite extends CatsEffectSuite:
         }
         _ <- GraalManager.managed(home.resolve("data"), GraalRunner.resource(IO.pure(GraalCommandSdk(app))), Limits.taskBytes).use { manager =>
           (for
-            first <- manager.start("await tools.wait();", "5s", "10s")
+            first <- manager.start(JavaScript.source("await tools.wait();"), "5s", "10s")
             _ <- started.get.timeout(5.seconds)
-            second <- manager.start("console.log('next');", "5s", "10s")
+            second <- manager.start(JavaScript.source("console.log('next');"), "5s", "10s")
             _ <- manager.cancel(first.id)
             _ <- finalizing.get.timeout(5.seconds)
             waiting <- manager.status(second.id)
