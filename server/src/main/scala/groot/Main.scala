@@ -11,6 +11,7 @@ import groot.fs.{FsRoutes, FsService}
 import groot.bash.{BashRoutes, BashService}
 import groot.widget.{WidgetRoutes, WidgetService}
 import groot.state.{StateRoutes, StateService}
+import groot.powershell.{PowerShellRoutes, PowerShellService}
 
 object Main extends IOApp.Simple:
   def run: IO[Unit] = (for
@@ -19,9 +20,10 @@ object Main extends IOApp.Simple:
     fetch <- FetchService.resource
     widget <- WidgetService.resource()
     state <- StateService.resource()
+    powershell <- PowerShellService.resource()
     graaljs <- GraalManager.resource(commands = commands.get)
     scheduler <- Scheduler.resource(graaljs, startLoop = false)
-  yield (scheduler, sqlite, fetch, widget, state, graaljs, commands)).use { (scheduler, sqlite, fetch, widget, state, graaljs, commands) =>
+  yield (scheduler, sqlite, fetch, widget, state, powershell, graaljs, commands)).use { (scheduler, sqlite, fetch, widget, state, powershell, graaljs, commands) =>
     val app = httpApp {
       server {
         host("0.0.0.0")
@@ -45,6 +47,7 @@ object Main extends IOApp.Simple:
       BashRoutes.register(new BashService)
       WidgetRoutes.register(widget)
       StateRoutes.register(state)
+      PowerShellRoutes.register(powershell)
       command[PlainText]("health") {
         handle { IO.pure(PlainText("ok")) }
       }
