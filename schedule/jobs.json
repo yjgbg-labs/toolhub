@@ -1,0 +1,23 @@
+{
+  "widget-router-metrics": {
+    "every": "10s",
+    "cpu": "1s",
+    "timeout": "10s",
+    "resource": {"cpu": 50, "memory": 50},
+    "enabled": true
+  },
+  "widget-mouse-battery": {
+    "every": "10s",
+    "cpu": "1s",
+    "timeout": "20s",
+    "resource": {"cpu": 20, "memory": 20},
+    "enabled": true
+  },
+  "windows-tray-always-show": {
+    "every": "1m",
+    "cpu": "1s",
+    "timeout": "15s",
+    "resource": {"cpu": 10, "memory": 20},
+    "enabled": true
+  }
+}

@@ -1,5 +1,26 @@
 version: 1
 jobs:
+  - name: schedule-test
+    run: bun test schedule/test
+
+  - name: schedule-check
+    needs: [schedule-test]
+    run: |
+      set -eu
+      set -a
+      . ./config.env
+      set +a
+      bun schedule/manage.ts check
+
+  - name: schedule-deploy
+    needs: [schedule-check]
+    run: |
+      set -eu
+      set -a
+      . ./config.env
+      set +a
+      bun schedule/manage.ts deploy
+
   - name: widget-windows-test
     run: |
       set -eu

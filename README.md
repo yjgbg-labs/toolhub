@@ -174,6 +174,9 @@ await tools.schedule.config.write(config);
 
 完整操作见 [schedule skill](skills/schedule/SKILL.md)。
 
+R6S 指标、Windows 鼠标电量和托盘常显的生产脚本见 [远程设备定时任务](schedule/README.md)，
+使用 `groot-cli jobs --job schedule-deploy` 实测并安装。
+
 #### 提交时校验脚本内容
 
 - `script` 是服务器本地路径，不是客户端路径、URL 或 `file:` URI；文件须为非空 UTF-8 JavaScript，最大 1 MiB。
