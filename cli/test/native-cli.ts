@@ -35,7 +35,7 @@ const document = {
           parameter("limit", "query", { type: "integer", minimum: 1, default: 5 }),
           parameter("enabled", "query", { type: "boolean" }),
           parameter("token", "query"), parameter("token", "header", string, true),
-          parameter("session", "cookie"), parameter("help", "query"), parameter("name", "query"),
+          parameter("session", "cookie"), parameter("help", "query"), parameter("name", "query"), parameter("key;name", "query"),
         ],
         requestBody: { $ref: "#/components/requestBodies/Update" },
       },
@@ -57,7 +57,7 @@ const document = {
 let served: unknown = document;
 let discoveryStatus = 200;
 let discoveryCount = 0;
-const requests: Array<{ method: string; path: string; query: string[][]; token: string | null; cookie: string | null; contentType: string | null; body: string }> = [];
+const requests: Array<{ method: string; url: string; path: string; query: string[][]; token: string | null; cookie: string | null; contentType: string | null; body: string }> = [];
 const handler = async (request: Request) => {
   const url = new URL(request.url);
   // Exercise base URLs with and without a path prefix.
@@ -67,7 +67,7 @@ const handler = async (request: Request) => {
     return Response.json(served, { status: discoveryStatus });
   }
   const received = {
-    method: request.method, path, query: [...url.searchParams], token: request.headers.get("token"),
+    method: request.method, url: request.url, path, query: [...url.searchParams], token: request.headers.get("token"),
     cookie: request.headers.get("cookie"), contentType: request.headers.get("content-type"), body: await request.text(),
   };
   requests.push(received);
@@ -137,6 +137,16 @@ try {
     const literal = JSON.parse(await ok([...command, "--path.part=--help", ...required, "--name=--help"]));
     assert.equal(literal.path, "/v2/parts/--help");
     assert.deepEqual(literal.query, [["name", "--help"]], "Optional defaults must not be sent");
+
+    const shell = "printf '空🙂 + & = # %3B';\nprintf second";
+    const encoded = JSON.parse(await ok([...command, "encoded", ...required,
+      "--name", shell, "--tag", "first;tag", "--tag", "last&tag=+", "--query.key;name", ";%3B"]));
+    assert.deepEqual(encoded.query, [["tag", "first;tag"], ["tag", "last&tag=+"], ["name", shell], ["key;name", ";%3B"]]);
+    // Bun accepts raw semicolons, but http4s treats them as query separators.
+    const rawQuery = new URL(encoded.url).search;
+    assert.doesNotMatch(rawQuery, /;/, "Query names and values must keep semicolons percent-encoded on the wire");
+    assert.match(rawQuery, /tag=first%3Btag/);
+    assert.match(rawQuery, /key%3Bname=%3B%253B/);
 
     const input = `{"path":{"part":"file"},"header":{"token":"from-input"},"body":${body}}`;
     await Bun.write(`${directory}/input.json`, input);

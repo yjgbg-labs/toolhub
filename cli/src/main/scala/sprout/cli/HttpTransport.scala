@@ -13,7 +13,9 @@ final class HttpTransport(backend: SyncBackend, baseUrl: String, onEvent: String
     // Native curl uses a total transfer timeout. Commands can return an unbounded
     // SSE body, discovered only from response headers; discovery remains bounded.
     val timeout = if request.allowStreaming then Duration.Zero else 30.seconds
-    val initial = basicRequest.method(Method(request.method), Uri.unsafeParse(request.url(baseUrl)))
+    // sttp decodes parsed queries; its default re-encoding leaves ';' as a separator for http4s.
+    val uri = Uri.unsafeParse(request.url(baseUrl)).querySegmentsEncoding(Wire.encode)
+    val initial = basicRequest.method(Method(request.method), uri)
       .headers(request.headers.map((name, value) => _root_.sttp.model.Header(name, value))*)
       .readTimeout(timeout).followRedirects(false).response(asInputStreamAlwaysUnsafe)
     val response = request.body.fold(initial)(initial.body(_)).send(backend)
