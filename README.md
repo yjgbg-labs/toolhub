@@ -72,7 +72,8 @@ server/cli/plugin 在本机完成构建与安装，交付方式为构建、测�
 
 CLI 安装会移走 `cli/dist/groot-cli`，再次安装前需重新构建；服务端和插件保留 `dist` 产物。
 
-开发环境需要 Bun、groot（提供 `use-jdk`）、JDK 25、Scala CLI 和 curl；
+开发环境使用 Bun、groot-cli、JDK 25、Scala CLI 和 curl；
+通过 `groot-cli use-jdk --version 25 --command '…'` 选择 JDK 并执行命令，需要可访问 Sprout HTTP 服务。
 Native 编译还需要 Clang 和 libcurl 等开发库，
 `cli-deploy` 会在需要时准备用户级工具链缓存。所有流程直接定义在 `jobs.yaml` 中。
 
@@ -132,7 +133,7 @@ groot-cli use-jdk --version 25 --command 'javac Main.java && java Main'
   缓存不完整或版本不符时返回错误，下载失败会清理临时目录。
 - `command` 最多 64 KiB UTF-8，支持管道、重定向和多行 shell 内容。命令通过现有 HTTP 服务生成。
 
-#### JavaScript 调用参数
+### JavaScript 调用参数
 
 Code Mode 和 GraalJS 使用相同的参数规则，由命令声明自动映射：
 
