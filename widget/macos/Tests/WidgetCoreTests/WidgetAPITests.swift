@@ -26,43 +26,14 @@ final class WidgetAPITests: XCTestCase {
     }
     override func tearDown() { StubProtocol.handler = nil; StubProtocol.stopped = nil }
 
-    func testWriteSendsCompleteSettingsToOrdinaryJSONEndpoint() async throws {
-        let received = expectation(description: "POST settings")
-        var settings = WidgetSettings()
-        settings.x = -40
-        settings.y = 90
-        settings.topMost = false
-        let expected = settings
-        StubProtocol.handler = { stub in
-            XCTAssertEqual(stub.request.url?.path, "/widget/config/write")
-            XCTAssertEqual(stub.request.httpMethod, "POST")
-            XCTAssertEqual(stub.request.value(forHTTPHeaderField: "Content-Type"), "application/json")
-            var data = stub.request.httpBody ?? Data()
-            if let stream = stub.request.httpBodyStream {
-                stream.open()
-                defer { stream.close() }
-                var buffer = [UInt8](repeating: 0, count: 4096)
-                while stream.hasBytesAvailable {
-                    let count = stream.read(&buffer, maxLength: buffer.count)
-                    if count <= 0 { break }
-                    data.append(contentsOf: buffer.prefix(count))
-                }
-            }
-            XCTAssertEqual(try? JSONDecoder().decode(WidgetSettings.self, from: data), expected)
-            stub.reply(type: "application/json", data: data)
-            received.fulfill()
-        }
-        let client = try api()
-        try await client.write(settings)
-        await fulfillment(of: [received], timeout: 3)
-    }
-
     func testStreamingDeliversBeforeEOFAndCancellationClosesRequest() async throws {
         let received = expectation(description: "snapshot before EOF")
         let stopped = expectation(description: "stream cancelled")
         let json = #"{"revision":"42","serverTime":"now","items":[],"settings":{"width":440,"topMost":true,"opacity":0.96,"fontSize":14,"rowHeight":40}}"#
         StubProtocol.handler = { stub in
             XCTAssertEqual(stub.request.url?.path, "/widget/subscribe")
+            XCTAssertEqual(stub.request.httpMethod, "GET")
+            XCTAssertNil(stub.request.httpBody)
             XCTAssertEqual(stub.request.value(forHTTPHeaderField: "Accept"), "text/event-stream")
             stub.reply(type: "text/event-stream; charset=utf-8", data: Data("data: \(json)\n\n".utf8), finish: false)
         }

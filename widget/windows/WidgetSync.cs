@@ -41,9 +41,8 @@ internal sealed partial class WidgetForm
     {
         var changed = latest?.Revision != snapshot.Revision || !canvas.Connected;
         latest = snapshot;
-        ready = true;
         Connection(true);
-        if (pendingSettings is null && !dragging && settings != snapshot.Settings) { settings = snapshot.Settings; changed = true; }
+        if (settings != snapshot.Settings) { settings = snapshot.Settings; changed = true; }
         canvas.Apply(snapshot.Items, settings);
         if (!changed) return;
         if (!dragging) ApplyLayout();
@@ -58,34 +57,5 @@ internal sealed partial class WidgetForm
             }
             catch (Exception error) { Program.Log($"Diagnostic capture: {error.Message}"); }
         }
-    }
-
-    private async Task SaveLoop()
-    {
-        saving = true;
-        var retry = 1;
-        try
-        {
-            while (!stop.IsCancellationRequested && pendingSettings is not null)
-            {
-                try
-                {
-                    await Task.Delay(250, stop.Token);
-                    var next = pendingSettings;
-                    await client.Write(next, stop.Token);
-                    Program.Log("Window settings saved");
-                    retry = 1;
-                    if (pendingSettings == next) pendingSettings = null;
-                }
-                catch (Exception error) when (!stop.IsCancellationRequested)
-                {
-                    Program.Log($"Settings write failed: {error.Message}; retry={retry}s");
-                    await Task.Delay(TimeSpan.FromSeconds(retry), stop.Token);
-                    retry = Math.Min(30, retry * 2);
-                }
-            }
-        }
-        catch (OperationCanceledException) { }
-        finally { saving = false; }
     }
 }

@@ -2,7 +2,7 @@ import AppKit
 import WidgetCore
 
 @MainActor
-final class WidgetApp: NSObject, NSApplicationDelegate {
+final class WidgetApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let api: WidgetAPI
     let panel = WidgetPanel(contentRect: NSRect(x: 0, y: 0, width: 440,
                                               height: WidgetCanvas.verticalPadding * 2 + CGFloat(WidgetSettings().rowHeight)),
@@ -12,15 +12,24 @@ final class WidgetApp: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var streamTask: Task<Void, Never>?
     var streamGeneration = UUID()
-    var writeTask: Task<Void, Never>?
-    var pendingSettings: WidgetSettings?
+    let positionURL: URL
+    var position: WindowPosition?
     var settings = WidgetSettings()
-    var ready = false
     var dragging = false
+    var dragTimer: Timer?
+    var isLeftMousePressed: () -> Bool = { NSEvent.pressedMouseButtons & 1 != 0 }
     var hidden = false
     var lastSnapshot: WidgetSnapshot?
 
-    init(api: WidgetAPI) { self.api = api }
+    init(api: WidgetAPI, positionURL: URL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/GrootWidget/position.json")) {
+        self.api = api
+        self.positionURL = positionURL
+        super.init()
+        panel.delegate = self
+        do { position = try WindowPosition.read(from: positionURL) }
+        catch { log("Local window position ignored: \(error)") }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         panel.title = "Groot Widget"
@@ -73,7 +82,7 @@ final class WidgetApp: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         streamTask?.cancel()
-        writeTask?.cancel()
+        dragTimer?.invalidate()
     }
 
     func setupMenu() {
@@ -93,12 +102,12 @@ final class WidgetApp: NSObject, NSApplicationDelegate {
     @objc func screenChanged() { if !dragging { layout() } }
 
     func layout() {
-        guard let main = NSScreen.screens.first else { return }
+        guard !dragging, let main = NSScreen.screens.first else { return }
         canvas.settings = settings
         let width = CGFloat(settings.width)
         let contentHeight = WidgetCanvas.verticalPadding * 2 + CGFloat(max(1, canvas.items.count) * settings.rowHeight)
-        let x = settings.x.map(CGFloat.init) ?? (main.visibleFrame.maxX - width - 20)
-        let top = settings.y.map { main.frame.maxY - CGFloat($0) } ?? (main.visibleFrame.maxY - 20)
+        let x = position.map { CGFloat($0.x) } ?? (main.visibleFrame.maxX - width - 20)
+        let top = position.map { main.frame.maxY - CGFloat($0.y) } ?? (main.visibleFrame.maxY - 20)
         let proposed = NSRect(x: x, y: top - min(contentHeight, main.visibleFrame.height - 40),
                               width: width, height: min(contentHeight, main.visibleFrame.height - 40))
         let screen = NSScreen.screens.max { a, b in
@@ -116,18 +125,6 @@ final class WidgetApp: NSObject, NSApplicationDelegate {
         panel.level = settings.topMost ? .floating : .normal
         panel.alphaValue = settings.opacity
         canvas.needsDisplay = true
-    }
-
-    func drag(_ event: NSEvent) {
-        guard ready else { return }
-        dragging = true
-        panel.performDrag(with: event)
-        dragging = false
-        guard let main = NSScreen.screens.first else { return }
-        settings.x = Int(panel.frame.minX.rounded())
-        settings.y = Int((main.frame.maxY - panel.frame.maxY).rounded())
-        layout()
-        saveSettings()
     }
 
     func diagnose(_ snapshot: WidgetSnapshot, capture: Bool) {

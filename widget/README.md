@@ -35,7 +35,7 @@ await tools.widget.delete({key: "download"});
 
 ## 状态与协议
 
-`$SPROUT_HOME/widget/widget.sqlite3` 是唯一持久化真源，使用 SQLite WAL、FULL 同步和进程所有权锁。
+`$SPROUT_HOME/widget/widget.sqlite3` 是内容及共享外观配置的持久化真源，使用 SQLite WAL、FULL 同步和进程所有权锁。窗口位置仅在各设备本地持久化。
 items、settings、revision 作为一个快照原子提交，成功后才通知订阅者。无需 Redis。
 
 ```http
@@ -58,21 +58,22 @@ data: {"revision":"42","serverTime":"2026-10-31T12:00:00Z","items":[],"settings"
 
 | 字段 | 默认值 | 约束 |
 | --- | --- | --- |
-| `x`, `y` | `null` | 同时设置或同时为空；相对主显示屏左上角的逻辑点，范围 ±65536 |
+| `x`, `y` | `null` | 旧协议兼容字段；原生客户端忽略，不再控制窗口位置 |
 | `width` | `440` | 240–1600 逻辑点 |
 | `topMost` | `true` | 是否置顶 |
 | `opacity` | `0.96` | 0.2–1 |
 | `fontSize` | `14` | 8–32 逻辑点 |
 | `rowHeight` | `40` | max(24, fontSize+8)–120 逻辑点 |
 
-位置为空时显示在主屏幕右上角；屏幕变化后将不可见的位置限制到可用区域。
+首次启动或本地位置文件不可用时显示在主屏幕右上角；屏幕变化后将不可见的位置限制到可用区域。
 深色圆角无边框、等宽字体、文本值或三色灯；高度随项目数量变化，超出屏幕高度时滚动。
 Mac 背景使用 `NSVisualEffectView` 的深色 HUD 毛玻璃材质，实时模糊窗口背后的内容，失去焦点后仍保持效果。
 背景与内容统一使用 16 点圆角；独立的背景蒙版裁剪毛玻璃，40% 深色叠层减少透底。
 文字和灯在透明前景层绘制；`opacity` 仍控制整个窗口，设为 `1` 可保持前景清晰，背景由系统材质提供半透明效果。
 拖动内容区域移动窗口，菜单栏图标仅提供“显示 / 隐藏”。
-拖动结束通过 `config.write` 回写完整配置；本地写入串行化并合并连续手势，失败自动重试。
-多个客户端共享配置，最后一次成功写入生效。客户端本地仅保存服务连接地址，不缓存状态或窗口配置。
+拖动结束仅原子保存本机 `position.json`，重启后恢复，断线时也可移动。位置是相对本机主屏幕左上角的逻辑点，不读取或上传服务端坐标。
+宽度、置顶、透明度、字号和行高仍由服务端统一下发。原生客户端只发起 `GET /widget/subscribe` 订阅，不再调用 `config.write`，也不上传窗口设置、显隐状态、日志或诊断截图。
+客户端本地保存连接地址和窗口位置，不缓存服务端内容。
 
 ## 构建与部署
 
@@ -97,6 +98,7 @@ groot-cli jobs --job widget-deploy
 
 - 应用：`~/Applications/GrootWidget.app`
 - 连接：`~/Library/Application Support/GrootWidget/connection.json`，内容 `{"baseURL":"http://100.64.0.3:18080"}`
+- 位置：`~/Library/Application Support/GrootWidget/position.json`
 - 登录启动：`~/Library/LaunchAgents/lab.yjgbg.groot-widget.plist`
 - 日志：`~/Library/Logs/GrootWidget/app.log`
 
@@ -123,6 +125,7 @@ groot-cli jobs --job widget-windows-deploy
 
 - 应用：`%LOCALAPPDATA%\GrootWidget\app\GrootWidget.exe`
 - 连接：`%APPDATA%\GrootWidget\connection.json`，内容 `{"baseURL":"http://100.64.0.3:18080"}`
+- 位置：`%LOCALAPPDATA%\GrootWidget\position.json`，不使用漫游目录
 - 登录启动：任务计划程序 `GrootWidget`，仅在交互桌面会话运行，普通用户权限
 - 日志：`%APPDATA%\GrootWidget\app.log`，超过 1 MiB 滚动为 `.log.1`
 
@@ -130,5 +133,5 @@ groot-cli jobs --job widget-windows-deploy
 Windows 11 22H2+ 使用 DWM 原生 Desktop Acrylic 亚克力背景；文字和灯以独立透明前景绘制，不支持时使用深色背景。
 应用和托盘使用 [OpenCode 官网](https://opencode.ai/brand) 提供的黑色方形图标，原始资产和 Windows 多分辨率图标位于 `windows/Assets/`。
 灯尺寸为亮灯 16 / 灭灯 12 逻辑点，灭灯色 `#080A0C`。连接断开时保留最后快照并显示橙色提示，自动退避重连。
-拖动结束只回写完整共享配置；自动限制窗口到 Windows 可见区域不会回写位置。Mac 和 Windows 的配置仍以服务端为唯一真源。
+拖动结束仅保存本机位置；Mac 和 Windows 各自恢复位置，服务端推送及另一台设备的拖动都不会覆盖本机坐标。
 `WIDGET_DIAGNOSTICS=1` 部署会额外输出自身窗口的 `widget.png`，默认关闭。

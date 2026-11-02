@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace GrootWidget;
 
-internal sealed record WidgetSettings(int? X = null, int? Y = null, int Width = 440,
+internal sealed record WidgetSettings(int Width = 440,
     bool TopMost = true, double Opacity = 0.96, int FontSize = 14, int RowHeight = 40);
 internal sealed record WidgetItem(string Key, string Label, string? Value, string Color, int Order, string UpdatedAt);
 internal sealed record WidgetSnapshot(string Revision, string ServerTime, WidgetItem[] Items, WidgetSettings Settings)
@@ -18,7 +18,6 @@ internal sealed record WidgetSnapshot(string Revision, string ServerTime, Widget
             s.Width < 240 || s.Width > 1600 || s.FontSize < 8 || s.FontSize > 32 ||
             s.RowHeight < Math.Max(24, s.FontSize + 8) || s.RowHeight > 120 ||
             !double.IsFinite(s.Opacity) || s.Opacity < 0.2 || s.Opacity > 1 ||
-            s.X.HasValue != s.Y.HasValue || s.X is < -65536 or > 65536 || s.Y is < -65536 or > 65536 ||
             value.Items.Any(i => i is null || string.IsNullOrWhiteSpace(i.Key) || string.IsNullOrWhiteSpace(i.Label) ||
                 i.Color is not ("red" or "yellow" or "green"))) throw new InvalidDataException("Invalid snapshot");
         return value;

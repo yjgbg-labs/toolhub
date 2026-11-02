@@ -32,12 +32,15 @@ await Throws<InvalidDataException>(() => { Parse("data: " + new string('x', 64),
 await Throws<InvalidDataException>(() => { Parse(string.Concat(Enumerable.Repeat("data: 1234567890\n", 20)), 32); return Task.CompletedTask; }, "bound accumulated multiline event");
 await Throws<DecoderFallbackException>(() => { var p = new SseParser(); p.Feed(255); p.Feed(10); return Task.CompletedTask; }, "reject invalid UTF8");
 
-var settings = new WidgetSettings(1046, 172, 440, true, 1, 15, 40);
+var settings = new WidgetSettings(440, true, 1, 15, 40);
 var snapshot = new WidgetSnapshot("9007199254740993", "2026-11-01T00:00:00Z",
     new[] { new WidgetItem("btc", "BTC/USDT", "77,500.00 +0.10%", "green", 0, "2026-11-01T00:00:00Z") }, settings);
 var json = JsonSerializer.Serialize(snapshot, WidgetSnapshot.Json);
 var parsed = WidgetSnapshot.Parse(Encoding.UTF8.GetBytes(json));
 Check(parsed.Revision == "9007199254740993" && parsed.Settings == settings && parsed.Items[0].Value == snapshot.Items[0].Value, "shared settings and lossless revision wire format");
+var legacy = json.Replace("\"settings\":{", "\"settings\":{\"x\":1046,\"y\":172,");
+Check(WidgetSnapshot.Parse(Encoding.UTF8.GetBytes(legacy)).Settings == settings &&
+    WidgetSnapshot.Parse(Encoding.UTF8.GetBytes(legacy.Replace("1046", "-1200"))).Settings == settings, "server coordinates cannot change client layout settings");
 await Throws<InvalidDataException>(() => { WidgetSnapshot.Parse(Encoding.UTF8.GetBytes("{}")); return Task.CompletedTask; }, "reject incomplete snapshots");
 await Throws<InvalidDataException>(() => { WidgetSnapshot.Parse(Encoding.UTF8.GetBytes(json.Replace("\"rowHeight\":40", "\"rowHeight\":1"))); return Task.CompletedTask; }, "reject invalid layout");
 await Throws<ArgumentException>(() => { using var c = new WidgetClient("file:///tmp/test"); return Task.CompletedTask; }, "reject non-HTTP connections");
@@ -48,6 +51,7 @@ using (var cancel = new CancellationTokenSource())
 using (var client = new WidgetClient("http://example.test/", new Handler((request, _) =>
 {
     Check(request.RequestUri!.AbsolutePath == "/widget/subscribe", "subscribe endpoint");
+    Check(request.Method == HttpMethod.Get && request.Content is null, "subscription sends no client state");
     var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(stream) };
     response.Content.Headers.ContentType = new MediaTypeHeaderValue("text/event-stream");
     return response;
@@ -75,15 +79,24 @@ using (var client = new WidgetClient("http://example.test", new Handler((_, _) =
 using (var client = new WidgetClient("http://example.test", new Handler((_, _) => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("not SSE") })))
     await Throws<InvalidDataException>(() => client.Subscribe(_ => { }, CancellationToken.None), "reject non-SSE responses");
 
-using (var client = new WidgetClient("http://example.test", new Handler((request, _) =>
+var positionRoot = Path.Combine(Path.GetTempPath(), "GrootWidget-tests-" + Guid.NewGuid());
+try
 {
-    var body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
-    using var data = JsonDocument.Parse(body);
-    Check(request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/widget/config/write", "ordinary complete-config write endpoint");
-    Check(data.RootElement.EnumerateObject().Count() == 7 && data.RootElement.GetProperty("opacity").GetDouble() == 1 &&
-        JsonSerializer.Deserialize<WidgetSettings>(body, WidgetSnapshot.Json) == settings, "write includes all shared settings, correct opacity name");
-    return new HttpResponseMessage(HttpStatusCode.OK);
-}))) await client.Write(settings, CancellationToken.None);
+    var first = Path.Combine(positionRoot, "first", "position.json");
+    var second = Path.Combine(positionRoot, "second", "position.json");
+    Check(WindowPosition.Read(first) is null, "first launch has no local position");
+    new WindowPosition(-1200, -80).Write(first);
+    new WindowPosition(400, 200).Write(second);
+    new WindowPosition(-900, 120).Write(first);
+    Check(WindowPosition.Read(first) == new WindowPosition(-900, 120), "local position survives restart and replacement");
+    Check(WindowPosition.Read(second) == new WindowPosition(400, 200), "local positions stay independent");
+    foreach (var invalid in new[] { "{", "{}", "{\"x\":20}", "{\"x\":null,\"y\":20}", "{\"x\":99999999,\"y\":0}" })
+    {
+        File.WriteAllText(first, invalid);
+        await Throws<Exception>(() => { WindowPosition.Read(first); return Task.CompletedTask; }, "reject invalid local position: " + invalid);
+    }
+}
+finally { if (Directory.Exists(positionRoot)) Directory.Delete(positionRoot, true); }
 
 Console.WriteLine($"{passed} checks passed");
 

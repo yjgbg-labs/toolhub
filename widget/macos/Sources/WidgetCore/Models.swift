@@ -12,8 +12,6 @@ public struct WidgetItem: Codable, Equatable, Sendable {
 }
 
 public struct WidgetSettings: Codable, Equatable, Sendable {
-    public var x: Int?
-    public var y: Int?
     public var width = 440
     public var topMost = true
     public var opacity = 0.96

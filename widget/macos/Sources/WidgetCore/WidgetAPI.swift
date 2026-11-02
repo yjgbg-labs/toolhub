@@ -46,17 +46,5 @@ public final class WidgetAPI {
         throw Failure.disconnected
     }
 
-    public func write(_ settings: WidgetSettings) async throws {
-        var request = URLRequest(url: endpoint("config/write"))
-        request.httpMethod = "POST"
-        request.timeoutInterval = 15
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(settings)
-        let (_, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw Failure.response((response as? HTTPURLResponse)?.statusCode ?? 0)
-        }
-    }
-
     private func endpoint(_ path: String) -> URL { baseURL.appendingPathComponent("widget/" + path) }
 }

@@ -26,15 +26,33 @@ final class WidgetCoreTests: XCTestCase {
         XCTAssertThrowsError(try invalid.feed(10))
     }
 
-    func testSnapshotAndFullSettingsWireFormat() throws {
+    func testSnapshotIgnoresLegacyServerPosition() throws {
         let json = #"{"revision":"9007199254740993","serverTime":"2026-10-31T00:00:00Z","items":[{"key":"lamp","label":"状态","value":null,"color":"yellow","order":0,"updatedAt":"now"}],"settings":{"x":-20,"y":30,"width":440,"topMost":true,"opacity":0.96,"fontSize":14,"rowHeight":40}}"#
         let snapshot = try JSONDecoder().decode(WidgetSnapshot.self, from: Data(json.utf8))
         XCTAssertEqual(snapshot.revision, "9007199254740993")
         XCTAssertNil(snapshot.items[0].value)
         XCTAssertEqual(snapshot.items[0].color, .yellow)
-        XCTAssertEqual(snapshot.settings.x, -20)
+        let moved = json.replacingOccurrences(of: "\"x\":-20,\"y\":30", with: "\"x\":1600,\"y\":900")
+        XCTAssertEqual(try JSONDecoder().decode(WidgetSnapshot.self, from: Data(moved.utf8)).settings, snapshot.settings)
         let roundTrip = try JSONDecoder().decode(WidgetSettings.self, from: JSONEncoder().encode(snapshot.settings))
         XCTAssertEqual(roundTrip, snapshot.settings)
+    }
+
+    func testLocalPositionSurvivesRestartAndStaysIndependent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("first/position.json")
+        let second = root.appendingPathComponent("second/position.json")
+        XCTAssertNil(try WindowPosition.read(from: first))
+        try WindowPosition(x: -1200, y: -80).write(to: first)
+        try WindowPosition(x: 400, y: 200).write(to: second)
+        try WindowPosition(x: -900, y: 120).write(to: first)
+        XCTAssertEqual(try WindowPosition.read(from: first), WindowPosition(x: -900, y: 120))
+        XCTAssertEqual(try WindowPosition.read(from: second), WindowPosition(x: 400, y: 200))
+        for invalid in ["{", "{}", #"{"x":20}"#, #"{"x":null,"y":20}"#, #"{"x":99999999,"y":0}"#] {
+            try Data(invalid.utf8).write(to: first)
+            XCTAssertThrowsError(try WindowPosition.read(from: first))
+        }
     }
 
     func testRetryResetsAfterReceivingSnapshot() {
