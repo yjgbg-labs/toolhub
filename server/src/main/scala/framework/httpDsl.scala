@@ -139,7 +139,7 @@ object httpDsl:
 
   object response:
     def json[A](status: Int)(init: ResponseScope ?=> Unit)(using model: JsonModel[A], scope: DeclarationScope): Output[A] =
-      scope.output[A](status, Some("application/json"), Some(model.schema), value => Some(ResponseBody.Text(model.encoder(value).noSpaces))).configure(init)
+      scope.output[A](status, Some("application/json"), Some(model.schema), value => Some(ResponseBody.Json(model.encoder(value)))).configure(init)
 
     def text(status: Int)(init: ResponseScope ?=> Unit)(using scope: DeclarationScope): Output[String] =
       scope.output[String](status, Some("text/plain"), Some(JsonModel[String].schema), value => Some(ResponseBody.Text(value))).configure(init)

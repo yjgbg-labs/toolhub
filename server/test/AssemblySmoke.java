@@ -6,6 +6,7 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.SandboxPolicy;
 import groot.graaljs.GraalSdkBindings;
+import groot.graaljs.CommandTree$;
 import scala.collection.immutable.Vector$;
 import scala.jdk.javaapi.CollectionConverters;
 import scala.runtime.BoxedUnit;
@@ -21,7 +22,8 @@ public class AssemblySmoke {
                 .in(InputStream.nullInputStream()).out(OutputStream.nullOutputStream()).err(OutputStream.nullOutputStream())
                 .option("sandbox.MaxHeapMemory", "4MB").option("sandbox.MaxCPUTime", "2s").build()) {
             if (context.eval("js", "6 * 7").asInt() != 42) throw new AssertionError("GraalJS evaluation failed");
-            var sdk = new GraalSdkBindings(context, Vector$.MODULE$.from(CollectionConverters.asScala(List.of("health"))),
+            var catalog = CommandTree$.MODULE$.compile(Vector$.MODULE$.from(CollectionConverters.asScala(List.of("health"))));
+            var sdk = new GraalSdkBindings(context, catalog,
                 (id, input, resolve, reject) -> {
                     var response = context.getBindings("js").getMember("JSON").getMember("parse")
                         .execute("{\"status\":200,\"headers\":{},\"body\":\"ok\"}");

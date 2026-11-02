@@ -53,13 +53,13 @@ final class FetchService(client: Client[IO], timeout: FiniteDuration = 30.second
     val accepted = if header(encoded.headers, "accept").isDefined then encoded else encoded.putHeaders(Header.Raw(CIString("Accept"), "*/*"))
     val compressed = if header(accepted.headers, "accept-encoding").isDefined then accepted
       else accepted.putHeaders(Header.Raw(CIString("Accept-Encoding"), "gzip, deflate"))
-    follow(compressed, 0)
+    follow(compressed, 0, input.responseType)
   }.timeoutTo(timeout, IO.raiseError(FetchFailure("TimeoutError", "fetch() timed out")))
     .adaptError { case error if !error.isInstanceOf[FetchFailure] =>
       FetchFailure("TypeError", s"fetch failed: ${Option(error.getMessage).getOrElse(error.getClass.getSimpleName)}")
     }
 
-  private def follow(request: Request[IO], redirects: Int): IO[FetchResponse] =
+  private def follow(request: Request[IO], redirects: Int, responseType: ResponseType): IO[FetchResponse] =
     client.run(request).use { response =>
       val location = header(response.headers, "location")
       if Set(301, 302, 303, 307, 308).contains(response.status.code) && location.nonEmpty then IO {
@@ -81,11 +81,18 @@ final class FetchService(client: Client[IO], timeout: FiniteDuration = 30.second
           .toVector.sortBy(_._1).map { (name, values) => name -> values.mkString(", ") }
         // Preserve cookie boundaries: Expires and extension attributes can themselves contain commas.
         val setCookies = fields.collect { case field if field.name == CIString("Set-Cookie") => field.value }
-        Right(FetchResponse(request.uri.renderString, response.status.code, response.status.reason,
-          response.status.isSuccess, redirects > 0, headers.toMap, Base64.getEncoder.encodeToString(bytes), setCookies))
+        val result = FetchResponse(request.uri.renderString, response.status.code, response.status.reason,
+          response.status.isSuccess, redirects > 0, headers.toMap, None, setCookies)
+        Right(responseType match
+          case ResponseType.base64 => result.copy(bodyBase64 = Some(Base64.getEncoder.encodeToString(bytes)))
+          case ResponseType.text => result.copy(bodyText = Some(new String(bytes, UTF_8).stripPrefix("\ufeff")))
+          case ResponseType.json =>
+            val json = io.circe.parser.parse(new String(bytes, UTF_8).stripPrefix("\ufeff"))
+              .fold(_ => throw FetchFailure("SyntaxError", "fetch() response is not valid JSON"), identity)
+            result.copy(bodyJson = Some(json)))
       }
     }.flatMap {
-      case Left(next) => follow(next, redirects + 1)
+      case Left(next) => follow(next, redirects + 1, responseType)
       case Right(result) => IO.pure(result)
     }
 

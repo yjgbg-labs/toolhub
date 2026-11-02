@@ -8,7 +8,7 @@ import scala.util.control.NonFatal
 /** Builds the SDK in Scala; guest built-ins supply native Promises, JSON values and Errors. */
 private[graaljs] final class GraalSdkBindings(
     context: Context,
-    commands: Vector[String],
+    catalog: CommandTree,
     submit: (String, String, Value, Value) => Unit
 ):
   private val global = context.getBindings("js").getMember("globalThis")
@@ -18,14 +18,15 @@ private[graaljs] final class GraalSdkBindings(
   private val stringify = json.getMember("stringify")
   private val parse = json.getMember("parse")
 
-  private class Namespace(children: Map[String, ProxyObject]) extends ProxyObject:
+  private class Namespace(children: Map[String, ProxyObject], keys: Vector[String]) extends ProxyObject:
+    private val memberKeys = ProxyArray.fromArray(keys.map(name => name: AnyRef)*)
     def getMember(name: String): AnyRef = children.getOrElse(name, null)
     def hasMember(name: String): Boolean = children.contains(name)
-    def getMemberKeys(): AnyRef = ProxyArray.fromArray(children.keys.toVector.sorted.map(name => name: AnyRef)*)
+    def getMemberKeys(): AnyRef = memberKeys
     def putMember(name: String, value: Value): Unit = throw new UnsupportedOperationException("Command tree is read-only")
     override def removeMember(name: String): Boolean = throw new UnsupportedOperationException("Command tree is read-only")
 
-  private class Command(id: String, children: Map[String, ProxyObject]) extends Namespace(children) with ProxyExecutable:
+  private class Command(id: String, children: Map[String, ProxyObject], keys: Vector[String]) extends Namespace(children, keys) with ProxyExecutable:
     def execute(arguments: Value*): AnyRef = promise.newInstance(GraalSdkSession.callback { callbacks =>
       val resolve = callbacks(0)
       val reject = callbacks(1)
@@ -50,16 +51,15 @@ private[graaljs] final class GraalSdkBindings(
       null
     })
 
-  private def tree(prefix: Vector[String], paths: Vector[Vector[String]]): ProxyObject =
-    val children = paths.filter(_.size > prefix.size).groupBy(_(prefix.size)).map { (name, descendants) =>
-      name -> tree(prefix :+ name, descendants)
-    }
-    if paths.exists(_.size == prefix.size) then new Command(prefix.mkString("."), children)
-    else new Namespace(children)
+  private def bind(node: CommandTree): ProxyObject =
+    val children = node.children.map((name, child) => name -> bind(child))
+    node.command match
+      case Some(id) => new Command(id, children, node.keys)
+      case None => new Namespace(children, node.keys)
 
   def install(): Unit =
     val descriptor = ProxyObject.fromMap(JavaMap.of[String, Object](
-      "value", tree(Vector.empty, commands.map(_.split("\\.").toVector)),
+      "value", bind(catalog),
       "enumerable", java.lang.Boolean.TRUE,
       "writable", java.lang.Boolean.FALSE,
       "configurable", java.lang.Boolean.FALSE))

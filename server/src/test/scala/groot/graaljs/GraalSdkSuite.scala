@@ -42,6 +42,8 @@ class GraalSdkSuite extends CatsEffectSuite:
               handle { IO.pure(payload.value.copy(values = payload.value.values.map(_ * scale.value))) }
             }
             command[Unit]("empty") { handle { IO.unit } }
+            command[PlainText]("emptyText") { handle { IO.pure(PlainText("")) } }
+            command[SSE[PlainText]]("emptyStream") { handle { IO.pure(SSE(fs2.Stream.empty)) } }
             command[PlainText]("name") { handle { IO.pure(PlainText("name")) } }
             command[PlainText]("length") { handle { IO.pure(PlainText("length")) } }
             command[PlainText]("prototype") { handle { IO.pure(PlainText("prototype")) } }
@@ -73,6 +75,7 @@ class GraalSdkSuite extends CatsEffectSuite:
             if (result.status !== 200 || result.headers["content-type"] !== "application/json" || result.body.text !== "你好" || result.body.values.join(',') !== "6,12") throw Error("invalid JSON response");
             console.log(JSON.stringify(result.body));
             console.log((await tools.sample.empty()).body === null);
+            if ((await tools.sample.emptyText()).body !== null || (await tools.sample.emptyStream()).body !== null) throw Error("empty response changed");
             console.log((await tools.sample.shell()).body);
             console.log((await tools.sample.events()).body);
             for (const invoke of [() => tools.sample.denied(), () => tools.sample.json({body: {text: "missing values"}}),
@@ -247,6 +250,37 @@ class GraalSdkSuite extends CatsEffectSuite:
     }
   }
 
+  test("immediate parallel completions and self-cancelled IO settle once after finalizers, across shared SDK contexts") {
+    temporary.use { home =>
+      for
+        finalized <- Ref.of[IO, Int](0)
+        app = httpApp {
+          command[Int]("echo") {
+            val value = param[Int]("value", "Value")
+            handle { IO.pure(value.value) }
+          }
+          command[Unit]("cancel") { handle { IO.canceled.onCancel(finalized.update(_ + 1)) } }
+          command[Int]("finalized") { handle { finalized.get } }
+        }
+        _ <- GraalManager.resource(home, IO.pure(GraalCommandSdk(app))).use { manager =>
+          List.fill(3)(()).parTraverse_ { _ => run(manager, """
+            for (let batch = 0; batch < 20; batch++) {
+              const replies = await Promise.all(Array.from({length:64}, (_, value) => tools.echo({value})));
+              if (replies.some((r, i) => r.body !== i)) throw Error("lost or crossed completion");
+            }
+            let rejected = 0;
+            await tools.cancel().then(() => { throw Error("cancel resolved"); }, e => {
+              if (!e.message.includes("cancelled")) throw e;
+              rejected++;
+            });
+            if (rejected !== 1 || (await tools.finalized()).body < 1) throw Error("premature cancellation");
+          """).map { (task, log) => assertEquals(task.state, "succeeded", s"${task.error}\n$log") } }
+        }
+        count <- finalized.get
+      yield assertEquals(count, 3)
+    }
+  }
+
   test("cancellation retains the task reservation until in-flight command finalizers finish") {
     temporary.use { home =>
       for
@@ -310,13 +344,17 @@ class GraalSdkSuite extends CatsEffectSuite:
         active <- Ref.of[IO, Int](0)
         app = httpApp {
           command[PlainText]("large") { handle { IO.pure(PlainText("x" * (GraalCommandSdk.maxBytes + 1))) } }
+          command[String]("largeJson") { handle { IO.pure("中" * (GraalCommandSdk.maxBytes / 3 + 1)) } }
+          command[SSE[PlainText]]("largeStream") { handle { IO.pure(SSE(fs2.Stream.emit(PlainText("x" * GraalCommandSdk.maxBytes)))) } }
           command[Unit]("wait") { handle { active.update(_ + 1).bracket(_ => IO.never[Unit])(_ => active.update(_ - 1)) } }
         }
         _ <- GraalManager.resource(home.resolve("data"), IO.pure(GraalCommandSdk(app))).use { manager =>
           for
             bounded <- run(manager, """
-              try { await tools.large(); throw Error("missing response bound"); }
-              catch (e) { if (!e.message.includes("1 MiB")) throw e; console.log("bounded response"); }
+              for (const call of [tools.large, tools.largeJson, tools.largeStream]) {
+                try { await call(); throw Error("missing response bound"); }
+                catch (e) { if (!e.message.includes("1 MiB")) throw e; console.log("bounded response"); }
+              }
               const pending = Array.from({length: 65}, () => tools.wait());
               try { await pending[64]; throw Error("missing pending bound"); }
               catch (e) { if (!e.message.includes("64")) throw e; console.log("bounded pending"); }

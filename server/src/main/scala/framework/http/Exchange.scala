@@ -23,7 +23,8 @@ final class RequestContext private[framework] (slots: Map[InputKey[?], Int], val
     val slot = slots.getOrElse(input.key, throw new IllegalArgumentException("Input belongs to a different endpoint"))
     values(slot).asInstanceOf[A]
 
-private[framework] enum ResponseBody:
+enum ResponseBody:
+  case Json(value: io.circe.Json)
   case Text(value: String)
   case Streaming(bytes: Stream[IO, Byte])
 

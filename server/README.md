@@ -379,7 +379,7 @@ Code Mode tools use the command path directly: `schedule.config.read` becomes
 with no additional prefix or namespace override.
 
 GraalJS and Code Mode flatten all non-body parameters into the input object,
-using the declaration to serialize each value to its HTTP location. Parameter
+using the declaration to map each value to its input location. Parameter
 names must be unique across locations. For mixed inputs, `body` is reserved for
 the request body: `tools.schedule.new({name: "example", body: {...}})`.
 If the operation declares only a request body, pass that value directly:
@@ -392,16 +392,34 @@ HTTP/OpenAPI contract retain their original formats.
 ### In-process clients
 
 `app.endpoints` is an immutable vector of endpoint declarations. Each endpoint
-exposes its operation ID, method, path, inputs, `exposedOn`, and an `HttpApp[IO]`
-bound to that endpoint. Handlers, input slots and codecs remain private to the
-framework. Requests use ordinary HTTP locations and raw HTTP responses, with the
-same validation, middleware and error recovery. A bound entry point checks its
-own method/path and cannot dispatch to a different endpoint or the OpenAPI route.
+exposes its operation ID, method, path, inputs, `exposedOn`, an `HttpApp[IO]` and
+`invoke: Endpoint.Request => IO[Endpoint.Response]` bound to that endpoint.
+Handlers, input slots and codecs remain private to the framework. Both entry points
+share decoding, defaults, constraints, middleware and error recovery. The HTTP
+entry point checks its own method/path; structured invocation selects the endpoint
+directly without constructing a URL, HTTP headers or byte streams.
+
+`Endpoint.Request.parameters` keys are `(InputLocation, declaredName)`, with vectors
+of raw string values. Its optional JSON `body` distinguishes omission from explicit
+null; text bodies use a JSON string. The server body limit applies to encoded JSON
+or UTF-8 text bytes. `Endpoint.Response` preserves status, media type, headers and
+a JSON AST, text or streaming body. JSON is serialized at transport boundaries;
+scalar content lengths count UTF-8 bytes, and streams retain `cache-control`.
 
 `groot.graaljs.GraalCommandSdk(app)` filters this list by `exposedOn` itself and
 invokes the selected endpoint directly, avoiding competing HTTP routes. Flattened
 arguments, direct body inputs, SDK name checks, response envelopes and the 1 MiB
 SDK limits belong to `groot/graaljs`. The framework has no dependency on that SDK.
+Immutable command descriptors and namespace trees are compiled once per SDK;
+Context-specific proxies and callbacks are never shared. Command IO queues replies
+directly, and only the task thread resolves guest Promises. Dispatcher cancellation
+tokens still wait for finalizers; its internal Future allocation remains.
+
+The GraalJS-only `fetch` command accepts `responseType: "base64" | "text" | "json"`
+(default `base64`). The selected field is `bodyBase64`, `bodyText` or `bodyJson`;
+other fields are null. Text and JSON are decoded as UTF-8 after decompression,
+stripping an initial BOM. Invalid/empty JSON returns 400 / `SyntaxError`; valid JSON
+can be any value including null. Existing byte and SDK response limits still apply.
 
 ## Middleware and errors
 

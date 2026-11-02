@@ -43,7 +43,7 @@ class FetchSuite extends CatsEffectSuite:
     assertEquals(result.hcursor.get[Int]("status"), Right(200), result.noSpaces)
     IO.fromEither(JsonModel[FetchResponse].decoder.decodeJson(result.hcursor.downField("body").focus.get))
   }
-  private def bytes(response: FetchResponse): Array[Byte] = Base64.getDecoder.decode(response.bodyBase64)
+  private def bytes(response: FetchResponse): Array[Byte] = Base64.getDecoder.decode(response.bodyBase64.get)
   private def text(response: FetchResponse): String = new String(bytes(response), UTF_8)
   private def json(response: FetchResponse): Json = io.circe.parser.parse(text(response).stripPrefix("\ufeff")).toOption.get
   private def compress(bytes: Array[Byte], gzip: Boolean): Array[Byte] =
@@ -140,7 +140,7 @@ class FetchSuite extends CatsEffectSuite:
         missing <- fetch(commands, FetchRequest(s"$url/missing"))
         _ = assertEquals((missing.status, missing.ok, text(missing)), (404, false, "missing"))
         empty <- fetch(commands, FetchRequest(s"$url/empty"))
-        _ = assertEquals((empty.status, empty.bodyBase64), (204, ""))
+        _ = assertEquals((empty.status, empty.bodyBase64), (204, Some("")))
         _ <- List("gzip", "deflate").traverse_ { encoding => fetch(commands, FetchRequest(s"$url/$encoding")).map { response =>
           assertEquals(json(response).hcursor.get[String]("text"), Right("中文"))
           assertEquals(response.headers("content-encoding"), encoding)
@@ -148,7 +148,78 @@ class FetchSuite extends CatsEffectSuite:
         binary <- fetch(commands, FetchRequest(s"$url/binary"))
         _ = assertEquals(bytes(binary).toVector, Vector[Byte](0, 127, -128, -1))
         head <- fetch(commands, FetchRequest(s"$url/gzip", "HEAD"))
-      yield assertEquals(head.bodyBase64, "")
+      yield assertEquals(head.bodyBase64, Some(""))
+    }
+  }
+
+  test("text/JSON modes decode UTF-8 and BOM after redirects and compression, including HTTP errors and scalars") {
+    val payload = "\ufeff{\"text\":\"中文🙂\"}"
+    val app = HttpApp[IO] { request => IO.pure(request.uri.path.renderString match
+      case "/redirect" => Response[IO](Status.Found).putHeaders(header("Location", "/json"))
+      case "/json" => Response[IO](Status.Ok).withBodyStream(Stream.chunk(Chunk.array(compress(payload.getBytes(UTF_8), gzip = true))))
+        .putHeaders(header("Content-Encoding", "gzip"))
+      case "/missing" => Response[IO](Status.NotFound).withEntity("{\"error\":\"missing\"}")
+      case "/null" => Response[IO](Status.Ok).withEntity("null")
+      case "/scalar" => Response[IO](Status.Ok).withEntity("42")
+      case "/invalid" => Response[IO](Status.Ok).withEntity("{broken")
+      case _ => Response[IO](Status.NoContent)) }
+    (serve(app), FetchService.resource).tupled.use { (url, service) =>
+      val commands = sdk(service)
+      for
+        text <- fetch(commands, FetchRequest(s"$url/redirect", responseType = ResponseType.text))
+        _ = assertEquals(text.bodyText, Some(payload.stripPrefix("\ufeff")))
+        _ = assertEquals((text.bodyBase64, text.bodyJson, text.redirected), (None, None, true))
+        parsed <- fetch(commands, FetchRequest(s"$url/redirect", responseType = ResponseType.json))
+        _ = assertEquals(parsed.bodyJson.get.hcursor.get[String]("text"), Right("中文🙂"))
+        _ = assertEquals((parsed.bodyBase64, parsed.bodyText), (None, None))
+        missing <- fetch(commands, FetchRequest(s"$url/missing", responseType = ResponseType.json))
+        _ = assertEquals((missing.status, missing.ok), (404, false))
+        _ = assertEquals(missing.bodyJson.get.hcursor.get[String]("error"), Right("missing"))
+        scalar <- service(FetchRequest(s"$url/scalar", responseType = ResponseType.json))
+        _ = assertEquals(scalar.bodyJson, Some(Json.fromInt(42)))
+        nil <- service(FetchRequest(s"$url/null", responseType = ResponseType.json))
+        _ = assertEquals(nil.bodyJson, Some(Json.Null))
+        empty <- fetch(commands, FetchRequest(s"$url/empty", responseType = ResponseType.text))
+        _ = assertEquals(empty.bodyText, Some(""))
+        _ <- List("invalid", "empty").traverse_ { path => call(commands, FetchRequest(s"$url/$path", responseType = ResponseType.json)).map { result =>
+          assertEquals(result.hcursor.get[Int]("status"), Right(400))
+          assertEquals(result.hcursor.downField("body").get[String]("name"), Right("SyntaxError"))
+        } }
+        _ <- temporary.use { home => GraalManager.resource(home, IO.pure(commands)).use { manager => run(manager, s"""
+          const raw = await tools.fetch({url:"$url/scalar"});
+          if (raw.body.bodyBase64 !== "NDI=") throw Error("default base64 changed");
+          const [text, json, nil] = await Promise.all([
+            tools.fetch({url:"$url/redirect", responseType:"text"}),
+            tools.fetch({url:"$url/redirect", responseType:"json"}),
+            tools.fetch({url:"$url/null", responseType:"json"})
+          ]);
+          if (JSON.parse(text.body.bodyText).text !== "中文🙂" || json.body.bodyJson.text !== "中文🙂" || nil.body.bodyJson !== null) throw Error("response mode");
+          for (const request of [{url:"$url/invalid", responseType:"json"}, {url:"$url/json", responseType:"unknown"}]) {
+            try { await tools.fetch(request); throw Error("missing rejection"); }
+            catch(e) { if (e.name !== "ApiError" || e.response.status !== 400) throw e; }
+          }
+        """) } }
+      yield ()
+    }
+  }
+
+  test("all response modes enforce decoded byte limits and text avoids base64 expansion") {
+    Ref.of[IO, Int](0).flatMap { active =>
+      val client = Client[IO](request => Resource.make(active.update(_ + 1))(_ => active.update(_ - 1)).as(
+        Response[IO](Status.Ok).withBodyStream(Stream.chunk(Chunk.array(compress(
+          Array.fill[Byte](if request.uri.path.renderString == "/large" then FetchService.maxBytes + 1 else FetchService.maxBytes * 3 / 4)(65), gzip = true))))
+          .putHeaders(header("Content-Encoding", "gzip"))))
+      val commands = sdk(new FetchService(client))
+      for
+        _ <- ResponseType.values.toList.traverse_ { mode => call(commands, FetchRequest("http://example.com/large", responseType = mode)).map { result =>
+          assertEquals(result.hcursor.get[Int]("status"), Right(413))
+        } }
+        text <- fetch(commands, FetchRequest("http://example.com/text", responseType = ResponseType.text))
+        _ = assertEquals(text.bodyText.get.length, FetchService.maxBytes * 3 / 4)
+        base64 <- call(commands, FetchRequest("http://example.com/text")).attempt
+        _ = assert(base64.swap.toOption.exists(_.getMessage.contains("1 MiB")))
+        count <- active.get
+      yield assertEquals(count, 0)
     }
   }
 

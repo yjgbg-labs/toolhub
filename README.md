@@ -416,9 +416,10 @@ UTF-8 字符跨写入块也能正确处理；断开日志连接只停止订阅�
 参数格式和响应结构一致。命令声明增删后，SDK 随服务启动生成，无需维护独立的方法列表。
 工具树由 Scala `ProxyObject` / `ProxyExecutable` 直接注入每个 Context；Promise、JSON 对象和错误
 使用该 Context 的原生构造器创建，不加载额外的 JavaScript SDK 包装代码。
-框架通过只读 `app.endpoints` 列表公开端点声明、`exposedOn` 和各端点绑定的 HTTP 调用入口。
+框架通过只读 `app.endpoints` 列表公开端点声明、`exposedOn`、HTTP 入口和结构化 `invoke` 入口。
 `groot.graaljs.GraalCommandSdk(app)` 自行筛选暴露给 GraalJS 的端点，实现参数映射、同名校验、响应包装及 SDK 大小限制；
-这些 SDK 规则全部位于 `groot/graaljs`，框架继续负责 HTTP 校验、中间件和执行。
+这些 SDK 规则全部位于 `groot/graaljs`，框架统一负责参数校验、中间件和执行。
+不可变命令描述和命令树在 SDK 创建时预编译并跨任务共享，每个 Context 仅创建自己的代理和回调。
 例如 `schedule.list` 映射为 `tools.schedule.list()`，带连字符的方法使用方括号。
 参数定义沿用 `/openapi.json`；GraalJS 内不提供 `search()`。
 
@@ -439,10 +440,11 @@ groot-cli graaljs start --cpu 2s --timeout 30s --body '
   无参数命令可省略输入。JSON 响应解码为对象；文本、Shell 和 SSE 响应作为字符串返回；空响应为 `null`。
   Shell 内容只返回文本，不自动执行；SSE 会等到流结束后返回完整文本。
 - 非 2xx 响应拒绝 Promise，错误为 `ApiError`，包含 `operationId` 和 `response`（同样的响应结构）。
-  调用经过本进程内的 HTTP 分发、参数校验和中间件，不建立额外的网络连接。
+  调用直接进入框架的结构化入口，与 HTTP 共用参数校验、中间件和错误恢复；JSON 在宿主内保留为 AST，避免 HTTP 字节流中转和重复解析。
 - 源码作为 async 函数体执行，支持顶层 `await` / `return` 和 `Promise.all` 并行调用。
   顶层 Promise 完成后结束任务；返回值不写入日志，需要输出时使用 `console.log`。
   任务结束、超时或取消时会取消尚未完成的调用，并等待它们的清理完成后释放任务额度。
+  命令 IO 完成后直接入队，原 Context 线程负责兑现 Promise；取消令牌仍由 Dispatcher 管理。
 - 每个任务最多 64 个待完成 SDK 调用；每次请求 JSON、响应正文及序列化后的响应均不超过 1 MiB。
   等待命令不占用 guest CPU，但仍计入墙钟超时。被调用命令的 JVM/外部工作不计入 JS 的 4 MiB 堆限制。
 - `tools` 授予脚本与这些服务端命令相同的能力，包括修改定时任务、提交或取消其他 GraalJS 任务。
@@ -455,7 +457,7 @@ groot-cli graaljs start --cpu 2s --timeout 30s --body '
 OpenAPI 标记为 `x-expose-on: ["graaljs"]`；CLI、Code Mode 目录及公共 HTTP 路由均按该声明过滤。
 网络客户端由应用管理，执行经过统一 SDK 的参数校验、中间件、错误恢复和取消流程。
 
-可以直接使用标准命令接口，响应体中的 HTTP 状态是目标网站的状态，原始字节以 base64 返回：
+可以直接使用标准命令接口，响应体中的 HTTP 状态是目标网站的状态；`responseType` 选择返回格式，默认为 base64：
 
 ```js
 const reply = await tools.fetch({
@@ -463,9 +465,10 @@ const reply = await tools.fetch({
   method: "POST",
   headers: {"Content-Type": "application/json"},
   body: JSON.stringify({text: "hello"}),
-  bodyEncoding: "utf8" // 二进制可传 base64 字符串并设置为 "base64"
+  bodyEncoding: "utf8", // 二进制可传 base64 字符串并设置为 "base64"
+  responseType: "json" // "base64" / "text" / "json"
 });
-console.log(reply.body.status, reply.body.ok, reply.body.bodyBase64);
+console.log(reply.body.status, reply.body.ok, reply.body.bodyJson);
 ```
 
 `tools.fetch` 完全由 `httpApp` 的命令声明映射，调用及返回遵循普通 SDK 的 JSON 契约。
@@ -476,8 +479,11 @@ HTTP 行为参考 [Code Mode fetch](https://github.com/anomalyco/opencode/blob/d
   `body` 默认使用 UTF-8，自动设置 `text/plain;charset=UTF-8`；JSON 需自行序列化并设置请求头。
   二进制请求体使用 base64 字符串和 `bodyEncoding: "base64"`。
 - Promise 在响应体读取完成后兑现，结果为标准 `{status, headers, body}` SDK 响应。
-  内层 `body` 包含目标网站的 `url`、`status`、`statusText`、`ok`、`redirected`、`headers`、`bodyBase64` 和 `setCookies`。
-  响应头名称统一为小写，`headers` 提供以逗号合并的视图，响应字节以 base64 保留。
+  内层 `body` 包含目标网站的 `url`、`status`、`statusText`、`ok`、`redirected`、`headers` 和 `setCookies`。
+  `responseType: "base64"` 在 `bodyBase64` 返回原始字节；`"text"` 在 `bodyText` 返回 UTF-8 文本；
+  `"json"` 在 `bodyJson` 返回宿主解析的 JSON 值（支持对象、数组、标量和 null），未选择的内容字段为 null。
+  文本和 JSON 模式移除开头的 UTF-8 BOM；无效或空 JSON 返回命令错误 400 / `SyntaxError`。
+  响应头名称统一为小写，`headers` 提供以逗号合并的视图。
   处理 Cookie 时使用 `setCookies` 字符串数组：它按最终响应中的顺序逐项保留 `Set-Cookie` 原值，
   包括 `Expires` 和扩展属性中的逗号；没有 Cookie 时返回空数组。
 - 目标网站的 HTTP 4xx/5xx 正常返回数据，由调用方检查 `reply.body.ok` 或 `reply.body.status`。

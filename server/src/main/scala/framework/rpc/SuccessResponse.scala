@@ -38,6 +38,7 @@ object SuccessResponse extends JsonSuccessResponses:
     private[framework] def encode(value: SSE[A]) = Some(ResponseBody.Streaming(
       value.events.flatMap { event =>
         val data = element.encode(event) match
+          case Some(ResponseBody.Json(json)) => json.noSpaces
           case Some(ResponseBody.Text(text)) => text
           case None => ""
           case Some(ResponseBody.Streaming(_)) => throw new IllegalArgumentException("SSE data must be a scalar response")
@@ -49,4 +50,4 @@ private[framework] trait JsonSuccessResponses:
   given [A](using model: JsonModel[A]): SuccessResponse[A] with
     private[framework] val mediaType = Some("application/json")
     private[framework] val schema = Some(model.schema)
-    private[framework] def encode(value: A) = Some(ResponseBody.Text(model.encoder(value).noSpaces))
+    private[framework] def encode(value: A) = Some(ResponseBody.Json(model.encoder(value)))

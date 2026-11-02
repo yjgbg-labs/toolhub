@@ -50,7 +50,8 @@ final class Application private[framework] (
     val spec = endpoint.spec
     new Endpoint(spec.operationId, spec.method, spec.path.value, spec.inputs.map { input =>
       Endpoint.Input(input.name, input.location, input.schema.node(), input.bodyMediaType)
-    }, spec.exposedOn, httpHandler((request, segments) => route(request, segments, Vector(endpoint))))
+    }, spec.exposedOn, httpHandler((request, segments) => route(request, segments, Vector(endpoint))),
+      request => invokeNative(endpoint, request))
   }
 
   def resource: Resource[IO, org.http4s.server.Server] =
@@ -96,30 +97,52 @@ final class Application private[framework] (
     body.flatMap {
       case Left(response) => IO.pure(response)
       case Right(json) =>
-        val results = spec.inputs.map { input =>
-          val raw = input.location match
-            case InputLocation.Path   => RawInput.Values(params.get(input.name).toVector)
-            case InputLocation.Query  => RawInput.Values(request.uri.query.multiParams.get(input.name).toVector.flatten)
-            case InputLocation.Header => RawInput.Values(headerValues(request, input.name))
-            case InputLocation.Cookie => RawInput.Values(request.cookies.filter(_.name == input.name).map(_.content).toVector)
-            case InputLocation.Body   => RawInput.Body(json)
-          input.decode(raw)
-        }
-        val errors = results.collect { case Left(error) => error }.toList
-        if errors.nonEmpty then IO.pure(errorResponse(400, "invalid_request", "Request validation failed", errors))
-        else
-          val context = new RequestContext(endpoint.inputSlots, results.collect { case Right(value) => value })
-          endpoint.run(context).map { result =>
-            val output = endpoint.outputs.getOrElse(result.key, throw new IllegalArgumentException("Response belongs to a different endpoint"))
-            (output.mediaType, result.payload) match
-              case (Some(mediaType), Some(ResponseBody.Text(payload))) => textResponse(output.status, payload, mediaType)
-              case (Some(mediaType), Some(ResponseBody.Streaming(bytes))) =>
-                Response[IO](Status.fromInt(output.status).toOption.get).withBodyStream(bytes)
-                  .putHeaders(Header.Raw(CIString("Content-Type"), mediaType), Header.Raw(CIString("Cache-Control"), "no-cache"))
-              case (None, None) => Response[IO](Status.fromInt(output.status).toOption.get)
-              case _ => throw new IllegalStateException("Response does not match its declaration")
-          }
+        invoke(endpoint, input => input.location match
+          case InputLocation.Path   => RawInput.Values(params.get(input.name).toVector)
+          case InputLocation.Query  => RawInput.Values(request.uri.query.multiParams.get(input.name).toVector.flatten)
+          case InputLocation.Header => RawInput.Values(headerValues(request, input.name))
+          case InputLocation.Cookie => RawInput.Values(request.cookies.filter(_.name == input.name).map(_.content).toVector)
+          case InputLocation.Body   => RawInput.Body(json)
+        ).map(toHttp)
     }
+
+  private def invokeNative(endpoint: BoundEndpoint, request: Endpoint.Request): IO[Endpoint.Response] = IO.defer {
+    val bodyInput = endpoint.spec.inputs.find(_.location == InputLocation.Body)
+    val bytes = request.body.filter(_ => bodyInput.nonEmpty).fold(0) { value =>
+      if bodyInput.get.bodyMediaType.contains("text/plain") && value.isString then value.asString.get.getBytes(UTF_8).length
+      else Endpoint.jsonBytes(value)
+    }
+    if bytes > serverSettings.maxBodyBytes then IO.pure(errorResult(413, "body_too_large", "Request body too large"))
+    else invoke(endpoint, input => input.location match
+      case InputLocation.Body => RawInput.Body(request.body)
+      case location => RawInput.Values(request.parameters.getOrElse(location -> input.name, Vector.empty)))
+  }
+
+  private def invoke(endpoint: BoundEndpoint, raw: InputSpec[?] => RawInput): IO[Endpoint.Response] = IO.defer {
+    val results = endpoint.spec.inputs.map(input => input.decode(raw(input)))
+    val errors = results.collect { case Left(error) => error }.toList
+    if errors.nonEmpty then IO.pure(errorResult(400, "invalid_request", "Request validation failed", errors))
+    else
+      val context = new RequestContext(endpoint.inputSlots, results.collect { case Right(value) => value })
+      endpoint.run(context).map { result =>
+        val output = endpoint.outputs.getOrElse(result.key, throw new IllegalArgumentException("Response belongs to a different endpoint"))
+        (output.mediaType, result.payload) match
+          case (Some(_), Some(_)) | (None, None) => Endpoint.Response(output.status, output.mediaType, result.payload)
+          case _ => throw new IllegalStateException("Response does not match its declaration")
+      }
+  }.handleErrorWith { error =>
+    IO(scribe.error("Request failed", error)).as(errorResult(500, "internal_error", "Internal server error"))
+  }
+
+  private def toHttp(result: Endpoint.Response): Response[IO] = result.body match
+    case Some(ResponseBody.Json(value)) => textResponse(result.status, value.noSpaces, result.mediaType.get)
+    case Some(ResponseBody.Text(value)) => textResponse(result.status, value, result.mediaType.get)
+    case Some(ResponseBody.Streaming(bytes)) => Response[IO](Status.fromInt(result.status).toOption.get).withBodyStream(bytes)
+      .putHeaders(Header.Raw(CIString("Content-Type"), result.mediaType.get), Header.Raw(CIString("Cache-Control"), "no-cache"))
+    case None => Response[IO](Status.fromInt(result.status).toOption.get)
+
+  private def errorResult(status: Int, code: String, message: String, errors: List[FieldError] = Nil): Endpoint.Response =
+    Endpoint.Response(status, Some("application/json"), Some(ResponseBody.Json(JsonModel[ErrorBody].encoder(ErrorBody(code, message, errors)))))
 
   private def readBody(request: Request[IO], mediaType: String): IO[Either[Response[IO], Option[Json]]] =
     request.body.take(serverSettings.maxBodyBytes + 1).compile.to(Array).map { bytes =>
