@@ -12,12 +12,15 @@ internal sealed partial class WidgetForm : Form
     private readonly Icon appIcon;
     private WidgetSettings settings = new();
     private WidgetSnapshot? latest;
-    private WidgetSettings? pendingSettings;
-    private bool ready, dragging, saving;
+    private readonly string positionPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GrootWidget", "position.json");
+    private WindowPosition? position;
+    private bool dragging;
 
     internal WidgetForm(WidgetClient client)
     {
         this.client = client;
+        try { position = WindowPosition.Read(positionPath); }
+        catch (Exception error) { Program.Log($"Local window position ignored: {error.Message}"); }
         using (var iconStream = typeof(WidgetForm).Assembly.GetManifestResourceStream("GrootWidget.Icon")!)
             appIcon = new Icon(iconStream, 32, 32);
         Icon = appIcon;
@@ -52,8 +55,8 @@ internal sealed partial class WidgetForm : Form
         var scale = DeviceDpi / 96d;
         var primary = Screen.PrimaryScreen!.Bounds;
         var width = (int)Math.Round(settings.Width * scale);
-        var point = settings.X.HasValue
-            ? new Point(primary.Left + (int)Math.Round(settings.X.Value * scale), primary.Top + (int)Math.Round(settings.Y!.Value * scale))
+        var point = position is not null
+            ? new Point(primary.Left + (int)Math.Round(position.X * scale), primary.Top + (int)Math.Round(position.Y * scale))
             : new Point(Screen.PrimaryScreen.WorkingArea.Right - width - canvas.Scale(24), Screen.PrimaryScreen.WorkingArea.Top + canvas.Scale(24));
         var area = Screen.FromRectangle(new Rectangle(point, new Size(width, canvas.ContentHeight))).WorkingArea;
         var size = new Size(Math.Min(width, area.Width), Math.Min(canvas.ContentHeight, area.Height - canvas.Scale(16)));
@@ -66,17 +69,20 @@ internal sealed partial class WidgetForm : Form
 
     private void BeginDrag()
     {
-        if (!ready) return;
         dragging = true;
         Native.ReleaseCapture();
         Native.SendMessage(Handle, 0x00A1, new IntPtr(2), IntPtr.Zero);
         dragging = false;
         var primary = Screen.PrimaryScreen!.Bounds;
         var scale = DeviceDpi / 96d;
-        settings = settings with { X = (int)Math.Round((Left - primary.Left) / scale), Y = (int)Math.Round((Top - primary.Top) / scale) };
-        pendingSettings = settings;
+        position = new WindowPosition((int)Math.Round((Left - primary.Left) / scale), (int)Math.Round((Top - primary.Top) / scale));
         ApplyLayout();
-        if (!saving) _ = SaveLoop();
+        try
+        {
+            position.Write(positionPath);
+            Program.Log("Local window position saved");
+        }
+        catch (Exception error) { Program.Log($"Local window position save failed: {error.Message}"); }
     }
 
     private void OnUi(Action action)

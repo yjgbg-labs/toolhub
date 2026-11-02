@@ -1,5 +1,4 @@
 using System.Net.Http;
-using System.Net.Http.Json;
 
 namespace GrootWidget;
 
@@ -41,14 +40,6 @@ internal sealed class WidgetClient : IDisposable
             for (var index = 0; index < count; index++)
                 if (parser.Feed(buffer[index]) is { } data) receive(WidgetSnapshot.Parse(data));
         }
-    }
-
-    internal async Task Write(WidgetSettings settings, CancellationToken cancel)
-    {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancel);
-        deadline.CancelAfter(TimeSpan.FromSeconds(10));
-        using var response = await http.PostAsJsonAsync("widget/config/write", settings, WidgetSnapshot.Json, deadline.Token);
-        response.EnsureSuccessStatusCode();
     }
 
     public void Dispose() => http.Dispose();

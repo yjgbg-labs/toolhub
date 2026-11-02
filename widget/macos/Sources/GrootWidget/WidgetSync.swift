@@ -42,9 +42,8 @@ extension WidgetApp {
     func receive(_ snapshot: WidgetSnapshot, first: Bool) {
         let changed = first || lastSnapshot?.revision != snapshot.revision
         connection(true)
-        ready = true
         lastSnapshot = snapshot
-        let settingsChanged = pendingSettings == nil && !dragging && settings != snapshot.settings
+        let settingsChanged = settings != snapshot.settings
         if settingsChanged { settings = snapshot.settings }
         if changed || settingsChanged {
             canvas.items = snapshot.items
@@ -52,30 +51,5 @@ extension WidgetApp {
             log("Applied revision=\(snapshot.revision) items=\(snapshot.items.count) visible=\(panel.isVisible) size=\(Int(panel.frame.width))x\(Int(panel.frame.height))")
         }
         diagnose(snapshot, capture: changed || settingsChanged)
-    }
-
-    /// Serialize complete replacements. New local gestures coalesce while an earlier write is in flight.
-    func saveSettings() {
-        pendingSettings = settings
-        guard writeTask == nil else { return }
-        writeTask = Task { [weak self] in
-            guard let self else { return }
-            defer { writeTask = nil }
-            var retry = ReconnectDelay()
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(nanoseconds: 250_000_000)
-                    guard let next = pendingSettings else { return }
-                    try await api.write(next)
-                    log("Window settings saved")
-                    retry.reset()
-                    if pendingSettings == next { pendingSettings = nil; return }
-                } catch {
-                    if Task.isCancelled { return }
-                    log("Window settings save failed: \(error)")
-                    try? await Task.sleep(nanoseconds: UInt64(retry.next() * 1_000_000_000))
-                }
-            }
-        }
     }
 }

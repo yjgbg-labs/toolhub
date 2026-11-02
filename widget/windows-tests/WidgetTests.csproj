@@ -9,5 +9,6 @@
     <Compile Include="../windows/WidgetState.cs" Link="WidgetState.cs" />
     <Compile Include="../windows/SseParser.cs" Link="SseParser.cs" />
     <Compile Include="../windows/WidgetClient.cs" Link="WidgetClient.cs" />
+    <Compile Include="../windows/WindowPosition.cs" Link="WindowPosition.cs" />
   </ItemGroup>
 </Project>
