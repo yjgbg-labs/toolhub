@@ -457,7 +457,7 @@ groot-cli graaljs start --cpu 2s --timeout 30s --body '
 OpenAPI 标记为 `x-expose-on: ["graaljs"]`；CLI、Code Mode 目录及公共 HTTP 路由均按该声明过滤。
 网络客户端由应用管理，执行经过统一 SDK 的参数校验、中间件、错误恢复和取消流程。
 
-可以直接使用标准命令接口，响应体中的 HTTP 状态是目标网站的状态；`responseType` 选择返回格式，默认为 base64：
+可以直接使用标准命令接口，响应体中的 HTTP 状态是目标网站的状态，原始字节以 base64 返回：
 
 ```js
 const reply = await tools.fetch({
@@ -465,10 +465,9 @@ const reply = await tools.fetch({
   method: "POST",
   headers: {"Content-Type": "application/json"},
   body: JSON.stringify({text: "hello"}),
-  bodyEncoding: "utf8", // 二进制可传 base64 字符串并设置为 "base64"
-  responseType: "json" // "base64" / "text" / "json"
+  bodyEncoding: "utf8" // 二进制可传 base64 字符串并设置为 "base64"
 });
-console.log(reply.body.status, reply.body.ok, reply.body.bodyJson);
+console.log(reply.body.status, reply.body.ok, reply.body.bodyBase64);
 ```
 
 `tools.fetch` 完全由 `httpApp` 的命令声明映射，调用及返回遵循普通 SDK 的 JSON 契约。
@@ -479,11 +478,8 @@ HTTP 行为参考 [Code Mode fetch](https://github.com/anomalyco/opencode/blob/d
   `body` 默认使用 UTF-8，自动设置 `text/plain;charset=UTF-8`；JSON 需自行序列化并设置请求头。
   二进制请求体使用 base64 字符串和 `bodyEncoding: "base64"`。
 - Promise 在响应体读取完成后兑现，结果为标准 `{status, headers, body}` SDK 响应。
-  内层 `body` 包含目标网站的 `url`、`status`、`statusText`、`ok`、`redirected`、`headers` 和 `setCookies`。
-  `responseType: "base64"` 在 `bodyBase64` 返回原始字节；`"text"` 在 `bodyText` 返回 UTF-8 文本；
-  `"json"` 在 `bodyJson` 返回宿主解析的 JSON 值（支持对象、数组、标量和 null），未选择的内容字段为 null。
-  文本和 JSON 模式移除开头的 UTF-8 BOM；无效或空 JSON 返回命令错误 400 / `SyntaxError`。
-  响应头名称统一为小写，`headers` 提供以逗号合并的视图。
+  内层 `body` 包含目标网站的 `url`、`status`、`statusText`、`ok`、`redirected`、`headers`、`bodyBase64` 和 `setCookies`。
+  响应头名称统一为小写，`headers` 提供以逗号合并的视图，响应字节以 base64 保留。
   处理 Cookie 时使用 `setCookies` 字符串数组：它按最终响应中的顺序逐项保留 `Set-Cookie` 原值，
   包括 `Expires` 和扩展属性中的逗号；没有 Cookie 时返回空数组。
 - 目标网站的 HTTP 4xx/5xx 正常返回数据，由调用方检查 `reply.body.ok` 或 `reply.body.status`。

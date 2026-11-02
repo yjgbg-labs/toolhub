@@ -415,12 +415,6 @@ Context-specific proxies and callbacks are never shared. Command IO queues repli
 directly, and only the task thread resolves guest Promises. Dispatcher cancellation
 tokens still wait for finalizers; its internal Future allocation remains.
 
-The GraalJS-only `fetch` command accepts `responseType: "base64" | "text" | "json"`
-(default `base64`). The selected field is `bodyBase64`, `bodyText` or `bodyJson`;
-other fields are null. Text and JSON are decoded as UTF-8 after decompression,
-stripping an initial BOM. Invalid/empty JSON returns 400 / `SyntaxError`; valid JSON
-can be any value including null. Existing byte and SDK response limits still apply.
-
 ## Middleware and errors
 
 Both DSLs retain `middleware(Handler => Handler)`, shared declarations and
