@@ -59,7 +59,7 @@ final class Application private[framework] (
       .withPort(Port.fromInt(serverSettings.port).get)
       .withHttpApp(httpApp)
       .build.evalTap(server => IO {
-        scribe.info(s"Sprout HTTP listening at ${server.address}; OpenAPI: ${openApiSettings.endpoint}")
+        scribe.info(s"Groot HTTP listening at ${server.address}; OpenAPI: ${openApiSettings.endpoint}")
       })
 
   def serve: IO[Nothing] = resource.useForever

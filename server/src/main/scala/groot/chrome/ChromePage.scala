@@ -35,7 +35,7 @@ private[chrome] final class ChromePage(val cdp: Cdp, val session: String, screen
     else IO.pure(field(json, "result"))
 
   def remote(expression: String, frame: PageFrame, byValue: Boolean = true): IO[Json] = for
-    world <- cdp.call("Page.createIsolatedWorld", obj("frameId" -> str(frame.id), "worldName" -> str("sprout")), Some(frame.session))
+    world <- cdp.call("Page.createIsolatedWorld", obj("frameId" -> str(frame.id), "worldName" -> str("groot")), Some(frame.session))
     response <- cdp.call("Runtime.evaluate", obj("expression" -> str(expression), "contextId" -> field(world, "executionContextId"),
       "returnByValue" -> Json.fromBoolean(byValue)), Some(frame.session))
     value <- result(response)

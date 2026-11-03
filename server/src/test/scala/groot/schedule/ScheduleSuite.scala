@@ -18,7 +18,7 @@ import scala.jdk.CollectionConverters.*
 
 class ScheduleSuite extends ScriptFixtures:
   private def temporary: Resource[IO, Path] = Resource.make(
-    IO.blocking(Files.createTempDirectory(Path.of("/tmp/opencode"), "sprout-schedule-test-"))
+    IO.blocking(Files.createTempDirectory(Path.of("/tmp/opencode"), "groot-schedule-test-"))
   )(path => IO.blocking {
     val files = Files.walk(path)
     try files.iterator().asScala.toList.reverse.foreach(Files.deleteIfExists)

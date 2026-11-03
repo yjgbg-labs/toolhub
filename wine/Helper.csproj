@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <UseAppHost>false</UseAppHost>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
-    <AssemblyName>Sprout.Wine.Helper</AssemblyName>
+    <AssemblyName>Groot.Wine.Helper</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />

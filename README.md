@@ -59,7 +59,7 @@ server/cli/plugin 在本机完成构建与安装，交付方式为构建、测�
 
 - CLI：将 `cli/dist/groot-cli` 移动到 `~/.local/bin/groot-cli`。
 - 服务端：将 `server/dist/groot.jar` 安装到 `$SERVER_INSTALL_ROOT/server/groot.jar`，然后重启 user service 并检查健康状态。
-- 插件：将 `plugin/dist/index.js` 直接安装为 `$OPENCODE_PLUGIN_DIR/sprout.ts`。
+- 插件：将 `plugin/dist/index.js` 直接安装为 `$OPENCODE_PLUGIN_DIR/groot.ts`。
 - Widget：Mac 通过 SSH 在 `WIDGET_MAC_HOST` 构建并安装至 `~/Applications/GrootWidget.app`；Windows 通过 `groot windows exec` 构建并安装至 `%LOCALAPPDATA%\GrootWidget\app`，详见 [widget/README.md](widget/README.md)。
 
 `config.env` 集中配置 JDK 和安装目标；服务端、CLI、插件分别部署。
@@ -67,14 +67,20 @@ server/cli/plugin 在本机完成构建与安装，交付方式为构建、测�
 
 默认安装位置可通过同名环境变量覆盖：
 
-- `SERVER_INSTALL_ROOT`：`~/.local/share/sprout-http`；`SERVER_SERVICE`：`groot-sprout-http.service`
+- `SERVER_INSTALL_ROOT`：`~/.local/share/groot-http`；`SERVER_SERVICE`：`groot-http.service`
 - `CLI_BIN_DIR`：`~/.local/bin`，命令入口为其中的 `groot-cli` 普通可执行文件。
-- `OPENCODE_PLUGIN_DIR`：`~/.config/opencode/plugins`，插件入口为其中的 `sprout.ts` 独立 bundle。
+- `OPENCODE_PLUGIN_DIR`：`~/.config/opencode/plugins`，插件入口为其中的 `groot.ts` 独立 bundle。
+- `GROOT_HOME`：`~/.config/groot`，保存调度、任务、状态、SQLite 和 Widget 数据。
 
 CLI 安装会移走 `cli/dist/groot-cli`，再次安装前需重新构建；服务端和插件保留 `dist` 产物。
 
+已有安装升级时，先停止并禁用原 user service，将数据迁移到上述目录（或用对应环境变量指定已有目录），
+同步更新调度脚本的绝对路径，再部署 `groot-http.service`。OpenCode 插件 ID 为 `groot`，升级时替换原插件入口及显式配置。
+客户端环境变量统一为 `GROOT_BASE_URL`、`GROOT_PORT`；插件还支持 `GROOT_OPENAPI_URL` 和 `GROOT_TOKEN`。
+Wine helper 的程序集名为 `Groot.Wine.Helper`，使用 `wine-deploy` 协调更新 helper 与服务端。
+
 开发环境使用 Bun、groot-cli、JDK 25、Scala CLI 和 curl；
-通过 `groot-cli use-jdk --version 25 --command '…'` 选择 JDK 并执行命令，需要可访问 Sprout HTTP 服务。
+通过 `groot-cli use-jdk --version 25 --command '…'` 选择 JDK 并执行命令，需要可访问 Groot HTTP 服务。
 Native 编译还需要 Clang 和 libcurl 等开发库，
 `cli-deploy` 会在需要时准备用户级工具链缓存。所有流程直接定义在 `jobs.yaml` 中。
 
@@ -86,13 +92,13 @@ Windows EXE 一次性执行、原生/.NET/COM 库函数调用见 [docs/wine.md](
 ```sh
 groot-cli --help
 groot-cli health
-groot-cli schedule new --name hello --body '{"script":"/home/user/.config/sprout/scripts/hello.js","every":"1h"}'
+groot-cli schedule new --name hello --body '{"script":"/home/user/.config/groot/scripts/hello.js","every":"1h"}'
 groot-cli jobs --job build --parallel 2
 ```
 
 服务端固定监听 `0.0.0.0:18080`，不读取端口环境变量；CLI 和插件默认连接
-`http://127.0.0.1:18080`。客户端可用 `SPROUT_PORT` 覆盖默认端口，或通过
-`SPROUT_BASE_URL` 指定完整的 HTTP(S) 地址。CLI 每次从服务端加载 `/openapi.json`，帮助中的程序名
+`http://127.0.0.1:18080`。客户端可用 `GROOT_PORT` 覆盖默认端口，或通过
+`GROOT_BASE_URL` 指定完整的 HTTP(S) 地址。CLI 每次从服务端加载 `/openapi.json`，帮助中的程序名
 取调用文件/软链接的原始名称。
 
 CLI 对服务端声明的字符串参数 `cwd` 自动传入本机当前目录的绝对路径，并隐藏对应的命令行参数。
@@ -145,7 +151,7 @@ Code Mode 和 GraalJS 使用相同的参数规则，由命令声明自动映射�
 // 普通参数直接放在顶层；混合参数时保留 body。
 await tools.schedule.new({
   name: "example",
-  body: {every: "5m", script: "/home/user/.config/sprout/scripts/hello.js", enabled: false}
+  body: {every: "5m", script: "/home/user/.config/groot/scripts/hello.js", enabled: false}
 });
 await tools.schedule.log({name: "example", lines: 20});
 
@@ -171,7 +177,7 @@ await tools.schedule.config.write(config);
 ```json
 {
   "every": "5m",
-  "script": "/home/user/.config/sprout/scripts/health.js",
+  "script": "/home/user/.config/groot/scripts/health.js",
   "cpu": "1s",
   "timeout": "30s",
   "retry": {"maxRetries": 3, "delay": "1s", "backoff": 2, "maxDelay": "30s"},
@@ -339,7 +345,7 @@ const removed = (await tools.state.clear({key})).body; // 存在并删除返回 
 
 - `set` 创建或覆盖值，成功响应无正文；空字符串按原样保存，与不存在的 `null` 区分。
 - 键为 1–128 个字符，不含 NUL；值最大 64 KiB（UTF-8），支持多行和 Unicode，不做 trim 或 JSON 转换。
-- 默认存储在 `$SPROUT_HOME/state/state.sqlite3`（默认 `~/.config/sprout/state/state.sqlite3`）。
+- 默认存储在 `$GROOT_HOME/state/state.sqlite3`（默认 `~/.config/groot/state/state.sqlite3`）。
   单次操作原子提交，跨任务、周期、重试和服务重启保留；任务失败或被取消不会撤销已经提交的状态。
 - 并发覆盖同一键时，最后提交的值生效；多个 `get/set` 调用组合不构成事务。
 
@@ -395,7 +401,7 @@ groot-cli graaljs notify-on-finish --id gjs_xxx
 `list` 只返回 `queued/running/cancelling`，结束任务仍能按 ID 查询。
 CPU 超限、超时、内存超限和脚本异常分别记录明确的错误码。
 
-日志写入 `$SPROUT_HOME/graaljs/logs/<id>.log`；`SPROUT_HOME` 默认是 `~/.config/sprout`。
+日志写入 `$GROOT_HOME/graaljs/logs/<id>.log`；`GROOT_HOME` 默认是 `~/.config/groot`。
 `logs` 返回当前快照字符串；`logs-follow` 按行通过 SSE 回放并追踪文件，结束后输出摘要并关闭流。
 UTF-8 字符跨写入块也能正确处理；断开日志连接只停止订阅，任务继续运行。
 
@@ -409,7 +415,7 @@ UTF-8 字符跨写入块也能正确处理；断开日志连接只停止订阅�
 `elapsedTimeMs` 是提交入队以来的总耗时，`runTimeMs` 是实际运行阶段耗时，正常运行中用单调时钟计时。
 未执行或异常重启后无法恢复的 CPU 数据为 `null`。
 
-任务状态、限制、时间、错误和源码快照保存到 `$SPROUT_HOME/graaljs/tasks.sqlite3`，SQLite 使用 WAL。
+任务状态、限制、时间、错误和源码快照保存到 `$GROOT_HOME/graaljs/tasks.sqlite3`，SQLite 使用 WAL。
 退出时终止活动任务；启动时将遗留的未完成任务标记为 `interrupted`，不自动重跑。
 日志和历史记录保留在本地；同一数据目录只允许一个服务实例持有。
 `notify-on-finish` 已注册，当前返回 `501 not_implemented`。
@@ -499,7 +505,7 @@ HTTP 行为参考 [Code Mode fetch](https://github.com/anomalyco/opencode/blob/d
 
 `server/src/main/scala/groot/fs/FsRoutes.scala` 声明普通 `commands("fs")` 命令组，并设置
 `exposeOn(graaljs)`。通用 SDK 按声明生成 `tools.fs.*`，OpenAPI 发布暴露信息，公共 HTTP 路由与
-CLI、Code Mode 目录按声明过滤。操作使用 **Sprout 服务端的绝对路径**和服务进程的系统权限。
+CLI、Code Mode 目录按声明过滤。操作使用 **Groot 服务端的绝对路径**和服务进程的系统权限。
 
 | 命令 | 输入 | 成功响应的 `body` |
 | --- | --- | --- |
@@ -571,8 +577,8 @@ groot-cli sqlite env delete --name scratch
 - `delete` 只删除名称绑定，保留数据库文件。正在执行的调用可以完成；后续按旧名称访问返回 404。
   可以使用返回过的 `path` 重新导入数据库；再次 `add` 同名环境会创建一个新的空文件。
 - 环境名允许 Unicode，最多 128 个字符。托管文件使用随机文件名，不将环境名解释为路径。
-- 注册表为 `$SPROUT_HOME/sqlite/environments.sqlite3`，托管数据库位于
-  `$SPROUT_HOME/sqlite/databases/`。注册表持久化，同一目录只允许一个服务实例持有。
+- 注册表为 `$GROOT_HOME/sqlite/environments.sqlite3`，托管数据库位于
+  `$GROOT_HOME/sqlite/databases/`。注册表持久化，同一目录只允许一个服务实例持有。
   已注册的数据库文件如果消失，执行报错，不会自动创建替代文件。
 
 Code Mode 和 GraalJS 使用相同的调用：

@@ -35,7 +35,7 @@ await tools.widget.delete({key: "download"});
 
 ## 状态与协议
 
-`$SPROUT_HOME/widget/widget.sqlite3` 是内容及共享外观配置的持久化真源，使用 SQLite WAL、FULL 同步和进程所有权锁。窗口位置仅在各设备本地持久化。
+`$GROOT_HOME/widget/widget.sqlite3` 是内容及共享外观配置的持久化真源，使用 SQLite WAL、FULL 同步和进程所有权锁。窗口位置仅在各设备本地持久化。
 items、settings、revision 作为一个快照原子提交，成功后才通知订阅者。无需 Redis。
 
 ```http

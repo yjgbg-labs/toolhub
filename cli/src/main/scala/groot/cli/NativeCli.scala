@@ -1,4 +1,4 @@
-package sprout.cli
+package groot.cli
 
 import _root_.sttp.client4.DefaultSyncBackend
 
@@ -6,8 +6,8 @@ import _root_.sttp.client4.DefaultSyncBackend
 object NativeCli:
   def main(args: Array[String]): Unit =
     val exitCode = try
-      val base = sys.env.get("SPROUT_BASE_URL").filter(_.nonEmpty)
-        .getOrElse("http://127.0.0.1:" + sys.env.get("SPROUT_PORT").filter(_.nonEmpty).getOrElse("18080"))
+      val base = sys.env.get("GROOT_BASE_URL").filter(_.nonEmpty)
+        .getOrElse("http://127.0.0.1:" + sys.env.get("GROOT_PORT").filter(_.nonEmpty).getOrElse("18080"))
       val backend = DefaultSyncBackend()
       val result = try
         val transport = new HttpTransport(backend, base, event => {

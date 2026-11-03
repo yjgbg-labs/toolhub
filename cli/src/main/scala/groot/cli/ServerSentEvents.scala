@@ -1,4 +1,4 @@
-package sprout.cli
+package groot.cli
 
 import java.io.{BufferedReader, InputStream, InputStreamReader}
 import java.nio.charset.StandardCharsets.UTF_8

@@ -1,4 +1,4 @@
-package sprout.cli
+package groot.cli
 
 import _root_.sttp.client4.*
 import _root_.sttp.model.{Method, Uri}

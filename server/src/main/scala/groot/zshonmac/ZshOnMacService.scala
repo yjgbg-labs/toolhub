@@ -101,7 +101,7 @@ object ZshOnMacService:
     umask 077
     token=__TOKEN__
     length=__LENGTH__
-    directory=$(/usr/bin/getconf DARWIN_USER_TEMP_DIR)/sprout-zsh-on-mac-$token
+    directory=$(/usr/bin/getconf DARWIN_USER_TEMP_DIR)/groot-zsh-on-mac-$token
     /bin/mkdir -p "$directory" || exit 1
     pgid=$(/bin/ps -p $$ -o pgid=)
     if [[ ${pgid//[[:space:]]/} != $$ ]]; then
@@ -132,7 +132,7 @@ object ZshOnMacService:
   private[zshonmac] def cancellation(token: String): String = """
     umask 077
     token=__TOKEN__
-    directory=$(/usr/bin/getconf DARWIN_USER_TEMP_DIR)/sprout-zsh-on-mac-$token
+    directory=$(/usr/bin/getconf DARWIN_USER_TEMP_DIR)/groot-zsh-on-mac-$token
     /bin/mkdir -p "$directory" || exit 1
     : > "$directory/cancel"
     if [[ -f "$directory/process" ]]; then

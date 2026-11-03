@@ -27,7 +27,7 @@ final class ServerScope private[framework] (private[framework] val gate: Configu
   private[framework] var maxBodyBytesValue = 1024L * 1024L
 
 final class InfoScope private[framework] (private[framework] val gate: ConfigurationGate) extends DescriptionScope:
-  private[framework] var titleValue = "Sprout HTTP"
+  private[framework] var titleValue = "Groot HTTP"
   private[framework] var versionValue = "0.1.0"
 
 final class OpenApiScope private[framework] (private[framework] val gate: ConfigurationGate) extends ConfigScope:

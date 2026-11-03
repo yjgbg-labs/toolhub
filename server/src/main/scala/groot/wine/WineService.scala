@@ -106,7 +106,7 @@ final class WineService private (config: WineConfig, environment: Ref[IO, Option
       env <- prepare(request.runtime, request.architecture)
       helper <- IO.blocking {
         val root = config.helper.toRealPath()
-        val path = root.resolve(if request.runtime == "framework" then s"framework-${request.architecture}/Sprout.Wine.Helper.exe" else "Sprout.Wine.Helper.dll")
+        val path = root.resolve(if request.runtime == "framework" then s"framework-${request.architecture}/Groot.Wine.Helper.exe" else "Groot.Wine.Helper.dll")
         if !Files.isRegularFile(path) then throw WineFailure("wine_unavailable", "Install the invoker with wine-helper-deploy")
         path
       }

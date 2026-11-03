@@ -101,7 +101,7 @@ object BashOnR6sService:
     umask 077
     token=__TOKEN__
     length=__LENGTH__
-    directory=/tmp/sprout-bash-on-r6s-$token
+    directory=/tmp/groot-bash-on-r6s-$token
     /bin/mkdir -p "$directory" || exit 1
     pgid=$(/bin/ps -p $$ -o pgid=)
     if [[ ${pgid//[[:space:]]/} != $$ ]]; then
@@ -132,7 +132,7 @@ object BashOnR6sService:
   private[bashonr6s] def cancellation(token: String): String = """
     umask 077
     token=__TOKEN__
-    directory=/tmp/sprout-bash-on-r6s-$token
+    directory=/tmp/groot-bash-on-r6s-$token
     /bin/mkdir -p "$directory" || exit 1
     : > "$directory/cancel"
     if [[ -f "$directory/process" ]]; then

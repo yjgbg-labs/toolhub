@@ -53,7 +53,7 @@ private[wine] object WineProcess:
 
   def run(command: Vector[String], env: Map[String, String], cwd: Path, input: Path,
       logState: cats.effect.Ref[IO, (String, String)]): IO[WineExecResult] =
-    val unit = "sprout-wine-call-" + UUID.randomUUID().toString + ".service"
+    val unit = "groot-wine-call-" + UUID.randomUUID().toString + ".service"
     val args = Vector("systemd-run", "--user", "--quiet", "--wait", "--pipe", "--collect", "--service-type=exec",
       "--expand-environment=no", s"--unit=$unit", "--property=KillMode=control-group", "--property=TimeoutStopSec=1s",
       "--property=UnsetEnvironment=WAYLAND_DISPLAY", s"--working-directory=$cwd") ++

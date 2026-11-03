@@ -108,7 +108,7 @@ object PowerShellService:
     $ProgressPreference = 'SilentlyContinue'
     [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
     $OutputEncoding = [Console]::OutputEncoding
-    $directory = Join-Path ([IO.Path]::GetTempPath()) 'sprout-powershell-__TOKEN__'
+    $directory = Join-Path ([IO.Path]::GetTempPath()) 'groot-powershell-__TOKEN__'
     $path = Join-Path $directory 'script.ps1'
     $pidPath = Join-Path $directory 'process.json'
     $cancelPath = Join-Path $directory 'cancel'
@@ -147,7 +147,7 @@ object PowerShellService:
   // Verify creation time before taskkill so a recycled Windows PID cannot select an unrelated process.
   private[powershell] def cancellation(token: String): String = """
     $ErrorActionPreference = 'Stop'
-    $directory = Join-Path ([IO.Path]::GetTempPath()) 'sprout-powershell-__TOKEN__'
+    $directory = Join-Path ([IO.Path]::GetTempPath()) 'groot-powershell-__TOKEN__'
     [IO.Directory]::CreateDirectory($directory) | Out-Null
     [IO.File]::WriteAllText((Join-Path $directory 'cancel'), '')
     $pidPath = Join-Path $directory 'process.json'

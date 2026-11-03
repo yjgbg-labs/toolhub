@@ -112,8 +112,8 @@ class Store(val home: Path):
     })(channel => IO.blocking(channel.close())).void
 
 object Store:
-  def defaultHome: Path = Path.of(sys.env.getOrElse("SPROUT_HOME",
-    Path.of(sys.env.getOrElse("XDG_CONFIG_HOME", Path.of(sys.props("user.home"), ".config").toString), "sprout").toString))
+  def defaultHome: Path = Path.of(sys.env.getOrElse("GROOT_HOME",
+    Path.of(sys.env.getOrElse("XDG_CONFIG_HOME", Path.of(sys.props("user.home"), ".config").toString), "groot").toString))
 
   // Match encodeURIComponent used by Groot, including UTF-8 and escaped slash names.
   def fileName(name: String): String = name.getBytes(UTF_8).map { byte =>

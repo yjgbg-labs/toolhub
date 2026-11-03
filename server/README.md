@@ -473,7 +473,7 @@ in-process requests and `app.openApiJson` for the generated contract.
 
 ## Migration
 
-Replace legacy `sprout` DSL imports with `framework.httpDsl.*` or
+Replace legacy application DSL imports with `framework.httpDsl.*` or
 `framework.rpcDsl.*`, and import types from the packages above. HTTP routes
 retain their explicit method and path APIs. For RPC, remove the outer `routes`
 or `commands()` container; `httpApp` supplies the root command context. Rename

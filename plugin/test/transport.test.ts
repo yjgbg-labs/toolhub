@@ -17,7 +17,7 @@ const second = serve("second");
 afterAll(async () => { await Promise.all([first.stop(true), second.stop(true)]); });
 
 test("plugin clients use the local TCP port and support independent URL overrides", async () => {
-  const env = { SPROUT_PORT: String(first.port) };
+  const env = { GROOT_PORT: String(first.port) };
   const firstClient = await ApiClient.connect({ baseUrl: defaultBaseUrl(env) });
   const secondClient = await ApiClient.connect({ baseUrl: second.url.href });
   expect((await firstClient.call("health")).body).toBe("first");

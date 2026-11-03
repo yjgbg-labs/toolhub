@@ -136,10 +136,10 @@ await tools.wine.call({
 EXE 由 Scala 直接启动 Wine；库函数由一次性 C# 调用器执行：
 
 ```text
-wine dotnet.exe Sprout.Wine.Helper.dll --request request.json --result result.json
+wine dotnet.exe Groot.Wine.Helper.dll --request request.json --result result.json
 ```
 
-net48 版本直接运行 `Sprout.Wine.Helper.exe`。请求与结果使用独立文件，程序 stdout/stderr 不参与协议。
+net48 版本直接运行 `Groot.Wine.Helper.exe`。请求与结果使用独立文件，程序 stdout/stderr 不参与协议。
 服务端自动管理一个私有 Xvfb 显示和 `$WINE_HOME/prefix`，按需初始化并复用，退出服务时清理 Wine 进程。
 运行依赖 Linux user systemd（部署服务本身也由 user systemd 管理），无需 sudo。
 

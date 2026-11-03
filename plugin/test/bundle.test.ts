@@ -15,7 +15,7 @@ test("the installed bundle loads outside the repository and executes dynamically
     });
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     expect(code, stdout + stderr).toBe(0);
-    const { default: plugin } = await import(pathToFileURL(`${directory}/sprout.ts`).href);
+    const { default: plugin } = await import(pathToFileURL(`${directory}/groot.ts`).href);
     const tools: any[] = [];
     let disposed = false;
     const cleanup = await plugin.setup({ options: { baseUrl: api.baseUrl }, tool: {

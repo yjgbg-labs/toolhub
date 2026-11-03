@@ -80,7 +80,7 @@ private[chrome] final class ChromeStore(val home: Path):
   yield process
 
 private[chrome] object ChromeStore:
-  def defaultHome: Path = Path.of(sys.env.getOrElse("CHROME_HOME", s"${System.getProperty("user.home")}/sprout-chrome")).toAbsolutePath.normalize()
+  def defaultHome: Path = Path.of(sys.env.getOrElse("CHROME_HOME", s"${System.getProperty("user.home")}/groot-chrome")).toAbsolutePath.normalize()
   def resource(home: Path): Resource[IO, ChromeStore] = Resource.make(IO.blocking {
     Files.createDirectories(home.resolve("instances"))
     Files.createDirectories(home.resolve("screenshots"))

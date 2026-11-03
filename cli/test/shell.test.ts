@@ -21,7 +21,7 @@ async function fixture(respond: () => Response, discovery = false) {
   } });
   const child = Bun.spawn([binary, "run"], {
     cwd: directory,
-    env: { ...process.env, SPROUT_BASE_URL: server.url.href.replace(/\/$/, ""),
+    env: { ...process.env, GROOT_BASE_URL: server.url.href.replace(/\/$/, ""),
       SHELL_FIXTURE_VALUE: '空 "quoted"', SHELL_FIXTURE_MARKER: marker },
     stdin: "pipe", stdout: "pipe", stderr: "pipe",
   });

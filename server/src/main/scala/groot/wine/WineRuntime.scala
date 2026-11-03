@@ -18,9 +18,9 @@ private[wine] case class WineConfig(home: Path, runtime: Path, helper: Path):
 private[wine] object WineConfig:
   def default: WineConfig =
     val home = System.getProperty("user.home")
-    WineConfig(Path.of(sys.env.getOrElse("WINE_HOME", s"$home/sprout-wine")),
-      Path.of(sys.env.getOrElse("WINE_RUNTIME_ROOT", s"$home/.local/share/sprout-wine/runtime")),
-      Path.of(sys.env.getOrElse("WINE_HELPER_ROOT", s"$home/.local/share/sprout-wine/helper")))
+    WineConfig(Path.of(sys.env.getOrElse("WINE_HOME", s"$home/groot-wine")),
+      Path.of(sys.env.getOrElse("WINE_RUNTIME_ROOT", s"$home/.local/share/groot-wine/runtime")),
+      Path.of(sys.env.getOrElse("WINE_HELPER_ROOT", s"$home/.local/share/groot-wine/helper")))
 private[wine] case class WineEnvironment(prefix: Path, variables: Map[String, String])
 
 private[wine] object WineRuntime:
