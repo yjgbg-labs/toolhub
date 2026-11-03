@@ -81,6 +81,7 @@ Native 编译还需要 Clang 和 libcurl 等开发库，
 ## 使用
 
 Linux Chrome 实例、标签页与页面自动化见 [docs/chrome.md](docs/chrome.md)。
+Windows EXE 一次性执行、原生/.NET/COM 库函数调用见 [docs/wine.md](docs/wine.md)。
 
 ```sh
 groot-cli --help

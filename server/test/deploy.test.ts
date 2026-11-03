@@ -34,7 +34,7 @@ exec "$REAL_CURL" "$@"
     return new Response(ready ? "ok" : "starting", { status: ready ? 200 : 503 });
   } });
   const env = {
-    ...process.env, INSTALL_ONLY: "1", CHECK_ONLY: "0", PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: log,
+    ...process.env, INSTALL_ONLY: "1", CHECK_ONLY: "0", WINE_DEPLOY_HELPER: "0", PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: log,
     SERVER_INSTALL_ROOT: join(home, "data '$ 100%"), SYSTEMD_UNIT_DIR: join(home, "units"),
     REAL_CURL: Bun.which("curl")!, TEST_HEALTH_URL: `${local.url.href}health`, SPROUT_HOME: join(home, "config"),
     SERVER_SERVICE: "groot-sprout-http.service",
