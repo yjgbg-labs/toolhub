@@ -331,8 +331,8 @@ jobs:
         fi
         export COURSIER_REPOSITORIES=https://repo.maven.apache.org/maven2
         mkdir -p cli/dist
-        groot use-jdk "$JDK_MAJOR" -- scala-cli --power package cli/project.scala cli/src/main/scala \
-          --native --native-version 0.5.12 --jvm system --server=false --main-class groot.cli.NativeCli -o cli/dist/groot-cli --force
+        groot-cli use-jdk --version "$JDK_MAJOR" --command 'scala-cli --power package cli/project.scala cli/src/main/scala \
+          --native --native-version 0.5.12 --jvm system --server=false --main-class groot.cli.NativeCli -o cli/dist/groot-cli --force'
         bun cli/test/native-cli.ts
         bun test cli/test
       fi

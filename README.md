@@ -102,11 +102,11 @@ groot-cli jobs --job build --parallel 2
 取调用文件/软链接的原始名称。
 
 CLI 对服务端声明的字符串参数 `cwd` 自动传入本机当前目录的绝对路径，并隐藏对应的命令行参数。
-该机制适用于任意命令；用户无需提供 `cwd`，也不能通过参数或 `--input` 覆盖它。
+该机制适用于任意命令；用户无需提供 `cwd`，也不能通过参数覆盖它。
 
 请求体按 OpenAPI 选择格式：`application/json` 使用 JSON，`text/plain` 使用 UTF-8 原文。
 `--body` 直接传对应内容，也支持 `@文件` 或 `-` 从本机文件/标准输入读取。
-`--input` 始终是完整参数的 JSON 对象，纯文本请求体放在字符串 `body` 字段中。
+普通参数使用 `--参数名`；存在同名参数时，使用 `--query.name`、`--header.name` 等位置限定形式。
 CLI 与插件在同时声明两种格式时优先选择 JSON；纯文本请求体要求 string schema。
 
 CLI 遇到成功响应的 `Content-Type: text/event-stream` 时，会像 `tail -f` 一样
