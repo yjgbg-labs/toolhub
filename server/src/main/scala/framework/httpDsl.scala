@@ -4,6 +4,9 @@ import cats.effect.IO
 import framework.http.*
 import framework.runtime.Application
 import io.circe.Json
+import org.http4s.{Header, Method, Query, Uri}
+import org.http4s.headers.Origin
+import scala.concurrent.duration.*
 import scala.util.matching.Regex
 
 object httpDsl:
@@ -34,6 +37,58 @@ object httpDsl:
   def maxBodyBytes(value: Long)(using scope: ServerScope): Unit =
     scope.gate.check()
     scope.maxBodyBytesValue = value
+
+  def cors(init: CorsScope ?=> Unit)(using scope: ServerScope): Unit =
+    scope.gate.check()
+    require(scope.corsScope.isEmpty, "Duplicate CORS declaration")
+    val config = new CorsScope(scope.gate)
+    scope.corsScope = Some(config)
+    init(using config)
+
+  private def corsValues(first: String, rest: Seq[String]): Set[String] =
+    val values = (first +: rest).toSet
+    require(!values.contains("*") || values.size == 1, "CORS wildcard must be used alone")
+    values
+
+  def allowOrigins(first: String, rest: String*)(using scope: CorsScope): Unit =
+    scope.gate.check()
+    val values = corsValues(first, rest)
+    values.foreach { value =>
+      require(value == "*" || value == "null" || Uri.fromString(value).exists { uri =>
+        uri.scheme.nonEmpty && uri.authority.exists(_.userInfo.isEmpty) &&
+          uri.path.isEmpty && uri.query == Query.empty && uri.fragment.isEmpty &&
+          Origin.parse(value).exists(origin => Header[Origin].value(origin) == value)
+      }, s"Invalid CORS origin: $value")
+    }
+    scope.allowedOriginsValue = values
+
+  def allowMethods(first: String, rest: String*)(using scope: CorsScope): Unit =
+    scope.gate.check()
+    val values = corsValues(first, rest)
+    values.foreach(value => require(Method.fromString(value).isRight, s"Invalid CORS method: $value"))
+    scope.allowedMethodsValue = values
+
+  private def corsHeaders(first: String, rest: Seq[String]): Set[String] =
+    val values = corsValues(first, rest)
+    values.foreach(value => require(value.matches("[!#$%&'*+.^_`|~0-9A-Za-z-]+"), s"Invalid CORS header: $value"))
+    values
+
+  def allowHeaders(first: String, rest: String*)(using scope: CorsScope): Unit =
+    scope.gate.check()
+    scope.allowedHeadersValue = corsHeaders(first, rest)
+
+  def exposeHeaders(first: String, rest: String*)(using scope: CorsScope): Unit =
+    scope.gate.check()
+    scope.exposedHeadersValue = corsHeaders(first, rest)
+
+  def allowCredentials(value: Boolean)(using scope: CorsScope): Unit =
+    scope.gate.check()
+    scope.allowCredentialsValue = value
+
+  def maxAge(value: FiniteDuration)(using scope: CorsScope): Unit =
+    scope.gate.check()
+    require(value >= Duration.Zero, "CORS max age must not be negative")
+    scope.maxAgeValue = value
 
   def openapi(init: OpenApiScope ?=> Unit)(using app: AppScope): Unit =
     app.gate.check()

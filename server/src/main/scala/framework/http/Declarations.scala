@@ -3,8 +3,17 @@ package framework.http
 import cats.effect.IO
 import framework.Client
 import io.circe.Json
+import scala.concurrent.duration.FiniteDuration
 
-final case class ServerSettings(host: String, port: Int, maxBodyBytes: Long)
+final case class ServerSettings(host: String, port: Int, maxBodyBytes: Long, cors: Option[CorsSettings] = None)
+final case class CorsSettings(
+    allowedOrigins: Set[String],
+    allowedMethods: Set[String],
+    allowedHeaders: Set[String],
+    exposedHeaders: Set[String],
+    allowCredentials: Boolean,
+    maxAge: FiniteDuration
+)
 final case class OpenApiSettings(endpoint: String, title: String, version: String, description: Option[String])
 
 private[framework] final case class ScopeDecl(

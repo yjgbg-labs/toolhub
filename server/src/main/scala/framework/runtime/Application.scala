@@ -44,7 +44,9 @@ final class Application private[framework] (
     }
   }
 
-  val httpApp: HttpApp[IO] = httpHandler(dispatch)
+  val httpApp: HttpApp[IO] =
+    val handler = httpHandler(dispatch)
+    serverSettings.cors.fold(handler)(Cors(_, handler))
 
   val endpoints: Vector[Endpoint] = ordered.map { endpoint =>
     val spec = endpoint.spec
