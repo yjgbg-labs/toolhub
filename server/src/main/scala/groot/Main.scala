@@ -16,6 +16,7 @@ import groot.powershell.{PowerShellRoutes, PowerShellService}
 import groot.zshonmac.{ZshOnMacRoutes, ZshOnMacService}
 import groot.bashonr6s.{BashOnR6sRoutes, BashOnR6sService}
 import groot.chrome.{ChromeRoutes, ChromeService}
+import groot.wine.{WineRoutes, WineService}
 
 object Main extends IOApp.Simple:
   def run: IO[Unit] = (for
@@ -28,9 +29,10 @@ object Main extends IOApp.Simple:
     zshOnMac <- ZshOnMacService.resource()
     bashOnR6s <- BashOnR6sService.resource()
     chrome <- ChromeService.resource()
+    wine <- WineService.resource()
     graaljs <- GraalManager.resource(commands = commands.get)
     scheduler <- Scheduler.resource(graaljs, startLoop = false)
-  yield (scheduler, sqlite, fetch, widget, state, powershell, zshOnMac, bashOnR6s, chrome, graaljs, commands)).use { (scheduler, sqlite, fetch, widget, state, powershell, zshOnMac, bashOnR6s, chrome, graaljs, commands) =>
+  yield (scheduler, sqlite, fetch, widget, state, powershell, zshOnMac, bashOnR6s, chrome, wine, graaljs, commands)).use { (scheduler, sqlite, fetch, widget, state, powershell, zshOnMac, bashOnR6s, chrome, wine, graaljs, commands) =>
     val app = httpApp {
       server {
         host("0.0.0.0")
@@ -59,6 +61,7 @@ object Main extends IOApp.Simple:
       ZshOnMacRoutes.register(zshOnMac)
       BashOnR6sRoutes.register(bashOnR6s)
       ChromeRoutes.register(chrome)
+      WineRoutes.register(wine)
       command[PlainText]("health") {
         handle { IO.pure(PlainText("ok")) }
       }

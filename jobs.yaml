@@ -1,5 +1,67 @@
 version: 1
 jobs:
+  - name: wine-install
+    run: |
+      set -eu
+      set -a
+      . ./config.env
+      set +a
+      bun wine/scripts/install.ts
+
+  - name: wine-build
+    needs: [wine-install]
+    run: |
+      set -eu
+      set -a
+      . ./config.env
+      set +a
+      "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/helper/Helper.csproj -f net10.0 -c Release -o wine/dist/helper
+      "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/fixture/Fixture.csproj -f net10.0 -c Release -o wine/dist/fixture
+      for arch in x64 x86; do
+        "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/helper/Helper.csproj -f net48 -c Release -p:Platform=$arch -p:PlatformTarget=$arch -o wine/dist/helper/framework-$arch
+      done
+      "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/fixture/Fixture.csproj -f net48 -c Release -o wine/dist/fixture-framework
+
+  - name: wine-helper-test
+    needs: [wine-build]
+    run: |
+      set -eu
+      set -a
+      . ./config.env
+      set +a
+      bun wine/scripts/helper-test.ts
+
+  - name: wine-server-test
+    run: |
+      set -eu
+      set -a
+      . ./config.env
+      set +a
+      export COURSIER_REPOSITORIES=https://repo.maven.apache.org/maven2
+      export WINE_HELPER_ROOT="$PWD/wine/dist/helper"
+      groot-cli use-jdk --version "$JDK_MAJOR" --command 'scala-cli test server/project.scala server/src --jvm system --server=false --test-only groot.wine.WineSuite'
+
+  - name: wine-test
+    needs: [wine-helper-test]
+    run: |
+      set -eu
+      WINE_TEST=1 groot-cli jobs --job wine-server-test
+
+  - name: wine-helper-deploy
+    needs: [wine-test]
+    run: |
+      set -eu
+      set -a
+      . ./config.env
+      set +a
+      bun wine/scripts/deploy.ts
+
+  - name: wine-deploy
+    needs: [wine-helper-deploy]
+    run: |
+      set -eu
+      groot-cli jobs --job server-deploy
+
   - name: chrome-test
     run: |
       set -eu
@@ -122,6 +184,9 @@ jobs:
       Environment=$(quote "CHROME_BINARY=$CHROME_BINARY")
       Environment=$(quote "CHROME_DISPLAY=$CHROME_DISPLAY")
       Environment=$(quote "CHROME_WAYLAND_DISPLAY=$CHROME_WAYLAND_DISPLAY")
+      Environment=$(quote "WINE_HOME=$WINE_HOME")
+      Environment=$(quote "WINE_RUNTIME_ROOT=$WINE_RUNTIME_ROOT")
+      Environment=$(quote "WINE_HELPER_ROOT=$WINE_HELPER_ROOT")
       ExecStart=$(exec_quote "$groot") use-jdk "$JDK_MAJOR" -- java --enable-native-access=ALL-UNNAMED -XX:ActiveProcessorCount=4 -jar $(exec_quote "$target")
       UMask=0077
       Restart=on-failure
