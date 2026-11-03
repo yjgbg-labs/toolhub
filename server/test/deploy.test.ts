@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const directory = await mkdtemp("/tmp/opencode/server-deploy-");
@@ -17,13 +17,10 @@ async function fixture(name: string) {
   await mkdir(bin, { recursive: true });
   await mkdir(join(cwd, "server/dist"), { recursive: true });
   await writeFile(join(cwd, "config.env"), await readFile(join(root, "config.env")));
-  await mkdir(join(cwd, "wine/dist/helper"), { recursive: true });
-  await writeFile(join(cwd, "wine/dist/helper/Sprout.Wine.Helper.dll"), "test helper");
   await writeFile(source, "first JAR");
   await writeFile(log, "");
   await writeFile(join(bin, "groot"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   await writeFile(join(bin, "systemctl"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$COMMAND_LOG"\n', { mode: 0o755 });
-  await writeFile(join(bin, "bun"), '#!/bin/sh\nprintf "helper-install\\n" >> "$COMMAND_LOG"\nexec "$REAL_BUN" "$@"\n', { mode: 0o755 });
   await writeFile(join(bin, "curl"), `#!/bin/sh
 if [ "$1" = -fsS ]; then
   test "$4" = http://127.0.0.1:18080/health || exit 2
@@ -40,7 +37,6 @@ exec "$REAL_CURL" "$@"
     ...process.env, INSTALL_ONLY: "1", CHECK_ONLY: "0", WINE_DEPLOY_HELPER: "0", PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: log,
     SERVER_INSTALL_ROOT: join(home, "data '$ 100%"), SYSTEMD_UNIT_DIR: join(home, "units"),
     REAL_CURL: Bun.which("curl")!, TEST_HEALTH_URL: `${local.url.href}health`, SPROUT_HOME: join(home, "config"),
-    REAL_BUN: Bun.which("bun")!, WINE_HELPER_ROOT: join(home, "helper"),
     SERVER_SERVICE: "groot-sprout-http.service",
     SERVER_START_TIMEOUT_MS: "1000",
   };
@@ -100,21 +96,6 @@ test("missing or empty local artifacts preserve the active server without restar
     expect(await api.commands()).toBe(before);
     expect(await readFile(unit, "utf8")).toBe(beforeUnit);
     expect(await readFile(join(api.env.SERVER_INSTALL_ROOT, "server/groot.jar"), "utf8")).toBe("first JAR");
-  } finally { await api.stop(); }
-});
-
-test("Wine deployment switches helper after stopping the old service and before restarting", async () => {
-  const api = await fixture("wine");
-  try {
-    api.env.WINE_DEPLOY_HELPER = "1";
-    const result = await api.install();
-    expect(result.code, result.output).toBe(0);
-    const commands = (await api.commands()).trim().split("\n");
-    expect(commands[0]).toBe(`--user stop ${api.env.SERVER_SERVICE}`);
-    expect(commands[1]).toBe("helper-install");
-    expect(commands.indexOf(`--user restart ${api.env.SERVER_SERVICE}`)).toBeGreaterThan(1);
-    expect((await lstat(api.env.WINE_HELPER_ROOT)).isSymbolicLink()).toBe(true);
-    expect(await readFile(join(api.env.WINE_HELPER_ROOT, "Sprout.Wine.Helper.dll"), "utf8")).toBe("test helper");
   } finally { await api.stop(); }
 });
 

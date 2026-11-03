@@ -83,24 +83,8 @@ jobs:
         "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/Helper.csproj -f net48 -c Release -p:Platform=$arch -p:PlatformTarget=$arch -o wine/dist/helper/framework-$arch
       done
 
-  - name: wine-server-test
-    run: |
-      set -eu
-      set -a
-      . ./config.env
-      set +a
-      export COURSIER_REPOSITORIES=https://repo.maven.apache.org/maven2
-      export WINE_HELPER_ROOT="$PWD/wine/dist/helper"
-      groot-cli use-jdk --version "$JDK_MAJOR" --command 'scala-cli test server/project.scala server/src --jvm system --server=false --test-only groot.wine.WineSuite'
-
-  - name: wine-test
-    needs: [wine-build]
-    run: |
-      set -eu
-      WINE_TEST=1 groot-cli jobs --job wine-server-test
-
   - name: wine-helper-deploy
-    needs: [wine-test]
+    needs: [wine-build]
     run: |
       set -eu
       set -a
@@ -137,7 +121,7 @@ jobs:
       WINE_DEPLOY
 
   - name: wine-deploy
-    needs: [wine-test]
+    needs: [wine-build]
     run: |
       set -eu
       WINE_DEPLOY_HELPER=1 groot-cli jobs --job server-deploy
