@@ -6,7 +6,70 @@ jobs:
       set -a
       . ./config.env
       set +a
-      bun wine/scripts/install.ts
+      bun - <<'WINE_INSTALL'
+      import {mkdir, readdir, rename, symlink, copyFile} from "node:fs/promises";
+      import {join} from "node:path";
+      import {createHash} from "node:crypto";
+
+      const root = process.env.WINE_RUNTIME_ROOT!;
+      if (!root?.startsWith("/")) throw Error("WINE_RUNTIME_ROOT must be absolute");
+      const cache = join(root, "packages");
+      await mkdir(cache, {recursive: true});
+      async function run(args: string[], cwd = root) {
+        const child = Bun.spawn(args, {cwd, stdout: "inherit", stderr: "inherit"});
+        if (await child.exited !== 0) throw Error(`Failed: ${args.join(" ")}`);
+      }
+      // Download and unpack against host apt metadata without system package changes.
+      if (!await Bun.file(join(root, "apt-ready")).exists()) {
+        const wanted = ["wine64", "wine", "xvfb"];
+        const simulation = Bun.spawnSync(["apt-get", "-s", "install", "--no-install-recommends", ...wanted], {env: {...process.env, LC_ALL: "C"}});
+        if (simulation.exitCode) throw Error(simulation.stderr.toString());
+        const packages = [...new Set([...wanted, "libwine", "wine-common", "libz-mingw-w64", "xserver-common",
+          ...[...simulation.stdout.toString().matchAll(/^Inst (\S+)/gm)].map(m => m[1])])];
+        await run(["apt-get", "download", ...packages], cache);
+        for (const file of await readdir(cache)) if (file.endsWith(".deb")) await run(["dpkg-deb", "-x", join(cache, file), root]);
+        await Bun.write(join(root, "apt-ready"), packages.join("\n"));
+      }
+      // Debian's configured datadir already ends in wine; the relocated lookup appends wine again.
+      await symlink(".", join(root, "usr/share/wine/wine")).catch(error => { if (error.code !== "EEXIST") throw error; });
+      for (const [arch, toolchain] of [["x86_64", "x86_64"], ["i386", "i686"]]) {
+        await copyFile(join(root, `usr/${toolchain}-w64-mingw32/lib/zlib1.dll`), join(root, `usr/lib/x86_64-linux-gnu/wine/${arch}-windows/zlib1.dll`));
+      }
+      const manifest = await (await fetch("https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json")).json() as any;
+      async function install(directory: string, entry: {url: string, hash: string}) {
+        if (await Bun.file(join(root, directory, ".version")).text().catch(() => "") === entry.url) return;
+        const archive = join(cache, entry.url.split("/").at(-1)!);
+        if (!await Bun.file(archive).exists()) {
+          await run(["curl", "-fsSL", "--retry", "3", "-o", archive + ".tmp", entry.url]);
+          await rename(archive + ".tmp", archive);
+        }
+        const hash = createHash("sha512");
+        for await (const chunk of Bun.file(archive).stream()) hash.update(chunk);
+        if (hash.digest("hex") !== entry.hash.toLowerCase()) throw Error(`SHA-512 mismatch: ${archive}`);
+        const target = join(root, directory);
+        await mkdir(target, {recursive: true});
+        await run(archive.endsWith(".zip") ? ["unzip", "-qo", archive, "-d", target] : ["tar", "-xzf", archive, "-C", target]);
+        await Bun.write(join(target, ".version"), entry.url);
+      }
+      const sdk = manifest.releases.flatMap((r: any) => r.sdks ?? [r.sdk]).find((s: any) => s.version === process.env.WINE_DOTNET_SDK);
+      const runtime = manifest.releases.find((r: any) => r.runtime?.version === process.env.WINE_DOTNET_RUNTIME)?.runtime;
+      if (!sdk || !runtime) throw Error("Pinned .NET release not found in official manifest");
+      await Promise.all([
+        install("sdk", sdk.files.find((f: any) => f.name === "dotnet-sdk-linux-x64.tar.gz")),
+        install("dotnet-x64", runtime.files.find((f: any) => f.name === "dotnet-runtime-win-x64.zip")),
+        install("dotnet-x86", runtime.files.find((f: any) => f.name === "dotnet-runtime-win-x86.zip")),
+      ]);
+      // Pinned digest from Wine 10.0's dlls/appwiz.cpl/addons.c.
+      const mono = join(root, "wine-mono-9.4.0-x86.msi");
+      if (!await Bun.file(mono).exists()) {
+        await run(["curl", "-fsSL", "--retry", "3", "-o", mono + ".tmp", "https://dl.winehq.org/wine/wine-mono/9.4.0/wine-mono-9.4.0-x86.msi"]);
+        await rename(mono + ".tmp", mono);
+      }
+      const monoHash = createHash("sha256");
+      for await (const chunk of Bun.file(mono).stream()) monoHash.update(chunk);
+      if (monoHash.digest("hex") !== "cf6173ae94b79e9de13d9a74cdb2560a886fc3d271f9489acb1cfdbd961cacb2") throw Error("Wine Mono MSI checksum mismatch");
+      console.log(`Wine and .NET installed in ${root}`);
+      WINE_INSTALL
 
   - name: wine-build
     needs: [wine-install]
@@ -16,11 +79,9 @@ jobs:
       . ./config.env
       set +a
       "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/Helper.csproj -f net10.0 -c Release -o wine/dist/helper
-      "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/fixture/Fixture.csproj -f net10.0 -c Release -o wine/dist/fixture
       for arch in x64 x86; do
         "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/Helper.csproj -f net48 -c Release -p:Platform=$arch -p:PlatformTarget=$arch -o wine/dist/helper/framework-$arch
       done
-      "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/fixture/Fixture.csproj -f net48 -c Release -o wine/dist/fixture-framework
 
   - name: wine-helper-test
     needs: [wine-build]
@@ -29,7 +90,153 @@ jobs:
       set -a
       . ./config.env
       set +a
-      bun wine/scripts/helper-test.ts
+      mkdir -p wine/dist/test-source
+      cat > wine/dist/test-source/Fixture.csproj <<'WINE_TEST_PROJECT'
+      <Project Sdk="Microsoft.NET.Sdk">
+        <PropertyGroup>
+          <OutputType>Exe</OutputType>
+          <UseAppHost>false</UseAppHost>
+          <TargetFrameworks>net10.0;net48</TargetFrameworks>
+          <LangVersion>latest</LangVersion>
+          <ImplicitUsings>enable</ImplicitUsings>
+          <Nullable>enable</Nullable>
+        </PropertyGroup>
+        <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+          <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
+        </ItemGroup>
+      </Project>
+      WINE_TEST_PROJECT
+      cat > wine/dist/test-source/Calculator.cs <<'WINE_TEST_SOURCE'
+      namespace Fixture;
+      public class Calculator
+      {
+          public static int Main(string[] args)
+          {
+              Console.OutputEncoding = new System.Text.UTF8Encoding(false);
+              if (args[0] == "args") {
+                  foreach (var value in args.Skip(1)) Console.WriteLine(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(value)));
+                  return 7;
+              }
+              if (args[0] == "stdin") { Console.OpenStandardInput().CopyTo(Console.OpenStandardOutput()); return 0; }
+              if (args[0] == "env") { Console.Write(Environment.GetEnvironmentVariable(args[1])); return 0; }
+              if (args[0] == "noisy") { Console.Write(new string('x',200000)); return 0; }
+              if (args[0] == "hang") { Console.WriteLine("started"); Hang(); }
+              if (args[0] == "spawn" || args[0] == "spawn-exit") {
+                  var dotnet = System.Diagnostics.Process.GetCurrentProcess().MainModule!.FileName;
+                  var assembly = typeof(Calculator).Assembly.Location;
+                  System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(dotnet, "\"" + assembly + "\" child \"" + args[1] + "\"") { UseShellExecute = false });
+                  if (args[0] == "spawn") Hang();
+                  else { Thread.Sleep(300); return 0; }
+              }
+              if (args[0] == "child") while (true) { File.AppendAllText(args[1], "x"); Thread.Sleep(50); }
+              return 0;
+          }
+          public int Total { get; set; }
+          public Calculator(int initial) { Total = initial; }
+          public int Add(int value) => Total += value;
+          public static int Sum(int a, int b) => a + b;
+          public static long Large(long value) => value;
+          public static string Echo(string value) { Console.WriteLine("fixture log: " + value); return value; }
+          public static void Fail() => throw new InvalidOperationException("fixture failure");
+          public static void Hang() => Thread.Sleep(Timeout.Infinite);
+      }
+      WINE_TEST_SOURCE
+      "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/dist/test-source/Fixture.csproj -f net10.0 -c Release -o wine/dist/fixture
+      "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/dist/test-source/Fixture.csproj -f net48 -c Release -o wine/dist/fixture-framework
+      bun - <<'WINE_TEST'
+      import {mkdtemp, mkdir, rm, copyFile} from "node:fs/promises";
+      import {resolve, join} from "node:path";
+      import {strict as assert} from "node:assert";
+
+      const root = process.env.WINE_RUNTIME_ROOT!;
+      const directory = await mkdtemp("/tmp/opencode/wine-invoker-");
+      const wine = join(root,"usr/lib/x86_64-linux-gnu/wine/wine");
+      const server = join(root,"usr/lib/x86_64-linux-gnu/wine/wineserver");
+      const windows = (path: string) => "Z:" + resolve(path).replaceAll("/","\\");
+      const display = Bun.spawn([join(root,"usr/bin/Xvfb"),"-displayfd","1","-screen","0","1280x800x24","-nolisten","tcp"],
+        {stdout:"pipe",stderr:Bun.file(join(directory,"xvfb.log"))});
+      const first = await display.stdout.getReader().read();
+      assert(first.value,"Xvfb did not start");
+      const env = {...process.env,WINEPREFIX:join(directory,"prefix"),WINEARCH:"win64",WINEDEBUG:"-all",WINESERVER:server,
+        WINEDLLOVERRIDES:"winemenubuilder.exe=d;mscoree=d",DISPLAY:":"+Buffer.from(first.value).toString().trim(),
+        LD_LIBRARY_PATH:join(root,"usr/lib/x86_64-linux-gnu")};
+      async function run(args: string[], cleanup = false) {
+        const child = Bun.spawn(args,{env,stdout:"inherit",stderr:"inherit"});
+        const timer = setTimeout(()=>child.kill(9),120000);
+        try { const code=await child.exited; if(!cleanup)assert.equal(code,0,`${args.join(" ")} exited ${code}`); } finally { clearTimeout(timer); }
+      }
+      async function invoke(request: any) {
+        const current = await mkdtemp(join(directory,"call-"));
+        const input=join(current,"request.json"),output=join(current,"result.json");
+        await Bun.write(input,JSON.stringify(request));
+        const architecture=request.architecture ?? "x64";
+        const args=request.runtime === "framework" ? [wine,windows(`wine/dist/helper/framework-${architecture}/Sprout.Wine.Helper.exe`)] :
+          [wine,join(root,`dotnet-${architecture}/dotnet.exe`),windows("wine/dist/helper/Sprout.Wine.Helper.dll")];
+        const child=Bun.spawn([...args,"--request",windows(input),"--result",windows(output)],
+          {env:{...env,WINEDLLOVERRIDES:"winemenubuilder.exe=d;mscoree=b"},stdout:Bun.file(join(current,"stdout")),stderr:Bun.file(join(current,"stderr"))});
+        const timer=setTimeout(()=>child.kill(9),30000);
+        try {
+          const code=await child.exited;
+          const response=await Bun.file(output).json().catch(async error=>{throw Error(`Invoker exit ${code}: ${await Bun.file(join(current,"stderr")).text()} ${error}`);});
+          if(!response.ok) throw Error(JSON.stringify(response.error));
+          assert.equal(code,0);
+          return {...response.result,stdout:await Bun.file(join(current,"stdout")).text()};
+        } finally {clearTimeout(timer);}
+      }
+      const i32=(value:number)=>({type:"i32",value});
+      try {
+        for(const [target,arch] of [["system32","x86_64"],["syswow64","i686"]]) {
+          const destination=join(env.WINEPREFIX,"drive_c/windows",target);
+          await mkdir(destination,{recursive:true});
+          await copyFile(join(root,`usr/${arch}-w64-mingw32/lib/zlib1.dll`),join(destination,"zlib1.dll"));
+        }
+        await run([server,"-p"]);
+        await run([wine,"wineboot.exe","-u"]);
+        for(const architecture of ["x64","x86"]) {
+          assert.equal((await invoke({kind:"native",path:"kernel32.dll",architecture,member:"lstrlenW",returnType:"i32",args:[{type:"utf16",value:"hello 世界"}]})).value,8);
+          const copied=await invoke({kind:"native",path:"kernel32.dll",architecture,member:"lstrcpyW",returnType:"ptr",args:[{type:"buffer",size:32},{type:"utf16",value:"世界"}]});
+          assert.equal(Buffer.from(copied.outputs[0].base64,"base64").subarray(0,4).toString("utf16le"),"世界");
+          assert((await invoke({kind:"native",path:"kernel32.dll",architecture,operation:"inspect"})).value.namedExports.includes("lstrlenW"));
+        }
+        assert.equal((await invoke({kind:"native",path:"msvcrt.dll",architecture:"x86",member:"abs",returnType:"i32",callingConvention:"cdecl",args:[i32(-42)]})).value,42);
+        const memory=await invoke({kind:"native",path:"kernel32.dll",steps:[
+          {member:"GlobalAlloc",returnType:"ptr",args:[{type:"u32",value:64},{type:"u64",value:"16"}],saveAs:"memory"},
+          {operation:"read",target:"memory",returnType:"buffer",size:16},
+          {member:"GlobalFree",returnType:"ptr",args:[{type:"ptr",ref:"memory"}]}
+        ]});
+        assert.equal(memory.steps[1].value,Buffer.alloc(16).toString("base64"));
+        console.log("one-shot native x64/x86, cdecl, buffers, inspect and request-local pointers passed");
+        const managed={kind:"dotnet",path:windows("wine/dist/fixture/Fixture.dll"),typeName:"Fixture.Calculator"};
+        assert.equal((await invoke({...managed,member:"Sum",args:[i32(20),i32(22)]})).value,42);
+        assert.equal((await invoke({...managed,member:"Large",args:[{type:"i64",value:"9223372036854775807"}]})).value,"9223372036854775807");
+        const batch=await invoke({kind:managed.kind,path:managed.path,steps:[
+          {operation:"create",typeName:managed.typeName,args:[i32(10)],saveAs:"counter"},
+          {target:"counter",member:"Add",args:[i32(5)]},
+          {operation:"get",target:"counter",member:"Total"}
+        ]});
+        assert.equal(batch.value,15); assert.equal(batch.steps[0].value,null);
+        await assert.rejects(invoke({...managed,member:"Fail"}),/fixture failure/);
+        const echo=await invoke({...managed,member:"Echo",args:[{type:"string",value:'{"ok":false} 中文'}]});
+        assert.equal(echo.value,'{"ok":false} 中文'); assert.match(echo.stdout,/fixture log/);
+        await assert.rejects(invoke({...managed,target:"counter",member:"Add",args:[i32(1)]}),/not present|key/i);
+        console.log("managed batches, int64, error results, isolated references and stdout separation passed");
+        const com=await invoke({kind:"com",classId:"Scripting.Dictionary",steps:[
+          {member:"Add",args:[{type:"string",value:"answer"},i32(42)]},
+          {operation:"get",member:"Item",args:[{type:"string",value:"answer"}]}
+        ]});
+        assert.equal(com.value,42);
+        console.log("one-shot COM Automation passed");
+        await run([wine,"msiexec.exe","/i",windows(join(root,"wine-mono-9.4.0-x86.msi")),"/qn","/norestart"]);
+        for(const architecture of ["x64","x86"]) {
+          assert.equal((await invoke({...managed,path:windows("wine/dist/fixture-framework/Fixture.exe"),runtime:"framework",architecture,member:"Sum",args:[i32(20),i32(22)]})).value,42);
+        }
+        console.log("one-shot net48 x64/x86 under Wine Mono passed");
+      } finally {
+        await run([server,"-k"],true); await run([server,"-w"],true);
+        display.kill(); await display.exited;
+        await rm(directory,{recursive:true,force:true});
+      }
+      WINE_TEST
 
   - name: wine-server-test
     run: |
@@ -54,7 +261,35 @@ jobs:
       set -a
       . ./config.env
       set +a
-      bun wine/scripts/deploy.ts
+      bun - <<'WINE_DEPLOY'
+      import {mkdir, readdir, lstat, cp, mkdtemp, rename, symlink, rm} from "node:fs/promises";
+      import {join, dirname, resolve} from "node:path";
+      import {createHash} from "node:crypto";
+
+      const destination = process.env.WINE_HELPER_ROOT!;
+      if (!destination?.startsWith("/")) throw Error("WINE_HELPER_ROOT must be absolute");
+      const current = await lstat(destination).catch(error => { if (error.code !== "ENOENT") throw error; return null; });
+      if (current && !current.isSymbolicLink()) throw Error("Helper destination must be absent or a managed release symlink");
+      const source = resolve("wine/dist/helper");
+      async function files(directory: string): Promise<string[]> {
+        const entries = await readdir(join(source,directory),{withFileTypes:true});
+        return (await Promise.all(entries.map(e => e.isDirectory() ? files(join(directory,e.name)) : Promise.resolve([join(directory,e.name)])))).flat();
+      }
+      const hash = createHash("sha256");
+      for (const path of (await files("")).sort()) { hash.update(path + "\0"); hash.update(new Uint8Array(await Bun.file(join(source,path)).arrayBuffer())); }
+      const releases = join(dirname(destination), "helper-releases");
+      await mkdir(releases, {recursive:true});
+      const release = join(releases,hash.digest("hex"));
+      if (!await Bun.file(join(release,".complete")).exists()) {
+        const stage = await mkdtemp(join(releases,".stage-"));
+        try { await cp(source,stage,{recursive:true}); await Bun.write(join(stage,".complete"),"sprout-wine\n"); await rename(stage,release); }
+        finally { await rm(stage,{recursive:true,force:true}); }
+      }
+      const link = destination + ".next-" + process.pid;
+      await symlink(release,link);
+      try { await rename(link,destination); } finally { await rm(link,{force:true}); }
+      console.log(`Installed Wine helpers: ${release}`);
+      WINE_DEPLOY
 
   - name: wine-deploy
     needs: [wine-test]
@@ -199,7 +434,35 @@ jobs:
       systemd-analyze --user verify "$stage/$SERVER_SERVICE"
       if [ "${WINE_DEPLOY_HELPER:-0}" = 1 ]; then
         systemctl --user stop "$SERVER_SERVICE"
-        bun wine/scripts/deploy.ts
+        bun - <<'WINE_DEPLOY'
+      import {mkdir, readdir, lstat, cp, mkdtemp, rename, symlink, rm} from "node:fs/promises";
+      import {join, dirname, resolve} from "node:path";
+      import {createHash} from "node:crypto";
+
+      const destination = process.env.WINE_HELPER_ROOT!;
+      if (!destination?.startsWith("/")) throw Error("WINE_HELPER_ROOT must be absolute");
+      const current = await lstat(destination).catch(error => { if (error.code !== "ENOENT") throw error; return null; });
+      if (current && !current.isSymbolicLink()) throw Error("Helper destination must be absent or a managed release symlink");
+      const source = resolve("wine/dist/helper");
+      async function files(directory: string): Promise<string[]> {
+        const entries = await readdir(join(source,directory),{withFileTypes:true});
+        return (await Promise.all(entries.map(e => e.isDirectory() ? files(join(directory,e.name)) : Promise.resolve([join(directory,e.name)])))).flat();
+      }
+      const hash = createHash("sha256");
+      for (const path of (await files("")).sort()) { hash.update(path + "\0"); hash.update(new Uint8Array(await Bun.file(join(source,path)).arrayBuffer())); }
+      const releases = join(dirname(destination), "helper-releases");
+      await mkdir(releases, {recursive:true});
+      const release = join(releases,hash.digest("hex"));
+      if (!await Bun.file(join(release,".complete")).exists()) {
+        const stage = await mkdtemp(join(releases,".stage-"));
+        try { await cp(source,stage,{recursive:true}); await Bun.write(join(stage,".complete"),"sprout-wine\n"); await rename(stage,release); }
+        finally { await rm(stage,{recursive:true,force:true}); }
+      }
+      const link = destination + ".next-" + process.pid;
+      await symlink(release,link);
+      try { await rename(link,destination); } finally { await rm(link,{force:true}); }
+      console.log(`Installed Wine helpers: ${release}`);
+      WINE_DEPLOY
       fi
       install -m 644 "$stage/$SERVER_SERVICE" "$unit.tmp.$$"
       mv -f "$unit.tmp.$$" "$unit"
