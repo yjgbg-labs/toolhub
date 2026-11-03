@@ -1,7 +1,4 @@
-using System.Diagnostics;
 using System.Globalization;
-using System.Net;
-using System.Net.Sockets;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Reflection.PortableExecutable;
@@ -11,96 +8,94 @@ using System.Text.Json;
 
 namespace Sprout.Wine;
 
-// A worker owns exactly one EXE or DLL session. The control socket never carries stdout/stderr.
+// One request file, one process, one result file. Library stdout/stderr is never protocol traffic.
 internal static class Program
 {
-    static readonly Dictionary<string, object> Objects = new();
+    static readonly Dictionary<string, object?> Objects = new();
+    static readonly List<object> Owned = new();
     static readonly Dictionary<string, Type> Delegates = new();
     static Assembly? assembly;
     static IntPtr library;
     static string kind = "", path = "";
     static object? component;
-    static IntPtr job;
+    static int stepIndex = -1;
     const int MaxFrame = 1024 * 1024;
     static readonly JsonSerializerOptions JsonOptions = new() { IncludeFields = true };
 
     [DllImport("kernel32", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr LoadLibraryEx(string name, IntPtr file, uint flags);
     [DllImport("kernel32", CharSet = CharSet.Ansi, ExactSpelling = true, SetLastError = true)] static extern IntPtr GetProcAddress(IntPtr module, string name);
     [DllImport("kernel32")] static extern bool FreeLibrary(IntPtr module);
-    [DllImport("kernel32", CharSet = CharSet.Unicode)] static extern IntPtr CreateJobObject(IntPtr attributes, string? name);
-    [DllImport("kernel32", SetLastError = true)] static extern bool SetInformationJobObject(IntPtr job, int type, IntPtr info, uint size);
-    [DllImport("kernel32", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
-    [DllImport("kernel32")] static extern IntPtr GetCurrentProcess();
     [DllImport("kernel32")] static extern uint SetErrorMode(uint mode);
     [DllImport("kernel32", CharSet = CharSet.Unicode)] static extern uint GetModuleFileName(IntPtr module, StringBuilder name, int size);
-
-    [StructLayout(LayoutKind.Sequential)] struct BasicLimits { public long ProcessTime, JobTime; public uint Flags; public UIntPtr Minimum, Maximum; public uint Active; public UIntPtr Affinity; public uint Priority, Scheduling; }
-    [StructLayout(LayoutKind.Sequential)] struct ExtendedLimits { public BasicLimits Basic; public ulong ReadOps, WriteOps, OtherOps, ReadBytes, WriteBytes, OtherBytes; public UIntPtr ProcessMemory, JobMemory, PeakProcess, PeakJob; }
-
-    static void OwnProcessTree()
-    {
-        job = CreateJobObject(IntPtr.Zero, null);
-        var limits = new ExtendedLimits { Basic = new BasicLimits { Flags = 0x2000 } }; // KILL_ON_JOB_CLOSE
-        var size = Marshal.SizeOf<ExtendedLimits>();
-        var memory = Marshal.AllocHGlobal(size);
-        try {
-            Marshal.StructureToPtr(limits, memory, false);
-            if (job == IntPtr.Zero || !SetInformationJobObject(job, 9, memory, (uint)size) || !AssignProcessToJobObject(job, GetCurrentProcess()))
-                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Cannot establish Windows job ownership");
-        } finally { Marshal.FreeHGlobal(memory); }
-    }
 
     [STAThread]
     static int Main(string[] args)
     {
+        if (args.Length != 4 || args[0] != "--request" || args[2] != "--result") {
+            Console.Error.WriteLine("Usage: Sprout.Wine.Helper --request <json-file> --result <json-file>");
+            return 2;
+        }
         try {
             Console.OutputEncoding = new UTF8Encoding(false);
             SetErrorMode(0x0001 | 0x0002 | 0x8000);
-            OwnProcessTree();
-            using var socket = new TcpClient();
-            socket.Connect(IPAddress.Loopback, int.Parse(args[0], CultureInfo.InvariantCulture));
-            using var stream = socket.GetStream();
-            using var reader = new BinaryReader(stream, Encoding.UTF8, true);
-            using var writer = new BinaryWriter(stream, Encoding.UTF8, true);
-            Send(writer, new { token = Environment.GetEnvironmentVariable("SPROUT_WINE_TOKEN"), protocol = 1, bits = IntPtr.Size * 8, runtime = RuntimeInformation.FrameworkDescription });
-            Environment.SetEnvironmentVariable("SPROUT_WINE_TOKEN", null);
-            while (true) {
-                int length;
-                try { length = reader.ReadInt32(); } catch (EndOfStreamException) { return 0; }
-                if (length <= 0 || length > MaxFrame) throw new InvalidDataException("Invalid request frame length");
-                var bytes = reader.ReadBytes(length);
-                if (bytes.Length != length) return 0;
-                using var doc = JsonDocument.Parse(bytes);
-                try { Send(writer, new { ok = true, result = Dispatch(doc.RootElement) }); }
-                catch (Exception error) {
-                    while (error is TargetInvocationException && error.InnerException != null) error = error.InnerException;
-                    Send(writer, new { ok = false, error = new { code = error.GetType().Name, message = error.Message, hresult = error.HResult } });
-                }
+            if (new FileInfo(args[1]).Length > MaxFrame) throw new ArgumentException("Request exceeds 1 MiB");
+            using var doc = JsonDocument.Parse(File.ReadAllBytes(args[1]));
+            var request = doc.RootElement;
+            var expected = Text(request, "architecture", "x64");
+            if (expected != (IntPtr.Size == 8 ? "x64" : "x86")) throw new ArgumentException("Invoker architecture mismatch");
+            Load(request);
+            var batch = request.TryGetProperty("steps", out var array) && array.GetArrayLength() > 0;
+            var steps = batch ? array.EnumerateArray().ToArray() : new[] { request };
+            if (steps.Length > 64) throw new ArgumentException("At most 64 steps");
+            var results = new List<object>();
+            object? finalValue = null; object[] finalOutputs = Array.Empty<object>();
+            foreach (var step in steps) {
+                stepIndex++;
+                var saveAs = Text(step, "saveAs");
+                if (saveAs.Length > 0 && Objects.ContainsKey(saveAs)) throw new ArgumentException("Duplicate saveAs: " + saveAs);
+                var result = Invoke(step);
+                if (saveAs.Length > 0) Objects.Add(saveAs, result.Value);
+                finalValue = Pack(result.Value, saveAs.Length > 0);
+                finalOutputs = result.Outputs;
+                results.Add(new { value = finalValue, outputs = finalOutputs });
             }
-        } catch (Exception error) { Console.Error.WriteLine(error); return 1; }
+            Write(args[3], new { ok = true, result = new { value = finalValue, outputs = finalOutputs, steps = batch ? results : new List<object>() } });
+            return 0;
+        } catch (Exception error) {
+            while (error is TargetInvocationException && error.InnerException != null) error = error.InnerException;
+            Write(args[3], new { ok = false, error = new { code = error.GetType().Name, message = error.Message, step = stepIndex, hresult = error.HResult } });
+            return 1;
+        }
         finally {
-            // OS teardown owns remaining handles; explicit release disposes objects during a session.
+            foreach (var value in Owned.ToArray()) {
+                try { Dispose(value); } catch (Exception error) { Console.Error.WriteLine(error.Message); }
+            }
             if (library != IntPtr.Zero) FreeLibrary(library);
-            // Keep the non-inheritable job handle alive until process termination, including descendants.
-            GC.KeepAlive(job);
         }
     }
 
-    static void Send(BinaryWriter writer, object response)
+    static void Write(string destination, object response)
     {
         var bytes = JsonSerializer.SerializeToUtf8Bytes(response, JsonOptions);
         if (bytes.Length > MaxFrame) bytes = Encoding.UTF8.GetBytes("{\"ok\":false,\"error\":{\"code\":\"result_limit\",\"message\":\"Result exceeds 1 MiB\"}}");
-        writer.Write(bytes.Length); writer.Write(bytes); writer.Flush();
+        File.WriteAllBytes(destination + ".tmp", bytes);
+        File.Move(destination + ".tmp", destination);
     }
     static string Text(JsonElement value, string key, string fallback = "") => value.TryGetProperty(key, out var field) && field.ValueKind == JsonValueKind.String ? field.GetString()! : fallback;
     static JsonElement[] Args(JsonElement request) => request.TryGetProperty("args", out var args) ? args.EnumerateArray().ToArray() : Array.Empty<JsonElement>();
-    static object? Dispatch(JsonElement request) => Text(request, "op") switch {
-        "load" => Load(request), "call" => Call(request), "inspect" => Inspect(request), "release" => Release(Text(request, "handle")),
-        "exec" => Execute(request), _ => throw new ArgumentException("Unknown worker operation")
+    sealed class Invocation {
+        public object? Value;
+        public object[] Outputs;
+        public Invocation(object? value, object[]? outputs = null) { Value = value; Outputs = outputs ?? Array.Empty<object>(); }
+    }
+    static Invocation Invoke(JsonElement request) => Text(request, "operation", "invoke") switch {
+        "inspect" => new Invocation(JsonSerializer.SerializeToElement(Inspect(request), JsonOptions)),
+        "release" => new Invocation(Release(Text(request, "target"))),
+        "read" => new Invocation(ReadPointer(request)),
+        _ => Call(request)
     };
     static object Load(JsonElement request)
     {
-        if (kind.Length != 0) throw new InvalidOperationException("This worker already owns a DLL session");
         var selected = Text(request, "kind");
         path = Text(request, "path");
         switch (selected) {
@@ -120,16 +115,20 @@ internal static class Program
                 var id = Text(request, "classId");
                 var type = Guid.TryParse(id, out var guid) ? Type.GetTypeFromCLSID(guid, true) : Type.GetTypeFromProgID(id, true);
                 component = Activator.CreateInstance(type!);
+                Own(component);
                 break;
             default: throw new ArgumentException("kind must be native, dotnet or com");
         }
         kind = selected;
         return new { kind, path, runtime = RuntimeInformation.FrameworkDescription, bits = IntPtr.Size * 8 };
     }
-    static object? Call(JsonElement request)
+    static Invocation Call(JsonElement request)
     {
         if (kind.Length == 0) throw new InvalidOperationException("Load a DLL first");
-        if (kind == "native") return NativeCall(request);
+        if (kind == "native") {
+            if (Text(request,"operation","invoke") != "invoke") throw new ArgumentException("Native functions require operation=invoke");
+            return NativeCall(request);
+        }
         var arguments = Args(request);
         var values = arguments.Select(ManagedArgument).ToArray();
         var targetId = Text(request, "target");
@@ -157,7 +156,8 @@ internal static class Program
                 else { if (values.Length != 1) throw new ArgumentException("set expects one value"); property.SetValue(target, values[0]); result = null; }
             } else throw new ArgumentException("Unknown managed operation");
         }
-        return new { value = Pack(result), outputs = Array.Empty<object>() };
+        Own(result);
+        return new Invocation(result);
     }
     static Type ManagedType(string name) => name switch {
         "i8" => typeof(sbyte), "u8" => typeof(byte), "i16" => typeof(short), "u16" => typeof(ushort),
@@ -169,8 +169,9 @@ internal static class Program
     static object? ManagedArgument(JsonElement argument)
     {
         var type = ManagedType(Text(argument, "type"));
+        var reference = Text(argument, "ref");
+        if (reference.Length > 0) return Objects[reference];
         if (!argument.TryGetProperty("value", out var value) || value.ValueKind == JsonValueKind.Null) return null;
-        if (value.ValueKind == JsonValueKind.Object && value.TryGetProperty("handle", out var handle)) return Objects[handle.GetString()!];
         if (type == typeof(byte[])) return Convert.FromBase64String(value.GetString()!);
         if (type == typeof(object)) return value.ValueKind switch {
             JsonValueKind.String => value.GetString(), JsonValueKind.True => true, JsonValueKind.False => false,
@@ -179,26 +180,41 @@ internal static class Program
         if (value.ValueKind == JsonValueKind.String && type != typeof(string)) return Convert.ChangeType(value.GetString(), type, CultureInfo.InvariantCulture);
         return JsonSerializer.Deserialize(value.GetRawText(), type, JsonOptions);
     }
-    static object? Pack(object? value)
+    static object? Pack(object? value, bool saved)
     {
         if (value == null) return null;
         if (value is long || value is ulong) return Convert.ToString(value, CultureInfo.InvariantCulture);
         if (value is byte[] bytes) return Convert.ToBase64String(bytes);
-        if (value is not IntPtr && (value.GetType().IsPrimitive || value is string || value is decimal)) return value;
-        if (Objects.Count >= 4096) throw new InvalidOperationException("Release unused object handles before creating more");
-        var id = "h_" + Guid.NewGuid().ToString("N");
-        Objects.Add(id, value);
-        return new { handle = id, type = value.GetType().FullName };
+        if (value is not IntPtr && (value.GetType().IsPrimitive || value is string || value is decimal || value is JsonElement)) return value;
+        if (saved) return null; // References are internal to this invocation, never persistent API handles.
+        throw new ArgumentException("Object/pointer results require saveAs and subsequent steps to extract a scalar, string or bytes");
+    }
+    static void Own(object? value) {
+        if (value != null && (Marshal.IsComObject(value) || value is IDisposable) && !Owned.Any(v => ReferenceEquals(v,value))) Owned.Add(value);
+    }
+    static void Dispose(object value) {
+        Owned.RemoveAll(v => ReferenceEquals(v,value));
+        if (Marshal.IsComObject(value)) Marshal.FinalReleaseComObject(value);
+        else if (value is IDisposable disposable) disposable.Dispose();
     }
     static bool Release(string id)
     {
         if (!Objects.TryGetValue(id, out var value)) return false;
-        Objects.Remove(id);
-        if (!Objects.Values.Any(other => ReferenceEquals(other, value)) && !ReferenceEquals(component, value)) {
-            if (Marshal.IsComObject(value)) Marshal.FinalReleaseComObject(value);
-            else if (value is IDisposable disposable) disposable.Dispose();
-        }
+        foreach (var key in Objects.Where(p => ReferenceEquals(p.Value,value)).Select(p => p.Key).ToArray()) Objects.Remove(key);
+        if (value != null) Dispose(value);
         return true;
+    }
+    static object ReadPointer(JsonElement request) {
+        if (kind != "native") throw new ArgumentException("read requires a native pointer reference");
+        var pointer = (IntPtr)Objects[Text(request,"target")]!;
+        var size = request.GetProperty("size").GetInt32();
+        if (pointer == IntPtr.Zero || size < 0 || size > MaxFrame / 2) throw new ArgumentException("Invalid pointer read size");
+        var bytes = new byte[size]; Marshal.Copy(pointer,bytes,0,size);
+        var type = Text(request,"returnType");
+        if (type == "buffer") return Convert.ToBase64String(bytes);
+        if (type == "utf8") return Encoding.UTF8.GetString(bytes.TakeWhile(b => b != 0).ToArray());
+        if (type == "utf16") return Encoding.Unicode.GetString(bytes).Split('\0')[0];
+        throw new ArgumentException("read returnType must be buffer, utf8 or utf16");
     }
     static object Inspect(JsonElement request)
     {
@@ -238,7 +254,7 @@ internal static class Program
         "i8" or "u8" or "i16" or "u16" or "i32" or "u32" or "i64" or "u64" or "f32" or "f64" => ManagedType(type),
         _ => throw new ArgumentException("Unsupported native type: " + type)
     };
-    static object NativeCall(JsonElement request)
+    static Invocation NativeCall(JsonElement request)
     {
         var arguments = Args(request);
         if (arguments.Length > 32) throw new ArgumentException("At most 32 arguments");
@@ -268,11 +284,14 @@ internal static class Program
             var values = arguments.Select((argument, index) => {
                 var type = Text(argument, "type");
                 var value = argument.TryGetProperty("value", out var v) ? v : default;
+                var reference = Text(argument,"ref");
                 if (type == "ptr") {
+                    if (reference.Length > 0) return Objects[reference] ?? (object)IntPtr.Zero;
                     if (value.ValueKind == JsonValueKind.Null || value.ValueKind == JsonValueKind.Undefined) return (object)IntPtr.Zero;
-                    return (IntPtr)Objects[value.GetProperty("handle").GetString()!];
+                    throw new ArgumentException("ptr requires a request-local ref or null");
                 }
                 if (type == "utf8" || type == "utf16" || type == "buffer") {
+                    if (reference.Length > 0) value = JsonSerializer.SerializeToElement(Objects[reference],JsonOptions);
                     var bytes = type == "buffer" ? (value.ValueKind == JsonValueKind.String ? Convert.FromBase64String(value.GetString()!) : Array.Empty<byte>()) :
                         (type == "utf8" ? Encoding.UTF8 : Encoding.Unicode).GetBytes(value.GetString()! + "\0");
                     var size = argument.TryGetProperty("size", out var s) && s.ValueKind == JsonValueKind.Number ? s.GetInt32() : bytes.Length;
@@ -289,31 +308,10 @@ internal static class Program
             object? packed;
             if (resultType == "ptr" && result is IntPtr p) {
                 var own = borrowed.FindIndex(b => p.ToInt64() >= b.Pointer.ToInt64() && p.ToInt64() < b.Pointer.ToInt64() + b.Size);
-                packed = p == IntPtr.Zero ? null : own >= 0 ? new { argument = borrowed[own].Index, offset = p.ToInt64() - borrowed[own].Pointer.ToInt64(), ephemeral = true } : Pack(p);
-            } else packed = Pack(result);
-            return new { value = packed, outputs = buffers.Select(b => { var bytes = new byte[b.Size]; Marshal.Copy(b.Pointer, bytes, 0, b.Size); return new { index = b.Index, base64 = Convert.ToBase64String(bytes) }; }).ToArray() };
+                if (own >= 0 && Text(request,"saveAs").Length > 0) throw new ArgumentException("Cannot save a pointer into temporary argument memory");
+                packed = p == IntPtr.Zero ? null : own >= 0 ? JsonSerializer.SerializeToElement(new { argument = borrowed[own].Index, offset = p.ToInt64() - borrowed[own].Pointer.ToInt64(), ephemeral = true }) : (object)p;
+            } else packed = result;
+            return new Invocation(packed, buffers.Select(b => { var bytes = new byte[b.Size]; Marshal.Copy(b.Pointer, bytes, 0, b.Size); return (object)new { index = b.Index, base64 = Convert.ToBase64String(bytes) }; }).ToArray());
         } finally { foreach (var pointer in allocations) Marshal.FreeHGlobal(pointer); }
-    }
-    static string Quote(string argument)
-    {
-        if (argument.Length > 0 && !argument.Any(ch => char.IsWhiteSpace(ch) || ch == '"')) return argument;
-        var output = new StringBuilder("\""); int slashes = 0;
-        foreach (char ch in argument) {
-            if (ch == '\\') { slashes++; continue; }
-            output.Append('\\', ch == '"' ? slashes * 2 + 1 : slashes); output.Append(ch); slashes = 0;
-        }
-        output.Append('\\', slashes * 2); return output.Append('"').ToString();
-    }
-    static object Execute(JsonElement request)
-    {
-        var start = new ProcessStartInfo(Text(request, "exe")) { UseShellExecute = false, CreateNoWindow = true,
-            Arguments = string.Join(" ", request.GetProperty("arguments").EnumerateArray().Select(a => Quote(a.GetString()!))),
-            WorkingDirectory = Text(request, "cwd"), RedirectStandardInput = true };
-        if (request.TryGetProperty("env", out var env)) foreach (var item in env.EnumerateObject()) start.EnvironmentVariables[item.Name] = item.Value.GetString();
-        using var process = Process.Start(start) ?? throw new InvalidOperationException("Process did not start");
-        var input = Convert.FromBase64String(Text(request, "stdinBase64"));
-        var write = Task.Run(async () => { try { await process.StandardInput.BaseStream.WriteAsync(input, 0, input.Length); } finally { process.StandardInput.Close(); } });
-        process.WaitForExit(); write.GetAwaiter().GetResult();
-        return new { exitCode = unchecked((uint)process.ExitCode) };
     }
 }

@@ -8,13 +8,16 @@ public class Calculator
             foreach (var value in args.Skip(1)) Console.WriteLine(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(value)));
             return 7;
         }
-        if (args[0] == "stdin") { Console.Write(Console.In.ReadToEnd()); return 0; }
+        if (args[0] == "stdin") { Console.OpenStandardInput().CopyTo(Console.OpenStandardOutput()); return 0; }
+        if (args[0] == "env") { Console.Write(Environment.GetEnvironmentVariable(args[1])); return 0; }
+        if (args[0] == "noisy") { Console.Write(new string('x',200000)); return 0; }
         if (args[0] == "hang") { Console.WriteLine("started"); Hang(); }
-        if (args[0] == "spawn") {
+        if (args[0] == "spawn" || args[0] == "spawn-exit") {
             var dotnet = System.Diagnostics.Process.GetCurrentProcess().MainModule!.FileName;
             var assembly = typeof(Calculator).Assembly.Location;
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(dotnet, "\"" + assembly + "\" child \"" + args[1] + "\"") { UseShellExecute = false });
-            Hang();
+            if (args[0] == "spawn") Hang();
+            else { Thread.Sleep(300); return 0; }
         }
         if (args[0] == "child") while (true) { File.AppendAllText(args[1], "x"); Thread.Sleep(50); }
         return 0;

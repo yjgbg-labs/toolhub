@@ -57,10 +57,10 @@ jobs:
       bun wine/scripts/deploy.ts
 
   - name: wine-deploy
-    needs: [wine-helper-deploy]
+    needs: [wine-test]
     run: |
       set -eu
-      groot-cli jobs --job server-deploy
+      WINE_DEPLOY_HELPER=1 groot-cli jobs --job server-deploy
 
   - name: chrome-test
     run: |
@@ -197,6 +197,10 @@ jobs:
       WantedBy=default.target
       EOF
       systemd-analyze --user verify "$stage/$SERVER_SERVICE"
+      if [ "${WINE_DEPLOY_HELPER:-0}" = 1 ]; then
+        systemctl --user stop "$SERVER_SERVICE"
+        bun wine/scripts/deploy.ts
+      fi
       install -m 644 "$stage/$SERVER_SERVICE" "$unit.tmp.$$"
       mv -f "$unit.tmp.$$" "$unit"
       mv -Tf "$stage/groot.jar" "$target"

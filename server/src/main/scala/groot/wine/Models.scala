@@ -2,38 +2,41 @@ package groot.wine
 
 import framework.model.JsonModel
 import io.circe.Json
-import java.nio.file.{Files, Path}
+import java.nio.file.Path
 
-case class WineFailure(code: String, message: String) extends RuntimeException(message)
-case class WineInstance(instanceName: String, status: String, arch: String, headless: Boolean, prefixPath: String) derives JsonModel
-case class WineDll(instanceName: String, dllName: String, kind: String, architecture: String, runtime: String, status: String,
-    path: Option[String], classId: Option[String], logPath: String) derives JsonModel
-case class WineTask(id: String, instanceName: String, state: String, exe: String, createdAt: String,
-    finishedAt: Option[String], exitCode: Option[Long], error: Option[String], stdoutPath: String, stderrPath: String) derives JsonModel:
-  def terminal: Boolean = state != "running"
+case class WineError(code: String, message: String, stdout: String = "", stderr: String = "",
+    durationMs: Long = 0, step: Option[Int] = None) derives JsonModel
+case class WineFailure(error: WineError) extends RuntimeException(error.message)
+object WineFailure:
+  def apply(code: String, message: String): WineFailure = WineFailure(WineError(code, message))
+
 case class WineExec(exe: String, args: Vector[String] = Vector.empty, cwd: Option[String] = None,
-    env: Map[String, String] = Map.empty, stdinBase64: String = "", timeoutMs: Int = 300000,
-    architecture: String = "x64") derives JsonModel
-case class WineLoad(kind: String, path: Option[String] = None, classId: Option[String] = None,
-    architecture: String = "x64", runtime: String = "dotnet") derives JsonModel
-case class WineArgument(`type`: String, value: Json = Json.Null, size: Option[Int] = None) derives JsonModel
-case class WineCall(member: String = "", args: Vector[WineArgument] = Vector.empty, operation: String = "invoke",
+    env: Map[String, String] = Map.empty, stdinBase64: String = "", timeoutMs: Int = 30000,
+    runtime: String = "wine", architecture: String = "x64") derives JsonModel
+case class WineArgument(`type`: String, value: Json = Json.Null, ref: Option[String] = None,
+    size: Option[Int] = None) derives JsonModel
+case class WineStep(member: String = "", args: Vector[WineArgument] = Vector.empty, operation: String = "invoke",
     typeName: Option[String] = None, target: Option[String] = None, returnType: String = "void",
-    callingConvention: String = "winapi") derives JsonModel
-private[wine] case class SavedWine(instanceName: String, arch: String, headless: Boolean,
-    displayPid: Option[Long] = None, displayStartedAt: Option[String] = None) derives JsonModel
+    callingConvention: String = "winapi", saveAs: Option[String] = None, size: Option[Int] = None) derives JsonModel
+case class WineCall(kind: String, path: Option[String] = None, classId: Option[String] = None,
+    architecture: String = "x64", runtime: String = "dotnet", member: String = "",
+    args: Vector[WineArgument] = Vector.empty, operation: String = "invoke", typeName: Option[String] = None,
+    target: Option[String] = None, returnType: String = "void", callingConvention: String = "winapi",
+    steps: Vector[WineStep] = Vector.empty, cwd: Option[String] = None, env: Map[String, String] = Map.empty,
+    timeoutMs: Int = 30000) derives JsonModel:
+  def single: WineStep = WineStep(member, args, operation, typeName, target, returnType, callingConvention)
+
+case class WineExecResult(exitCode: Int, stdout: String, stderr: String, durationMs: Long,
+    stdoutTruncated: Boolean, stderrTruncated: Boolean) derives JsonModel
+case class WineOutput(index: Int, base64: String) derives JsonModel
+case class WineStepResult(value: Json, outputs: Vector[WineOutput] = Vector.empty) derives JsonModel
+case class WineCallResult(value: Json, outputs: Vector[WineOutput], steps: Vector[WineStepResult],
+    stdout: String, stderr: String, durationMs: Long, stdoutTruncated: Boolean, stderrTruncated: Boolean) derives JsonModel
 
 private[wine] object WineValidation:
-  def name(value: String): Unit =
-    if !value.matches("[A-Za-z0-9][A-Za-z0-9_.-]{0,63}") then throw WineFailure("invalid_wine", "Names must be 1–64 ASCII letters, digits, dots, underscores or hyphens, starting with a letter or digit")
-  def timeout(ms: Int): Unit =
-    if ms < 1 || ms > 86400000 then throw WineFailure("invalid_wine", "timeoutMs must be between 1 and 86400000")
-  def architecture(value: String): Unit =
-    if !Set("x64", "x86").contains(value) then throw WineFailure("invalid_wine", "architecture must be x64 or x86")
+  val maxBytes = 1024 * 1024
+  def require(condition: Boolean, message: String): Unit =
+    if !condition then throw WineFailure("invalid_wine", message)
   def windows(value: String): String =
-    if value.isEmpty || value.contains('\u0000') || value.length > 32768 then throw WineFailure("invalid_wine", "Invalid Windows path")
+    require(value.nonEmpty && !value.contains('\u0000') && value.length <= 32768, "Invalid Windows path")
     if value.startsWith("/") then "Z:" + Path.of(value).toAbsolutePath.normalize().toString.replace('/', '\\') else value
-  def local(value: String): Path =
-    val p = Path.of(value)
-    if !p.isAbsolute || !Files.exists(p) then throw WineFailure("invalid_wine", "Local path must be absolute and exist")
-    p
