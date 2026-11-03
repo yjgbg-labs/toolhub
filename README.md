@@ -32,6 +32,7 @@ CLI 的动态协议实现直接编入 Native 可执行文件；插件打成独�
 | 命令 | 操作 |
 | --- | --- |
 | `groot-cli jobs --job server-test` | Scala 服务端测试和服务部署检查 |
+| `groot-cli jobs --job chrome-test` | 真实 headless Chromium 生命周期和页面自动化集成测试 |
 | `groot-cli jobs --job server-deploy` | 服务端测试、JAR 构建、user service 安装及健康检查 |
 | `groot-cli jobs --job cli-deploy` | Native 编译、CLI/安装检查及安装 `groot-cli` |
 | `groot-cli jobs --job pluging-deploy` | 插件依赖安装、类型检查、bundle 构建、测试及安装 OpenCode 插件 |
@@ -78,6 +79,8 @@ Native 编译还需要 Clang 和 libcurl 等开发库，
 `cli-deploy` 会在需要时准备用户级工具链缓存。所有流程直接定义在 `jobs.yaml` 中。
 
 ## 使用
+
+Linux Chrome 实例、标签页与页面自动化见 [docs/chrome.md](docs/chrome.md)。
 
 ```sh
 groot-cli --help
