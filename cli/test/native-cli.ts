@@ -120,6 +120,7 @@ try {
     assert.match(help, /--limit <integer>.*default 5/);
     assert.match(help, /--header.token <string>/);
     assert.match(help, /--query.help <string>/);
+    assert.doesNotMatch(help, /--input\b/);
     assert.equal(requests.length, initialRequests, "Help must only fetch the contract");
 
     const command = ["inventory", "parts", "revise"];
@@ -148,14 +149,7 @@ try {
     assert.match(rawQuery, /tag=first%3Btag/);
     assert.match(rawQuery, /key%3Bname=%3B%253B/);
 
-    const input = `{"path":{"part":"file"},"header":{"token":"from-input"},"body":${body}}`;
-    await Bun.write(`${directory}/input.json`, input);
     await Bun.write(`${directory}/body.json`, body);
-    for (const source of [input, `@${directory}/input.json`, "-"]) {
-      const response = JSON.parse(await ok([...command, "--input", source], source === "-" ? input : undefined));
-      assert.equal(response.body, body);
-      assert.equal(response.token, "from-input");
-    }
     for (const source of [`@${directory}/body.json`, "-"]) {
       assert.equal(JSON.parse(await ok([...command, "body", "--header.token", "secret", "--body", source], body)).body, body);
     }
@@ -170,11 +164,9 @@ try {
       assert.equal(received.body, text);
       assert.deepEqual(received.query, []);
     }
-    assert.equal(JSON.parse(await ok([...note, "--input", JSON.stringify({ body: text })])).body, text);
     assert.equal(JSON.parse(await ok([...note, "--body", '"literal quotes"'])).body, '"literal quotes"');
     await invalid(note, /Missing required argument.*--body/);
     await invalid([...note, "--body", ""], /minLength/);
-    await invalid([...note, "--input", '{"body":42}'], /expected string/);
     const noteOperation = document.paths["/note"].post;
     served = { ...document, paths: { "/note": { post: { ...noteOperation,
       requestBody: { required: true, content: {
@@ -189,23 +181,20 @@ try {
     } } } };
     await invalid([...note, "--body", text], /text\/plain body must have a string schema/);
     served = document;
-    for (const args of [["context"], ["context", "--input", "{}"]]) {
-      const context = JSON.parse(await ok(args));
-      assert.equal(decodeURIComponent(context.path), `/context/${directory}`);
-      assert.equal(context.path.split("/").length, 3);
-      assert.deepEqual(context.query, [["cwd", directory]]);
-      assert.equal(context.cwdHeader, directory);
-      assert.equal(context.cookie, `cwd=${encodeURIComponent(directory)}`);
-      assert.equal(context.body, "");
-    }
+    const context = JSON.parse(await ok(["context"]));
+    assert.equal(decodeURIComponent(context.path), `/context/${directory}`);
+    assert.equal(context.path.split("/").length, 3);
+    assert.deepEqual(context.query, [["cwd", directory]]);
+    assert.equal(context.cwdHeader, directory);
+    assert.equal(context.cookie, `cwd=${encodeURIComponent(directory)}`);
+    assert.equal(context.body, "");
     assert.doesNotMatch(await ok(["context", "--help"]), /--(?:(?:query|path|header|cookie)\.)?cwd|<cwd>|--body\b/);
     await invalid(["context", "--body", '"override"'], /has no body/);
-    await invalid(["context", "--input", '{"body":"override"}'], /has no body/);
     for (const flag of ["cwd", "query.cwd", "path.cwd", "header.cwd", "cookie.cwd"]) {
       await invalid(["context", `--${flag}`, "/override"], /cwd is supplied automatically/);
     }
-    for (const location of ["query", "path", "header", "cookie"]) {
-      await invalid(["context", "--input", JSON.stringify({ [location]: { cwd: "/override" } })], /cwd is supplied automatically/);
+    for (const value of ["{}", "@missing.json", "-"]) {
+      await invalid(["context", "--input", value], /Unknown option --input/);
     }
     await invalid([...command, ...required], /Missing required argument.*path.part/);
     await invalid([...command, "part", "--body", body], /Missing required argument.*header.token/);
@@ -216,8 +205,7 @@ try {
     await invalid([...command, "part", ...required, "--limit", "1.5"], /expected integer/);
     await invalid([...command, "part", ...required, "--name", "one", "--name", "two"], /Duplicate/);
     await invalid([...command, "part", "--header.token", "secret", "--body", '{"serial":1}'], /missing required field/);
-    await invalid([...command, "part", "--input", input], /--input must be used alone/);
-    await invalid([...command, "--input", '{"path":{"part":"p"},"query":{"unknown":1}}'], /Unknown query parameter/);
+    await invalid([...command, "part", ...required, "--query.unknown", "1"], /Unknown option --query.unknown/);
     await invalid(["inventory", "no-such-command"], /Unknown command/);
     assert.equal(await ok(["inventory", "parts", "remove", "part"]), "");
     assert.equal(requests.at(-1)!.method, "DELETE");
@@ -228,7 +216,7 @@ try {
     assert.match(failure.stderr, /HTTP 404.*fixture missing/);
 
     served = { ...document, info: { title: "Fresh HTTP API", version: "2" }, paths: { "/new-endpoint": { put: {
-      operationId: "fresh.deep.command", parameters: [parameter("cwd", "query", string, true)], responses,
+      operationId: "fresh.deep.command", parameters: [parameter("cwd", "query", string, true), parameter("input", "query")], responses,
     } } } };
     const refreshed = await ok(["--help"]);
     assert.match(refreshed, /fresh/);
@@ -236,6 +224,10 @@ try {
     assert.equal(await ok(["fresh", "deep", "command"]), "discovered after compilation\n");
     assert.equal(requests.at(-1)!.method, "PUT");
     assert.deepEqual(requests.at(-1)!.query, [["cwd", directory]]);
+    // A schema-declared input is now an ordinary parameter, not a reserved envelope flag.
+    assert.match(await ok(["fresh", "deep", "command", "--help"]), /--input <string>.*query/);
+    assert.equal(await ok(["fresh", "deep", "command", "--input", "@literal"]), "discovered after compilation\n");
+    assert.deepEqual(requests.at(-1)!.query, [["cwd", directory], ["input", "@literal"]]);
     await invalid(["inventory", "parts"], /Unknown command/);
 
     served = { ...document, paths: {

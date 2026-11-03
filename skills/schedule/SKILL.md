@@ -114,7 +114,7 @@ groot-cli schedule config write --body @config.json
 groot-cli schedule config read | jq '.jobs.sample.enabled = false' | groot-cli schedule config write --body -
 ```
 
-请求体用 `--body <json|@file|->`。完整参数用 `--input`，例如 `{"query":{"name":"sample"},"body":{...}}`。
+请求体用 `--body <json|@file|->`，任务名等普通参数用 `--name sample` 分别传入。
 
 ## Code Mode / GraalJS
 

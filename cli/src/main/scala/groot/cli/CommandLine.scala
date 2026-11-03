@@ -9,7 +9,7 @@ object CommandLine:
     case Text(value: String)
     case Shell(script: String)
 
-  private val reserved = Set("body", "input", "help")
+  private val reserved = Set("body", "help")
   private final class Node:
     val children = mutable.LinkedHashMap.empty[String, Node]
     var operation: Option[Operation] = None
@@ -106,7 +106,6 @@ object CommandLine:
         val label = if body.mediaType == "text/plain" then "UTF-8 text" else "JSON"
         lines += s"  --body <$format|@file|->  $label body; ${if body.required then "required" else "optional"}"
       }
-      lines += "  --input <json|@file|->  Complete {path, query, header, cookie, body} input"
     }
     if node.children.nonEmpty then
       lines ++= Vector("", "Commands:")
@@ -135,7 +134,7 @@ object CommandLine:
         val value = Catalog.parse(raw)
         require(value.isNumber, s"Expected number, got $raw")
         value
-      case _ => throw new IllegalArgumentException("Unsupported flag type; use --input")
+      case _ => throw new IllegalArgumentException("Unsupported flag type")
 
   private def input(catalog: Catalog, operation: Operation, args: Vector[String], readText: String => String, cwd: String): Json =
     val (implicitParams, explicitParams) = operation.parameters.partition(_.name == "cwd")
@@ -161,9 +160,6 @@ object CommandLine:
         val (name, raw, consumed) = takeOption(args, index)
         index += consumed
         name match
-          case "input" =>
-            require(values.isEmpty && index == args.size, "--input must be used alone")
-            values = Catalog.obj(Catalog.parse(readText(raw)), "--input")
           case "body" =>
             require(operation.body.nonEmpty, s"${operation.id} has no body")
             require(!values.contains("body"), "Duplicate --body")
@@ -178,8 +174,5 @@ object CommandLine:
               require(items.isArray, s"Expected array for --$name")
               put(param, items, append = true)
             else put(param, scalar(raw, param.schema))
-    implicitParams.foreach { param =>
-      require(values(param.location).flatMap(_.asObject).forall(!_.contains(param.name)), "cwd is supplied automatically by the CLI")
-      put(param, Json.fromString(cwd))
-    }
+    implicitParams.foreach(param => put(param, Json.fromString(cwd)))
     Json.fromJsonObject(values)
