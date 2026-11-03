@@ -15,10 +15,10 @@ jobs:
       set -a
       . ./config.env
       set +a
-      "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/helper/Helper.csproj -f net10.0 -c Release -o wine/dist/helper
+      "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/Helper.csproj -f net10.0 -c Release -o wine/dist/helper
       "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/fixture/Fixture.csproj -f net10.0 -c Release -o wine/dist/fixture
       for arch in x64 x86; do
-        "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/helper/Helper.csproj -f net48 -c Release -p:Platform=$arch -p:PlatformTarget=$arch -o wine/dist/helper/framework-$arch
+        "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/Helper.csproj -f net48 -c Release -p:Platform=$arch -p:PlatformTarget=$arch -o wine/dist/helper/framework-$arch
       done
       "$WINE_RUNTIME_ROOT/sdk/dotnet" build wine/fixture/Fixture.csproj -f net48 -c Release -o wine/dist/fixture-framework
 
