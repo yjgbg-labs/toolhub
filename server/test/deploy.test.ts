@@ -17,6 +17,8 @@ async function fixture(name: string) {
   await mkdir(bin, { recursive: true });
   await mkdir(join(cwd, "server/dist"), { recursive: true });
   await writeFile(join(cwd, "config.env"), await readFile(join(root, "config.env")));
+  await mkdir(join(cwd, "wine/scripts"), { recursive: true });
+  await writeFile(join(cwd, "wine/scripts/deploy.ts"), 'import {appendFile} from "node:fs/promises"; await appendFile(process.env.COMMAND_LOG!, "helper-install\\n");');
   await writeFile(source, "first JAR");
   await writeFile(log, "");
   await writeFile(join(bin, "groot"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -34,7 +36,7 @@ exec "$REAL_CURL" "$@"
     return new Response(ready ? "ok" : "starting", { status: ready ? 200 : 503 });
   } });
   const env = {
-    ...process.env, INSTALL_ONLY: "1", CHECK_ONLY: "0", PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: log,
+    ...process.env, INSTALL_ONLY: "1", CHECK_ONLY: "0", WINE_DEPLOY_HELPER: "0", PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: log,
     SERVER_INSTALL_ROOT: join(home, "data '$ 100%"), SYSTEMD_UNIT_DIR: join(home, "units"),
     REAL_CURL: Bun.which("curl")!, TEST_HEALTH_URL: `${local.url.href}health`, SPROUT_HOME: join(home, "config"),
     SERVER_SERVICE: "groot-sprout-http.service",
@@ -96,6 +98,19 @@ test("missing or empty local artifacts preserve the active server without restar
     expect(await api.commands()).toBe(before);
     expect(await readFile(unit, "utf8")).toBe(beforeUnit);
     expect(await readFile(join(api.env.SERVER_INSTALL_ROOT, "server/groot.jar"), "utf8")).toBe("first JAR");
+  } finally { await api.stop(); }
+});
+
+test("Wine deployment switches helper after stopping the old service and before restarting", async () => {
+  const api = await fixture("wine");
+  try {
+    api.env.WINE_DEPLOY_HELPER = "1";
+    const result = await api.install();
+    expect(result.code, result.output).toBe(0);
+    const commands = (await api.commands()).trim().split("\n");
+    expect(commands[0]).toBe(`--user stop ${api.env.SERVER_SERVICE}`);
+    expect(commands[1]).toBe("helper-install");
+    expect(commands.indexOf(`--user restart ${api.env.SERVER_SERVICE}`)).toBeGreaterThan(1);
   } finally { await api.stop(); }
 });
 
