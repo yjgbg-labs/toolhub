@@ -153,4 +153,4 @@ groot-cli jobs --job wine-deploy
 
 `config.env` 配置 `WINE_HOME`、`WINE_RUNTIME_ROOT`、`WINE_HELPER_ROOT`。Wine 安装面向本机 Ubuntu amd64，解包 apt 软件包至用户目录；.NET/Mono 下载校验官方摘要。
 调用器以内容寻址不可变版本安装，通过符号链接原子切换。net48 x64/x86 使用独立的构建中间目录。
-安装、部署及 helper 测试逻辑直接内联在 `jobs.yaml`；测试任务将样例程序集源码临时生成到 `wine/dist/test-source` 后构建，不随 helper 部署。
+安装和部署逻辑直接内联在 `jobs.yaml`；`wine-test` 构建 helper 并运行服务端的 API 校验、原生 DLL/COM 调用及 prefix 持久化测试。
