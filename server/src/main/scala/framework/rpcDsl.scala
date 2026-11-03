@@ -12,6 +12,7 @@ object rpcDsl:
   export framework.rpc.{PlainText, Shell, SSE, SuccessResponse}
   export framework.http.{ParamCodec, RequestContext, EndpointResult, Handler, Input, Output}
   export httpDsl.{server, host, port, maxBodyBytes, openapi, endpoint, info, title, version,
+    cors, allowOrigins, allowMethods, allowHeaders, exposeHeaders, allowCredentials, maxAge,
     default, constraint, minimum, maximum, minLength, maxLength, pattern, value}
 
   private def group(scope: CommandsScope): CommandGroup = scope match

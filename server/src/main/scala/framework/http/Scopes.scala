@@ -6,6 +6,7 @@ import framework.model.{JsonModel, Schema}
 import io.circe.Json
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.mutable.LinkedHashMap
+import scala.concurrent.duration.*
 
 private[framework] final class ConfigurationGate:
   private var open = true
@@ -25,6 +26,21 @@ final class ServerScope private[framework] (private[framework] val gate: Configu
   private[framework] var hostValue = "127.0.0.1"
   private[framework] var portValue = 18080
   private[framework] var maxBodyBytesValue = 1024L * 1024L
+  private[framework] var corsScope: Option[CorsScope] = None
+
+final class CorsScope private[framework] (private[framework] val gate: ConfigurationGate) extends ConfigScope:
+  private[framework] var allowedOriginsValue = Set("*")
+  private[framework] var allowedMethodsValue = Set("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
+  private[framework] var allowedHeadersValue = Set("*")
+  private[framework] var exposedHeadersValue = Set.empty[String]
+  private[framework] var allowCredentialsValue = false
+  private[framework] var maxAgeValue = 1.hour
+
+  private[framework] def freeze(): CorsSettings =
+    require(!allowCredentialsValue || !allowedOriginsValue.contains("*"), "CORS credentials require explicit origins")
+    require(!allowCredentialsValue || !allowedMethodsValue.contains("*"), "CORS credentials require explicit methods")
+    require(!allowCredentialsValue || !exposedHeadersValue.contains("*"), "CORS credentials require explicit exposed headers")
+    CorsSettings(allowedOriginsValue, allowedMethodsValue, allowedHeadersValue, exposedHeadersValue, allowCredentialsValue, maxAgeValue)
 
 final class InfoScope private[framework] (private[framework] val gate: ConfigurationGate) extends DescriptionScope:
   private[framework] var titleValue = "Groot HTTP"
@@ -151,6 +167,6 @@ final class AppScope private[framework] () extends ConfigScope:
   private[framework] def freeze(): ApplicationDecl =
     gate.close()
     val info = openApiScope.infoScope
-    ApplicationDecl(ServerSettings(serverScope.hostValue, serverScope.portValue, serverScope.maxBodyBytesValue),
+    ApplicationDecl(ServerSettings(serverScope.hostValue, serverScope.portValue, serverScope.maxBodyBytesValue, serverScope.corsScope.map(_.freeze())),
       OpenApiSettings(openApiScope.endpointValue, info.titleValue, info.versionValue, info.descriptionValue),
       routes.flatMap(_.freeze()).toVector, extensions.iterator.map((name, value) => name -> value()).toMap)

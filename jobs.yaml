@@ -192,7 +192,7 @@ jobs:
       set -eu
       . ./config.env
       export COURSIER_REPOSITORIES=https://repo.maven.apache.org/maven2
-      groot use-jdk "$JDK_MAJOR" -- scala-cli test server/project.scala server/src --jvm system --server=false
+      groot-cli use-jdk --version "$JDK_MAJOR" --command 'scala-cli test server/project.scala server/src --jvm system --server=false'
       bun test server/test
 
   - name: server-deploy

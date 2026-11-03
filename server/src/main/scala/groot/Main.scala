@@ -17,6 +17,7 @@ import groot.zshonmac.{ZshOnMacRoutes, ZshOnMacService}
 import groot.bashonr6s.{BashOnR6sRoutes, BashOnR6sService}
 import groot.chrome.{ChromeRoutes, ChromeService}
 import groot.wine.{WineRoutes, WineService}
+import scala.concurrent.duration.*
 
 object Main extends IOApp.Simple:
   def run: IO[Unit] = (for
@@ -37,6 +38,14 @@ object Main extends IOApp.Simple:
       server {
         host("0.0.0.0")
         port(18080)
+        cors {
+          allowOrigins("*")
+          allowMethods("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
+          allowHeaders("*")
+          exposeHeaders("ETag", "Allow")
+          allowCredentials(false)
+          maxAge(1.hour)
+        }
       }
 
       openapi {

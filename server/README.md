@@ -36,6 +36,7 @@ framework/
 │   ├── SSE.scala
 │   └── SuccessResponse.scala
 └── runtime/
+    ├── Cors.scala
     └── Application.scala
 ```
 
@@ -90,6 +91,62 @@ endpoint. Multiple `routes` blocks have independent shared declarations.
 Inputs use `path`, `query`, `header`, `cookie`, `body.json` and `body.text`; responses use
 `response.json`, `response.text` and `response.empty`. HTTP handlers return
 `IO[EndpointResult]`.
+
+### Global CORS
+
+Both DSLs accept a single `cors` block inside `server`. It wraps the public HTTP
+application, including all routes, OpenAPI, errors, HEAD and streaming responses:
+
+```scala
+import scala.concurrent.duration.*
+
+val app = httpApp {
+  server {
+    cors {
+      allowOrigins("*")
+      allowMethods("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
+      allowHeaders("*")
+      exposeHeaders("ETag", "Allow")
+      allowCredentials(false)
+      maxAge(1.hour)
+    }
+  }
+  // HTTP routes or RPC commands
+}
+```
+
+Omitting `cors` disables CORS. An empty `cors {}` enables all origins, the methods
+listed above and all request headers, with no exposed response headers, no
+credentials and a one-hour preflight cache. Groot's `Main` uses the configuration
+shown above, so frontend pages can call Chrome, Wine and the other public APIs.
+
+- `allowOrigins` accepts `"*"` or exact origins such as
+  `allowOrigins("http://localhost:5173", "https://htpc.example")`. Origins include
+  the scheme and optional port, but no path, trailing slash, query, fragment or
+  user information. The literal `"null"` is also accepted.
+- `allowMethods` accepts HTTP method names, or `"*"` for any method.
+- `allowHeaders("*")` reflects the preflight's requested header names, including
+  `Authorization`; a named list is matched case-insensitively.
+- `exposeHeaders` lists additional response headers readable by JavaScript;
+  `"*"` exposes all response headers when credentials are disabled.
+- `allowCredentials(true)` requires explicit origins, methods and exposed header
+  names (or no exposed headers). Wildcard request headers still work by reflection.
+- `maxAge` takes a nonnegative `FiniteDuration` and is sent in whole seconds.
+  Use `0.seconds` to avoid caching. Each setter replaces its corresponding list;
+  a wildcard cannot be mixed with named values. Configuration freezes with the app.
+
+The http4s CORS policy handles `OPTIONS` with `Origin` and
+`Access-Control-Request-Method` before routing or reading a body. Accepted
+preflights return an empty 200 with CORS headers without invoking handlers or
+endpoint middleware. Disallowed preflights receive no CORS permission headers.
+Ordinary OPTIONS requests still use the router. CORS headers also accompany
+actual allowed-origin responses, including errors and conditional OpenAPI 304s;
+origin-specific policies add `Vary: Origin` for shared caches.
+
+CORS controls browser response sharing, not API authentication or route
+registration: actual requests still use the normal router, and in-process GraalJS
+calls bypass this HTTP-only policy. HTTPS/mixed-content and browser local-network
+permissions are separate from server CORS configuration.
 
 ## RPC
 
