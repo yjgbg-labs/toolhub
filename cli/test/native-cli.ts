@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 
-// Deliberately unrelated to Sprout's business API. The very same binary is also
+// Deliberately unrelated to Groot's business API. The very same binary is also
 // tested after changing the live contract without rebuilding.
 const binary = resolve(process.argv[2] ?? "cli/dist/groot-cli");
 const directory = await mkdtemp("/tmp/opencode/native-cli-");
@@ -89,7 +89,7 @@ try {
       const previousDiscoveries = discoveryCount;
       const child = Bun.spawn([binary, ...args], {
         cwd: directory,
-        env: { ...process.env, SPROUT_BASE_URL: baseUrl, SPROUT_PORT: String(tcp.port) },
+        env: { ...process.env, GROOT_BASE_URL: baseUrl, GROOT_PORT: String(tcp.port) },
         stdin: stdin === undefined ? "ignore" : new Blob([stdin]), stdout: "pipe", stderr: "pipe",
       });
       const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);

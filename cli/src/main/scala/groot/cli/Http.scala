@@ -1,4 +1,4 @@
-package sprout.cli
+package groot.cli
 
 import io.circe.Json
 

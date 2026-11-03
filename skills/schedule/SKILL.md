@@ -1,11 +1,11 @@
 ---
 name: schedule
-description: 创建、修改或排查Sprout定时任务及迁移groot调度时使用
+description: 创建、修改或排查 Groot 定时任务及迁移旧版调度时使用
 ---
 
-# Sprout 定时任务
+# Groot 定时任务
 
-周期任务由 Sprout 调度到 GraalJS，每次成功提交的执行和重试都有独立 task ID。
+周期任务由 Groot 调度到 GraalJS，每次成功提交的执行和重试都有独立 task ID。
 
 ## 核心约定
 
@@ -13,7 +13,7 @@ description: 创建、修改或排查Sprout定时任务及迁移groot调度时�
 - CLI、Code Mode 和 GraalJS SDK 都由普通命令声明生成，不添加业务专用适配器。
 - `script` 为服务端 JavaScript 文件的绝对路径；不接受内联 `source`、`command`、`cwd` 或运行状态字段。
 - 脚本使用 `console`、`tools.*`（HTTP 用 `tools.fetch`，宿主命令用 `tools.bash`）；JS 环境不能导入 Bun/Node 模块。
-- 调度循环随 `groot-sprout-http.service` 启动；不要重启旧 `groot-schedule.service`。
+- 调度循环随 `groot-http.service` 启动；不要重启旧 `groot-schedule.service`。
 - 调度由配置变更、任务完成和最近截止时间唤醒；空闲/等待资源时休眠，不轮询文件。
 - 除非用户指定，不创建 cron 或 systemd timer。
 - 配置修改通过 API/CLI 完成，不直接编辑运行中的配置及状态文件。
@@ -24,11 +24,11 @@ description: 创建、修改或排查Sprout定时任务及迁移groot调度时�
 groot-cli health
 groot-cli schedule list
 groot-cli schedule config read
-systemctl --user is-active groot-sprout-http.service
+systemctl --user is-active groot-http.service
 ```
 
-默认地址 `http://127.0.0.1:18080`，客户端可通过 `SPROUT_BASE_URL` 覆盖。
-默认数据根目录为 `${XDG_CONFIG_HOME:-$HOME/.config}/sprout`，服务端可用 `SPROUT_HOME` 覆盖：
+默认地址 `http://127.0.0.1:18080`，客户端可通过 `GROOT_BASE_URL` 覆盖。
+默认数据根目录为 `${XDG_CONFIG_HOME:-$HOME/.config}/groot`，服务端可用 `GROOT_HOME` 覆盖：
 
 - 配置：`schedule.json`
 - 状态：`schedule/state/<编码后的任务名>.json`
@@ -38,7 +38,7 @@ systemctl --user is-active groot-sprout-http.service
 ## 任务操作
 
 ```bash
-groot-cli schedule new --name sample --body '{"every":"10m","script":"/home/user/.config/sprout/scripts/sample.js"}'
+groot-cli schedule new --name sample --body '{"every":"10m","script":"/home/user/.config/groot/scripts/sample.js"}'
 groot-cli schedule list
 groot-cli schedule log --name sample --lines 200
 groot-cli schedule reset --name sample
@@ -92,7 +92,7 @@ groot-cli graaljs logs --id gjs_...
   "jobs": {
     "sample": {
       "every": "10m",
-      "script": "/home/user/.config/sprout/scripts/sample.js",
+      "script": "/home/user/.config/groot/scripts/sample.js",
       "cpu": "1s",
       "timeout": "30s",
       "retry": {"maxRetries": 3, "delay": "1s", "backoff": 2, "maxDelay": "30s"},
@@ -121,7 +121,7 @@ groot-cli schedule config read | jq '.jobs.sample.enabled = false' | groot-cli s
 Code Mode 先用 `search` 获取当前准确签名。JavaScript SDK 普通参数扁平化，混合输入保留 `body`，仅请求体直接传对象：
 
 ```js
-await tools.schedule.new({name: "sample", body: {every: "10m", script: "/home/user/.config/sprout/scripts/sample.js"}});
+await tools.schedule.new({name: "sample", body: {every: "10m", script: "/home/user/.config/groot/scripts/sample.js"}});
 await tools.schedule.log({name: "sample", lines: 100});
 const config = (await tools.schedule.config.read()).body;
 await tools.schedule.config.write(config);
@@ -142,6 +142,6 @@ if (result.exitCode !== 0) throw Error(result.stderr || `bash exit ${result.exit
 - 服务关闭等待活动 Context 清理；重启保留配置、状态及日志。
 
 ```bash
-systemctl --user status groot-sprout-http.service --no-pager --full
-journalctl --user -u groot-sprout-http.service -n 100 --no-pager
+systemctl --user status groot-http.service --no-pager --full
+journalctl --user -u groot-http.service -n 100 --no-pager
 ```

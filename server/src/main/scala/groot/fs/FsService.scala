@@ -120,7 +120,7 @@ final class FsService:
   /** Shared by replacement writes and copies; publish only after the writer has closed its handles. */
   private[fs] def replace(target: Path)(write: Path => IO[Unit]): IO[Unit] =
     writable(target) *> Resource.make(
-      IO.blocking(Files.createTempFile(target.getParent, ".sprout-fs-", ".tmp"))
+      IO.blocking(Files.createTempFile(target.getParent, ".groot-fs-", ".tmp"))
     )(temporary => IO.blocking(Files.deleteIfExists(temporary)).void).use { temporary =>
       val permissions = IO.blocking {
         val view = Files.getFileAttributeView(target, classOf[PosixFileAttributeView], NOFOLLOW_LINKS)

@@ -17,7 +17,7 @@ function fixture(respond: (request: Request) => Response) {
     return respond(request);
   } });
   const child = Bun.spawn([binary, "watch"], {
-    env: { ...process.env, SPROUT_BASE_URL: server.url.href.replace(/\/$/, "") },
+    env: { ...process.env, GROOT_BASE_URL: server.url.href.replace(/\/$/, "") },
     stdin: "ignore", stdout: "pipe", stderr: "pipe",
   });
   return {

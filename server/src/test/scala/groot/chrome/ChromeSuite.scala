@@ -17,7 +17,7 @@ import scala.util.Using
 class ChromeSuite extends CatsEffectSuite:
   override val munitIOTimeout = 120.seconds
   private def temporary: Resource[IO, Path] = Resource.make(IO.blocking {
-    Files.createTempDirectory(Path.of(System.getProperty("user.home")), "sprout-chrome-test-")
+    Files.createTempDirectory(Path.of(System.getProperty("user.home")), "groot-chrome-test-")
   })(path => IO.blocking(Using.resource(Files.walk(path))(_.iterator().asScala.toVector.reverse.foreach(Files.deleteIfExists))))
 
   test("domain matching respects label boundaries and names cannot escape profile roots") {
@@ -71,7 +71,7 @@ class ChromeSuite extends CatsEffectSuite:
         <div style="height:1600px"></div><button id="bottom">Bottom</button>""".replace("CROSS_FRAME_URL", s"http://localhost:${server.getAddress.getPort}/cross")
       val bytes = html.getBytes(UTF_8)
       exchange.getResponseHeaders.add("Content-Type", "text/html; charset=utf-8")
-      exchange.getResponseHeaders.add("Set-Cookie", "sprout_test=kept; Path=/; Max-Age=3600; HttpOnly; SameSite=Lax")
+      exchange.getResponseHeaders.add("Set-Cookie", "groot_test=kept; Path=/; Max-Age=3600; HttpOnly; SameSite=Lax")
       exchange.sendResponseHeaders(200, bytes.length)
       Using.resource(exchange.getResponseBody)(_.write(bytes))
       exchange.close()
@@ -123,7 +123,7 @@ class ChromeSuite extends CatsEffectSuite:
           bytes <- IO.blocking(Files.readAllBytes(Path.of(shot.path)))
           _ = assertEquals(bytes.take(8).toVector, Vector(137,80,78,71,13,10,26,10).map(_.toByte))
           cookies <- service.cookies("test", "127.0.0.1")
-          _ = assert(cookies.exists(c => c.name == "sprout_test" && c.httpOnly))
+          _ = assert(cookies.exists(c => c.name == "groot_test" && c.httpOnly))
           _ <- on(service)(_.goto(url + "?next=1", "domcontentloaded"))
           stale <- on(service)(_.elements.click(beforeNavigationRef, None)).attempt
           _ = assert(stale.swap.toOption.exists { case e: ChromeFailure => e.code == "chrome_stale_ref"; case _ => false })
@@ -145,7 +145,7 @@ class ChromeSuite extends CatsEffectSuite:
           _ = assertEquals(stopped.status, "stopped")
           _ <- service.start("test", false, true)
           persisted <- service.cookies("test", "127.0.0.1")
-          _ = assert(persisted.exists(_.name == "sprout_test"))
+          _ = assert(persisted.exists(_.name == "groot_test"))
           _ <- if sys.env.get("CHROME_KIOSK_TEST").contains("1") then for
             _ <- service.stop("test")
             window <- service.start("test", true, false)

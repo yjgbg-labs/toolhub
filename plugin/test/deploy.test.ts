@@ -8,7 +8,7 @@ afterAll(() => rm(directory, { recursive: true, force: true }));
 const root = new URL("../../", import.meta.url).pathname;
 const jobs = Bun.YAML.parse(await Bun.file(join(root, "jobs.yaml")).text()) as { jobs: { name: string; run: string }[] };
 const run = jobs.jobs.find(job => job.name === "pluging-deploy")!.run;
-const bundle = 'export default { id: "sprout", setup(ctx) { return ctx.options; } };';
+const bundle = 'export default { id: "groot", setup(ctx) { return ctx.options; } };';
 
 async function fixture(name: string) {
   const home = join(directory, name);
@@ -19,7 +19,7 @@ async function fixture(name: string) {
   await writeFile(join(cwd, "config.env"), await readFile(join(root, "config.env")));
   await writeFile(source, bundle);
   return {
-    source, pluginDir, target: join(pluginDir, "sprout.ts"),
+    source, pluginDir, target: join(pluginDir, "groot.ts"),
     async install(checkOnly = false) {
       const child = Bun.spawn(["sh", "-e", "-c", run], {
         cwd, stdout: "pipe", stderr: "pipe",
@@ -34,15 +34,15 @@ async function fixture(name: string) {
 test("plugin deploy replaces the legacy wrapper with a standalone bundle and preserves options", async () => {
   const api = await fixture("install ' % home");
   await mkdir(api.pluginDir);
-  await writeFile(api.target, '// Managed by sprout-http deployment\nexport { default } from "file:///old-release/index.js";');
+  await writeFile(api.target, '// Managed by groot-http deployment\nexport { default } from "file:///old-release/index.js";');
   const result = await api.install();
   expect(result.code, result.output).toBe(0);
   const { default: plugin } = await import(pathToFileURL(api.target).href);
-  expect(plugin.id).toBe("sprout");
+  expect(plugin.id).toBe("groot");
   expect(plugin.setup({ options: { baseUrl: "http://localhost:9000" } })).toEqual({ baseUrl: "http://localhost:9000" });
   expect((await stat(api.target)).mode & 0o777).toBe(0o644);
   expect(await readFile(api.source, "utf8")).toBe(bundle);
-  await writeFile(api.source, bundle.replace('id: "sprout"', 'id: "updated"'));
+  await writeFile(api.source, bundle.replace('id: "groot"', 'id: "updated"'));
   expect((await api.install()).code).toBe(0);
   expect(await readFile(api.target, "utf8")).toContain('id: "updated"');
 });

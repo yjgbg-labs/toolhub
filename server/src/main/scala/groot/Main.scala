@@ -42,7 +42,7 @@ object Main extends IOApp.Simple:
       openapi {
         endpoint("/openapi.json")
         info {
-          title("Sprout")
+          title("Groot")
           version("1.0.0")
         }
       }

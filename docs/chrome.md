@@ -94,7 +94,7 @@ groot-cli chrome cookies --instanceName demo --domain example.com
 `config.env` 中的环境变量由 `server-deploy` 写入 user service：
 
 - `CHROME_BINARY`：可选 Chromium/Chrome 可执行文件绝对路径，默认自动发现。
-- `CHROME_HOME`：默认 `~/sprout-chrome`，使用非隐藏目录以兼容 Ubuntu Chromium snap。
+- `CHROME_HOME`：默认 `~/groot-chrome`，使用非隐藏目录以兼容 Ubuntu Chromium snap。
 - `CHROME_WAYLAND_DISPLAY` / `CHROME_DISPLAY`：可选图形会话覆盖。
   未配置时使用继承的显示环境（优先 DISPLAY），或发现 X11/XWayland `:0`、当前用户运行目录中的 Wayland socket。
   多桌面环境建议显式指定目标会话。

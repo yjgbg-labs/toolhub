@@ -16,7 +16,7 @@ description: 编译、运行或排查Java与JVM项目时使用
 - `groot-cli use-jdk` 只为子进程设置环境；不要额外执行 `export JAVA_HOME=...`。
 - `--version` 是正整数主版本；`--command` 是一个完整的 `/bin/sh -c` 命令字符串，命令和参数一起放入引号中。
 - 外层优先用单引号，将 `$JAVA_HOME` 等变量留给选定 JDK 后的子进程展开；带空格的路径在命令字符串内另加双引号。
-- 需要可访问 Sprout HTTP 服务；此命令仅向 CLI 暴露，服务端生成脚本，由调用方本机选择或安装 JDK 并执行。
+- 需要可访问 Groot HTTP 服务；此命令仅向 CLI 暴露，服务端生成脚本，由调用方本机选择或安装 JDK 并执行。
 
 ## 选择版本
 
@@ -60,7 +60,7 @@ groot-cli use-jdk --version <major-version> --command 'java --version'
 
 ## 失败处理
 
-- 服务连接失败：用 `groot-cli health` 检查服务，并核对 `SPROUT_BASE_URL` 或 `SPROUT_PORT`。
+- 服务连接失败：用 `groot-cli health` 检查服务，并核对 `GROOT_BASE_URL` 或 `GROOT_PORT`。
 - 下载失败：保留原始错误，检查网络、Adoptium 可用性和版本是否存在后重试。
 - `unsupported operating system` 或 `unsupported CPU architecture`：不要绕过限制安装不匹配的二进制包。
 - 缓存不完整或版本不符：检查报错目录中的 `release`、`bin/java` 和 `bin/javac`。

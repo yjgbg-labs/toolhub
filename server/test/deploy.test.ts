@@ -36,8 +36,8 @@ exec "$REAL_CURL" "$@"
   const env = {
     ...process.env, INSTALL_ONLY: "1", CHECK_ONLY: "0", WINE_DEPLOY_HELPER: "0", PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: log,
     SERVER_INSTALL_ROOT: join(home, "data '$ 100%"), SYSTEMD_UNIT_DIR: join(home, "units"),
-    REAL_CURL: Bun.which("curl")!, TEST_HEALTH_URL: `${local.url.href}health`, SPROUT_HOME: join(home, "config"),
-    SERVER_SERVICE: "groot-sprout-http.service",
+    REAL_CURL: Bun.which("curl")!, TEST_HEALTH_URL: `${local.url.href}health`, GROOT_HOME: join(home, "config"),
+    SERVER_SERVICE: "groot-http.service",
     SERVER_START_TIMEOUT_MS: "1000",
   };
   return {
@@ -62,14 +62,14 @@ test("inline server deployment installs a local JAR, migrates the user unit and 
     await mkdir(join(api.env.SERVER_INSTALL_ROOT, "server"));
     await symlink(legacy, join(api.env.SERVER_INSTALL_ROOT, "server/current"));
     await mkdir(api.env.SYSTEMD_UNIT_DIR);
-    await writeFile(join(api.env.SYSTEMD_UNIT_DIR, api.env.SERVER_SERVICE), "# Managed by sprout-http deployment\nold unit");
+    await writeFile(join(api.env.SYSTEMD_UNIT_DIR, api.env.SERVER_SERVICE), "# Managed by groot-http deployment\nold unit");
     const result = await api.install();
     expect(result.code, result.output).toBe(0);
     const unit = join(api.env.SYSTEMD_UNIT_DIR, api.env.SERVER_SERVICE);
     const content = await readFile(unit, "utf8");
     expect((await stat(unit)).mode & 0o777).toBe(0o644);
     expect(content).toContain('use-jdk "25" -- java');
-    expect(content).not.toContain("SPROUT_PORT=");
+    expect(content).not.toContain("GROOT_PORT=");
     expect(content).toContain("data '$$ 100%%/server/groot.jar");
     expect(content).not.toContain("/current/");
     expect((await api.commands()).trim().split("\n").map(line => line.split(" ")[1])).toEqual(["daemon-reload", "enable", "restart", "is-active", "is-enabled"]);

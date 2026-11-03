@@ -6,7 +6,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 
-namespace Sprout.Wine;
+namespace Groot.Wine;
 
 // One request file, one process, one result file. Library stdout/stderr is never protocol traffic.
 internal static class Program
@@ -32,7 +32,7 @@ internal static class Program
     static int Main(string[] args)
     {
         if (args.Length != 4 || args[0] != "--request" || args[2] != "--result") {
-            Console.Error.WriteLine("Usage: Sprout.Wine.Helper --request <json-file> --result <json-file>");
+            Console.Error.WriteLine("Usage: Groot.Wine.Helper --request <json-file> --result <json-file>");
             return 2;
         }
         try {
