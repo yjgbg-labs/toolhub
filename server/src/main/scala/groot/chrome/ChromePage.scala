@@ -2,7 +2,6 @@ package groot.chrome
 
 import cats.effect.{IO, Resource}
 import cats.syntax.all.*
-import framework.model.JsonModel
 import io.circe.Json
 import java.nio.file.{Files, Path}
 import java.util.{Base64, UUID}
@@ -75,43 +74,8 @@ private[chrome] final class ChromePage(val cdp: Cdp, val session: String, screen
       .liftTo[IO](ChromeFailure("chrome_not_found", "Frame does not belong to this tab"))
   yield asFrame(value)
 
-  def snapshot(maxNodes: Int): IO[PageSnapshot] = for
-    _ <- IO.raiseWhen(maxNodes < 1 || maxNodes > 5000)(ChromeFailure("invalid_chrome", "maxNodes must be between 1 and 5000"))
-    all <- frames
-    prefix = "ref:" + UUID.randomUUID().toString.take(8) + ":"
-    collected <- all.traverse { node =>
-      val f = asFrame(node)
-      cdp.call("Accessibility.getFullAXTree", obj("frameId" -> str(f.id)), Some(f.session)).map(tree => (f, array(tree, "nodes")))
-    }
-    page <- info
-    result <- IO {
-      refs.clear()
-      var index = 0
-      val nodes = collected.flatMap { (f, raw) =>
-        val byId = raw.map(n => text(n, "nodeId") -> n).toMap
-        def depth(n: Json, seen: Set[String] = Set.empty): Int =
-          val parent = text(n, "parentId")
-          if parent.isEmpty || seen.contains(parent) || seen.size >= 100 then 0
-          else byId.get(parent).fold(0)(p => 1 + depth(p, seen + parent))
-        raw.filterNot(flag(_, "ignored")).map { n =>
-          val ref = n.hcursor.get[Int]("backendDOMNodeId").toOption.map { backend =>
-            index += 1
-            val key = prefix + index
-            key -> ElementRef(f.id, f.loader, backend)
-          }
-          (SnapshotNode(ref.map(_._1), f.id, text(field(n, "role"), "value"), text(field(n, "name"), "value").take(4096),
-            n.hcursor.downField("value").downField("value").focus.map(v => if v.isString then str(v.asString.get.take(4096)) else v), depth(n)), ref)
-        }
-      }
-      var bytes = 0
-      val selected = nodes.take(maxNodes).takeWhile { (node, _) =>
-        bytes += JsonModel[SnapshotNode].encoder(node).noSpaces.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
-        bytes <= 768 * 1024
-      }
-      selected.foreach(_._2.foreach((key, value) => refs(key) = value))
-      PageSnapshot(page.url, page.title, selected.map(_._1), nodes.size > selected.size)
-    }
-  yield result
+  def snapshot(maxNodes: Int, format: String = "json", interactiveOnly: Boolean = false): IO[PageSnapshot] =
+    new PageSnapshots(this).capture(maxNodes, format, interactiveOnly)
 
   private def ready(waitUntil: String, loader: Option[String] = None, previous: Option[String] = None): IO[PageInfo] =
     def check: IO[Boolean] = for

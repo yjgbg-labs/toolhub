@@ -25,7 +25,7 @@ final class ChromeService private (store: ChromeStore, client: HttpClient,
   private def info(e: Entry): ChromeInstance =
     val handle = process(e)
     ChromeInstance(e.state.instanceName, if handle.nonEmpty then "running" else "stopped",
-      e.state.kiosk, e.state.headless, handle.map(_.pid()), store.profile(e.state.instanceName).toString)
+      e.state.kiosk, e.state.headless, handle.map(_.pid()), store.profile(e.state.instanceName).toString, e.state.extraArgs)
 
   private def connect(name: String, process: ProcessHandle): Resource[IO, Live] = for
     endpoint <- Resource.eval(store.endpoint(name, process))
@@ -55,26 +55,28 @@ final class ChromeService private (store: ChromeStore, client: HttpClient,
     e.gate.permit.use(_ => IO.blocking(info(e)))
   }).map(_.sortBy(_.instanceName))
 
-  def start(name: String, kiosk: Boolean, headless: Boolean): IO[ChromeInstance] =
+  def start(name: String, kiosk: Boolean, headless: Boolean, extraArgs: Vector[String] = Vector.empty): IO[ChromeInstance] =
     IO {
       ChromeValidation.name(name)
+      ChromeValidation.extraArgs(extraArgs)
       if kiosk && headless then throw ChromeFailure("invalid_chrome", "kiosk and headless cannot both be true")
     } *> lifecycle.permit.use { _ => for
       existing <- entries.get.map(_.get(name))
       e <- existing.fold(for
         gate <- Semaphore[IO](1)
-        value = new Entry(SavedInstance(name, kiosk, headless), gate)
+        value = new Entry(SavedInstance(name, kiosk, headless, extraArgs = extraArgs), gate)
         _ <- store.prepare(name) *> store.save(value.state)
         _ <- entries.update(_ + (name -> value))
       yield value)(IO.pure)
       result <- e.gate.permit.use { _ => IO.defer {
         process(e) match
           case Some(_) =>
-            IO.raiseWhen(e.state.kiosk != kiosk || e.state.headless != headless)(ChromeFailure("chrome_conflict", "Stop the instance before changing kiosk/headless")) *>
+            IO.raiseWhen(e.state.kiosk != kiosk || e.state.headless != headless || e.state.extraArgs != extraArgs)(
+              ChromeFailure("chrome_conflict", "Stop the instance before changing kiosk/headless/extraArgs")) *>
               live(e).as(info(e))
           case None => IO.uncancelable { poll => for
             _ <- e.running.traverse_(_._2) *> IO { e.running = None }
-            next = SavedInstance(name, kiosk, headless)
+            next = SavedInstance(name, kiosk, headless, extraArgs = extraArgs)
             allocated <- poll((for
               process <- Resource.make(ChromeStore.launch(executable(), store, next))(ChromeStore.terminate)
               live <- connect(name, process)
