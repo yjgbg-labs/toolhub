@@ -133,7 +133,7 @@ jobs:
       . ./config.env
       export COURSIER_REPOSITORIES=https://repo.maven.apache.org/maven2
       export CHROME_TEST=1
-      groot-cli use-jdk --version "$JDK_MAJOR" --command 'scala-cli test server/project.scala server/src --jvm system --server=false --test-only groot.chrome.ChromeSuite'
+      mise exec "java@$JDK_VERSION" -- scala-cli test server/project.scala server/src --jvm system --server=false --test-only groot.chrome.ChromeSuite
 
   - name: widget-windows-test
     run: |
@@ -192,7 +192,7 @@ jobs:
       set -eu
       . ./config.env
       export COURSIER_REPOSITORIES=https://repo.maven.apache.org/maven2
-      groot-cli use-jdk --version "$JDK_MAJOR" --command 'scala-cli test server/project.scala server/src --jvm system --server=false'
+      mise exec "java@$JDK_VERSION" -- scala-cli test server/project.scala server/src --jvm system --server=false
       bun test server/test
 
   - name: server-deploy
@@ -205,10 +205,10 @@ jobs:
       if [ "${INSTALL_ONLY:-0}" != 1 ]; then
         export COURSIER_REPOSITORIES=https://repo.maven.apache.org/maven2
         mkdir -p server/dist
-        groot use-jdk "$JDK_MAJOR" -- scala-cli --power package server/project.scala server/src/main/scala \
+        mise exec "java@$JDK_VERSION" -- scala-cli --power package server/project.scala server/src/main/scala \
           --assembly --preamble=false --main-class groot.Main --jvm system --server=false -o server/dist/groot.jar --force
-        groot use-jdk "$JDK_MAJOR" -- jar --update --file server/dist/groot.jar --manifest server/assembly.mf
-        groot use-jdk "$JDK_MAJOR" -- java --enable-native-access=ALL-UNNAMED \
+        mise exec "java@$JDK_VERSION" -- jar --update --file server/dist/groot.jar --manifest server/assembly.mf
+        mise exec "java@$JDK_VERSION" -- java --enable-native-access=ALL-UNNAMED \
           --class-path server/dist/groot.jar server/test/AssemblySmoke.java
       fi
       test -s server/dist/groot.jar
@@ -223,8 +223,8 @@ jobs:
       stage=$(mktemp -d "$SERVER_INSTALL_ROOT/.install.XXXXXX")
       trap 'rm -rf "$stage"; rm -f "$unit.tmp.$$"' EXIT HUP INT TERM
       install -m 644 server/dist/groot.jar "$stage/groot.jar"
-      groot=$(command -v groot)
-      "$groot" use-jdk "$JDK_MAJOR" -- java --version
+      mise=$(command -v mise)
+      "$mise" exec "java@$JDK_VERSION" -- java --version
       quote() { printf '"'; printf '%s' "$1" | sed 's/\\/\\\\/g;s/"/\\"/g;s/%/%%/g'; printf '"'; }
       exec_quote() { quote "$1" | sed 's/\$/$$/g'; }
       cat > "$stage/$SERVER_SERVICE" <<EOF
@@ -237,7 +237,8 @@ jobs:
       [Service]
       Type=simple
       WorkingDirectory=$(printf '%s' "$SERVER_INSTALL_ROOT/server" | sed 's/%/%%/g')
-      Environment=$(quote "PATH=$(dirname "$(command -v bun)"):$(dirname "$groot"):/usr/local/bin:/usr/bin:/bin")
+      Environment=$(quote "PATH=$(dirname "$(command -v bun)"):$CLI_BIN_DIR:$(dirname "$mise"):/usr/local/bin:/usr/bin:/bin")
+      Environment="MISE_EXEC_AUTO_INSTALL=false"
       Environment=$(quote "GROOT_HOME=$GROOT_HOME")
       Environment=$(quote "POWERSHELL_SSH_TARGET=$POWERSHELL_SSH_TARGET")
       Environment=$(quote "POWERSHELL_SSH_IDLE=$POWERSHELL_SSH_IDLE")
@@ -252,7 +253,7 @@ jobs:
       Environment=$(quote "WINE_HOME=$WINE_HOME")
       Environment=$(quote "WINE_RUNTIME_ROOT=$WINE_RUNTIME_ROOT")
       Environment=$(quote "WINE_HELPER_ROOT=$WINE_HELPER_ROOT")
-      ExecStart=$(exec_quote "$groot") use-jdk "$JDK_MAJOR" -- java --enable-native-access=ALL-UNNAMED -XX:ActiveProcessorCount=4 -jar $(exec_quote "$target")
+      ExecStart=$(exec_quote "$mise") exec $(exec_quote "java@$JDK_VERSION") -- java --enable-native-access=ALL-UNNAMED -XX:ActiveProcessorCount=4 -jar $(exec_quote "$target")
       UMask=0077
       Restart=on-failure
       RestartSec=3
@@ -331,8 +332,8 @@ jobs:
         fi
         export COURSIER_REPOSITORIES=https://repo.maven.apache.org/maven2
         mkdir -p cli/dist
-        groot-cli use-jdk --version "$JDK_MAJOR" --command 'scala-cli --power package cli/project.scala cli/src/main/scala \
-          --native --native-version 0.5.12 --jvm system --server=false --main-class groot.cli.NativeCli -o cli/dist/groot-cli --force'
+        mise exec "java@$JDK_VERSION" -- scala-cli --power package cli/project.scala cli/src/main/scala \
+          --native --native-version 0.5.12 --jvm system --server=false --main-class groot.cli.NativeCli -o cli/dist/groot-cli --force
         bun cli/test/native-cli.ts
         bun test cli/test
       fi

@@ -19,7 +19,11 @@ async function fixture(name: string) {
   await writeFile(join(cwd, "config.env"), await readFile(join(root, "config.env")));
   await writeFile(source, "first JAR");
   await writeFile(log, "");
-  await writeFile(join(bin, "groot"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  await writeFile(join(bin, "groot"), "#!/bin/sh\nexit 99\n", { mode: 0o755 });
+  await writeFile(join(bin, "mise"), `#!/bin/sh
+test "$*" = "exec java@$JDK_VERSION -- java --version" || exit 2
+exit "\${TEST_JDK_EXIT:-0}"
+`, { mode: 0o755 });
   await writeFile(join(bin, "systemctl"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$COMMAND_LOG"\n', { mode: 0o755 });
   await writeFile(join(bin, "curl"), `#!/bin/sh
 if [ "$1" = -fsS ]; then
@@ -39,6 +43,8 @@ exec "$REAL_CURL" "$@"
     REAL_CURL: Bun.which("curl")!, TEST_HEALTH_URL: `${local.url.href}health`, GROOT_HOME: join(home, "config"),
     SERVER_SERVICE: "groot-http.service",
     SERVER_START_TIMEOUT_MS: "1000",
+    JDK_VERSION: "temurin-25",
+    TEST_JDK_EXIT: "0",
   };
   return {
     env, source,
@@ -68,7 +74,9 @@ test("inline server deployment installs a local JAR, migrates the user unit and 
     const unit = join(api.env.SYSTEMD_UNIT_DIR, api.env.SERVER_SERVICE);
     const content = await readFile(unit, "utf8");
     expect((await stat(unit)).mode & 0o777).toBe(0o644);
-    expect(content).toContain('use-jdk "25" -- java');
+    expect(content).toContain('mise" exec "java@temurin-25" -- java');
+    expect(content).toContain('Environment="MISE_EXEC_AUTO_INSTALL=false"');
+    expect(content).not.toContain("use-jdk");
     expect(content).not.toContain("GROOT_PORT=");
     expect(content).toContain("data '$$ 100%%/server/groot.jar");
     expect(content).not.toContain("/current/");
@@ -107,6 +115,22 @@ test("CHECK_ONLY takes precedence over INSTALL_ONLY without changing the server"
     expect(await api.commands()).toBe("");
     expect(await Bun.file(join(api.env.SERVER_INSTALL_ROOT, "server/groot.jar")).exists()).toBe(false);
     expect(await Bun.file(join(api.env.SYSTEMD_UNIT_DIR, api.env.SERVER_SERVICE)).exists()).toBe(false);
+  } finally { await api.stop(); }
+});
+
+test("JDK preparation failure preserves the active server without restarting", async () => {
+  const api = await fixture("jdk-failure");
+  try {
+    expect((await api.install()).code).toBe(0);
+    const before = await api.commands();
+    const unit = join(api.env.SYSTEMD_UNIT_DIR, api.env.SERVER_SERVICE);
+    const beforeUnit = await readFile(unit, "utf8");
+    await writeFile(api.source, "second JAR");
+    api.env.TEST_JDK_EXIT = "1";
+    expect((await api.install()).code).not.toBe(0);
+    expect(await api.commands()).toBe(before);
+    expect(await readFile(unit, "utf8")).toBe(beforeUnit);
+    expect(await readFile(join(api.env.SERVER_INSTALL_ROOT, "server/groot.jar"), "utf8")).toBe("first JAR");
   } finally { await api.stop(); }
 });
 

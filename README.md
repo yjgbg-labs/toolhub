@@ -79,8 +79,10 @@ CLI 安装会移走 `cli/dist/groot-cli`，再次安装前需重新构建；服�
 客户端环境变量统一为 `GROOT_BASE_URL`、`GROOT_PORT`；插件还支持 `GROOT_OPENAPI_URL` 和 `GROOT_TOKEN`。
 Wine helper 的程序集名为 `Groot.Wine.Helper`，使用 `wine-deploy` 协调更新 helper 与服务端。
 
-开发环境使用 Bun、groot-cli、JDK 25、Scala CLI 和 curl；
-通过 `groot-cli use-jdk --version 25 --command '…'` 选择 JDK 并执行命令，需要可访问 Groot HTTP 服务。
+开发环境使用 Bun、groot-cli、mise、JDK 25、Scala CLI 和 curl；
+通过 `mise exec java@temurin-25 -- …` 选择 JDK 并执行命令。
+`config.env` 的 `JDK_VERSION` 默认 `temurin-25`，可覆盖为包含发行商的具体版本。
+systemd 使用 mise 的绝对路径启动 Java；部署时先准备并验证 JDK，服务启动时关闭自动安装。
 Native 编译还需要 Clang 和 libcurl 等开发库，
 `cli-deploy` 会在需要时准备用户级工具链缓存。所有流程直接定义在 `jobs.yaml` 中。
 
@@ -124,6 +126,20 @@ OpenCode 插件在 setup 时发现命令并注册 Code Mode 工具及 namespace�
 安装后的入口由 OpenCode 自动发现，文件变更自动加载。
 
 ### 临时选择 JDK
+
+使用 Rust 编写的 [mise](https://mise.jdx.dev/) 管理 JDK，安装方式见其
+[官方安装文档](https://mise.jdx.dev/installing-mise.html)。无需配置交互式 shell 激活。
+
+```sh
+mise exec java@temurin-25 -- java --version
+mise exec java@temurin-21 -- ./gradlew test
+mise exec java@temurin-25 -- sh -c 'javac Main.java && java Main'
+```
+
+mise 自动安装缺失的 JDK，为子进程设置 `JAVA_HOME` 和 `PATH`，继承当前目录及标准输入/输出/错误。
+构建、测试和 systemd 服务均使用同一 `JDK_VERSION` 配置；JDK 选择与 Java 启动不依赖 Groot HTTP 服务。
+
+#### 旧版 use-jdk 接口
 
 ```sh
 groot-cli use-jdk --version 25 --command 'java --version'
