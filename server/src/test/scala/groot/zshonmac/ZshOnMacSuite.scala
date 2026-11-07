@@ -54,13 +54,13 @@ class ZshOnMacSuite extends CatsEffectSuite:
         val sdk = GraalCommandSdk(app)
         for
           _ <- IO(assertEquals(app.endpoints.head.exposedOn, Set(framework.Client.cli, framework.Client.graaljs, framework.Client.codemode)))
-          operation = io.circe.parser.parse(app.openApiJson).toOption.get.hcursor.downField("paths").downField("/zsh-on-mac").downField("post")
+          operation = io.circe.parser.parse(app.openApiJson).toOption.get.hcursor.downField("paths").downField("/zshOnMac").downField("post")
           _ = assertEquals(operation.downField("requestBody").downField("content").downField("application/json").downField("schema").get[String]("type"), Right("string"))
           timeout = operation.get[Vector[Json]]("parameters").toOption.get.find(_.hcursor.get[String]("name") == Right("timeout")).get.hcursor
           _ = assertEquals(timeout.get[String]("in"), Right("query"))
           _ = assertEquals(timeout.get[Boolean]("required"), Right(false))
           _ = assertEquals(timeout.downField("schema").get[String]("default"), Right("30s"))
-          response <- app.httpApp(Request[IO](Method.POST, Uri.unsafeFromString("/zsh-on-mac?timeout=10s"))
+          response <- app.httpApp(Request[IO](Method.POST, Uri.unsafeFromString("/zshOnMac?timeout=10s"))
             .withEntity(Json.fromString(source).noSpaces)
             .putHeaders(org.http4s.Header.Raw(org.typelevel.ci.CIString("Content-Type"), "application/json")))
           body <- response.as[String]
@@ -69,7 +69,7 @@ class ZshOnMacSuite extends CatsEffectSuite:
           payload <- IO.blocking(Files.readString(home.resolve("received")))
           _ = assertEquals(payload, source + "\n")
           _ <- GraalManager.resource(home.resolve("tasks"), IO.pure(sdk)).use { manager => for
-            task <- manager.start(JavaScript.source("const r=(await tools['zsh-on-mac']({body:'pwd'})).body;if(r.exitCode!==7||r.stdout!=='中文🙂\\n'||r.stderr!=='stderr\\n')throw Error(JSON.stringify(r));"), "1s", "10s")
+            task <- manager.start(JavaScript.source("const r=(await tools.zshOnMac({body:'pwd'})).body;if(r.exitCode!==7||r.stdout!=='中文🙂\\n'||r.stderr!=='stderr\\n')throw Error(JSON.stringify(r));"), "1s", "10s")
             done <- manager.await(task.id)
             _ = assertEquals(done.state, "succeeded", done.error.toString)
           yield () }
@@ -87,7 +87,7 @@ class ZshOnMacSuite extends CatsEffectSuite:
       ssh <- transport(home)
       _ <- ZshOnMacService.resource(home.resolve("pool"), ssh = ssh.toString).use { service =>
         val sdk = GraalCommandSdk(httpApp { ZshOnMacRoutes.register(service) })
-        def call(script: String, timeout: String = "30s") = sdk.call("zsh-on-mac", Json.obj("body" -> Json.fromString(script), "timeout" -> Json.fromString(timeout)))
+        def call(script: String, timeout: String = "30s") = sdk.call("zshOnMac", Json.obj("body" -> Json.fromString(script), "timeout" -> Json.fromString(timeout)))
         for
           _ <- List((" ", "30s"), ("x\u0000", "30s"), ("x", ""), ("x", "0s"), ("x", "oops"))
             .traverse_((script, timeout) => call(script, timeout).map(result => assertEquals(result.hcursor.get[Int]("status"), Right(400))))

@@ -275,15 +275,15 @@ class GraalManagerSuite extends CatsEffectSuite:
             _ = assertEquals(invalidUtf8.status, Status.BadRequest)
             calls <- runner.calls.get
             _ = assertEquals(calls.size, 1)
-            absent <- app.httpApp(request("/graaljs/logs-follow", "id" -> "../../outside"))
+            absent <- app.httpApp(request("/graaljs/logsFollow", "id" -> "../../outside"))
             _ = assertEquals(absent.status, Status.NotFound)
-            notify <- app.httpApp(request("/graaljs/notify-on-finish", "id" -> id))
+            notify <- app.httpApp(request("/graaljs/notifyOnFinish", "id" -> id))
             _ = assertEquals(notify.status, Status.NotImplemented)
             _ <- runner.finish(id)
             _ <- awaitUntil(manager.status(id))(_.terminal)
             text <- app.httpApp(request("/graaljs/logs", "id" -> id))
             _ = assertEquals(text.contentType.map(_.mediaType), MediaType.parse("text/plain").toOption)
-            sse <- app.httpApp(request("/graaljs/logs-follow", "id" -> id))
+            sse <- app.httpApp(request("/graaljs/logsFollow", "id" -> id))
             _ = assertEquals(sse.contentType.map(_.mediaType), MediaType.parse("text/event-stream").toOption)
             wire <- sse.as[String]
             _ = assert(wire.contains("data: [graaljs] state=succeeded"))
