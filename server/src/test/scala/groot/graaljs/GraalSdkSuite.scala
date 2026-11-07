@@ -340,11 +340,11 @@ class GraalSdkSuite extends CatsEffectSuite:
           }
           commands.complete(GraalCommandSdk(app)) *> run(manager, """
             const child = await tools.graaljs.start({cpu: "1s", timeout: "5s", body: 'console.log((await tools.health()).body)'});
-            const logs = await tools.graaljs["logs-follow"]({id: child.body.id});
+            const logs = await tools.graaljs.logsFollow({id: child.body.id});
             const status = await tools.graaljs.status({id: child.body.id});
             if (status.body.state !== "succeeded" || !logs.body.includes("data: ok")) throw Error(JSON.stringify(status));
             console.log("nested task succeeded");
-            try { await tools.graaljs["notify-on-finish"]({id: child.body.id}); }
+            try { await tools.graaljs.notifyOnFinish({id: child.body.id}); }
             catch (e) { if (e.response.status !== 501) throw e; console.log("501 preserved"); }
           """).map { (task, log) =>
             assertEquals(task.state, "succeeded", log)

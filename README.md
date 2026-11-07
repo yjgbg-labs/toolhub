@@ -281,15 +281,15 @@ if (result.exitCode !== 0) throw Error(result.stderr || `PowerShell exit ${resul
 
 ### macOS Zsh
 
-Mac 用户的默认 shell 为 `/bin/zsh`（已实测 5.9），因此命令名为 `zsh-on-mac`，
+Mac 用户的默认 shell 为 `/bin/zsh`（已实测 5.9），因此命令名为 `zshOnMac`，
 `exposeOn(cli, graaljs, codemode)`。默认经 Headscale SSH 连接 `weichenglong@100.64.0.5:22`。
 
 ```sh
-groot-cli zsh-on-mac --timeout 30s --body '"print -r -- $ZSH_VERSION; sw_vers"'
+groot-cli zshOnMac --timeout 30s --body '"print -r -- $ZSH_VERSION; sw_vers"'
 ```
 
 ```js
-const result = (await tools["zsh-on-mac"]({body: "pwd; print -r -- '你好🙂'", timeout: "30s"})).body;
+const result = (await tools.zshOnMac({body: "pwd; print -r -- '你好🙂'", timeout: "30s"})).body;
 console.log(result.stdout);
 if (result.exitCode !== 0) throw Error(result.stderr || `Zsh exit ${result.exitCode}`);
 ```
@@ -306,15 +306,15 @@ if (result.exitCode !== 0) throw Error(result.stderr || `Zsh exit ${result.exitC
 
 ### R6S Bash
 
-R6S 运行 Armbian/Debian 13，默认 shell 为 Bash 5.2。`bash-on-r6s` 通过 Headscale SSH
+R6S 运行 Armbian/Debian 13，默认 shell 为 Bash 5.2。`bashOnR6s` 通过 Headscale SSH
 连接 `router@100.64.0.7:22`，`exposeOn(cli, graaljs, codemode)`。
 
 ```sh
-groot-cli bash-on-r6s --timeout 30s --body '"printf \"%s\\n\" \"$BASH_VERSION\"; uname -a"'
+groot-cli bashOnR6s --timeout 30s --body '"printf \"%s\\n\" \"$BASH_VERSION\"; uname -a"'
 ```
 
 ```js
-const result = (await tools["bash-on-r6s"]({body: "hostname; uptime", timeout: "30s"})).body;
+const result = (await tools.bashOnR6s({body: "hostname; uptime", timeout: "30s"})).body;
 console.log(result.stdout);
 if (result.exitCode !== 0) throw Error(result.stderr || `Bash exit ${result.exitCode}`);
 ```
@@ -375,9 +375,9 @@ groot-cli graaljs start --body 'console.log("hello")' --cpu 2s --timeout 30s
 groot-cli graaljs list
 groot-cli graaljs status --id gjs_xxx
 groot-cli graaljs logs --id gjs_xxx
-groot-cli graaljs logs-follow --id gjs_xxx
+groot-cli graaljs logsFollow --id gjs_xxx
 groot-cli graaljs cancel --id gjs_xxx
-groot-cli graaljs notify-on-finish --id gjs_xxx
+groot-cli graaljs notifyOnFinish --id gjs_xxx
 ```
 
 `start` 必须指定 `cpu` 和 `timeout`，支持正整数加 `ms/s/m/h/d`。`cpu` 是 GraalVM
@@ -402,7 +402,7 @@ groot-cli graaljs notify-on-finish --id gjs_xxx
 CPU 超限、超时、内存超限和脚本异常分别记录明确的错误码。
 
 日志写入 `$GROOT_HOME/graaljs/logs/<id>.log`；`GROOT_HOME` 默认是 `~/.config/groot`。
-`logs` 返回当前快照字符串；`logs-follow` 按行通过 SSE 回放并追踪文件，结束后输出摘要并关闭流。
+`logs` 返回当前快照字符串；`logsFollow` 按行通过 SSE 回放并追踪文件，结束后输出摘要并关闭流。
 UTF-8 字符跨写入块也能正确处理；断开日志连接只停止订阅，任务继续运行。
 
 ```text
@@ -418,7 +418,7 @@ UTF-8 字符跨写入块也能正确处理；断开日志连接只停止订阅�
 任务状态、限制、时间、错误和源码快照保存到 `$GROOT_HOME/graaljs/tasks.sqlite3`，SQLite 使用 WAL。
 退出时终止活动任务；启动时将遗留的未完成任务标记为 `interrupted`，不自动重跑。
 日志和历史记录保留在本地；同一数据目录只允许一个服务实例持有。
-`notify-on-finish` 已注册，当前返回 `501 not_implemented`。
+`notifyOnFinish` 已注册，当前返回 `501 not_implemented`。
 
 #### 命令树 SDK
 
@@ -429,7 +429,8 @@ UTF-8 字符跨写入块也能正确处理；断开日志连接只停止订阅�
 框架通过只读 `app.endpoints` 列表公开端点声明、`exposedOn` 和各端点绑定的 HTTP 调用入口。
 `groot.graaljs.GraalCommandSdk(app)` 自行筛选暴露给 GraalJS 的端点，实现参数映射、同名校验、响应包装及 SDK 大小限制；
 这些 SDK 规则全部位于 `groot/graaljs`，框架继续负责 HTTP 校验、中间件和执行。
-例如 `schedule.list` 映射为 `tools.schedule.list()`，带连字符的方法使用方括号。
+工具方法统一使用小驼峰命名，例如 `schedule.list` 映射为 `tools.schedule.list()`，
+`graaljs.logsFollow` 映射为 `tools.graaljs.logsFollow({id})`。
 参数定义沿用 `/openapi.json`；GraalJS 内不提供 `search()`。
 
 ```sh

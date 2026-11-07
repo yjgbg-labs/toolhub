@@ -5,7 +5,7 @@ import framework.rpc.CommandsScope
 import framework.rpcDsl.*
 
 object BashOnR6sRoutes:
-  def register(service: BashOnR6sService)(using CommandsScope): Unit = command[BashOnR6sResult]("bash-on-r6s") {
+  def register(service: BashOnR6sService)(using CommandsScope): Unit = command[BashOnR6sResult]("bashOnR6s") {
     exposeOn(cli, graaljs, codemode)
     description("Run Bash on the R6S router over reusable SSH; return exitCode/stdout/stderr; idle connections expire after 5 minutes by default")
     val script = body[String]("Bash script as a JSON string (up to 64 KiB UTF-8); each output stream is capped at 64 KiB")

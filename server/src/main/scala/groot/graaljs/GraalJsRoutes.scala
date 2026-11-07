@@ -44,7 +44,7 @@ object GraalJsRoutes:
       handle { manager.logs(id.value) }
     }
 
-    command[SSE[PlainText]]("logs-follow") {
+    command[SSE[PlainText]]("logsFollow") {
       description("Replay the local log then stream new lines until the task finishes; disconnecting does not cancel the task")
       val id = param[String]("id", "Task ID") { minLength(1) }
       handle { manager.follow(id.value) }
@@ -56,7 +56,7 @@ object GraalJsRoutes:
       handle { manager.cancel(id.value) }
     }
 
-    command[Unit]("notify-on-finish") {
+    command[Unit]("notifyOnFinish") {
       description("Reserved completion-notification API; currently returns 501 Not Implemented")
       val id = param[String]("id", "Task ID") { minLength(1) }
       val unavailable = response.json[ErrorBody](501) { description("Notifications are not implemented") }

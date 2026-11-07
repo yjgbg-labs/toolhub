@@ -5,7 +5,7 @@ import framework.rpc.CommandsScope
 import framework.rpcDsl.*
 
 object ZshOnMacRoutes:
-  def register(service: ZshOnMacService)(using CommandsScope): Unit = command[ZshOnMacResult]("zsh-on-mac") {
+  def register(service: ZshOnMacService)(using CommandsScope): Unit = command[ZshOnMacResult]("zshOnMac") {
     exposeOn(cli, graaljs, codemode)
     description("Run zsh on macOS over reusable SSH; return exitCode/stdout/stderr; idle connections expire after 5 minutes by default")
     val script = body[String]("Zsh script as a JSON string (up to 64 KiB UTF-8); each output stream is capped at 64 KiB")

@@ -190,6 +190,10 @@ val app = httpApp {
   produces `/users/get` and `users.get`. A root `command[PlainText]("health")`
   produces `/health` and `health`. Commands are leaves and cannot contain groups
   or other commands.
+- Commands exposed to Code Mode and GraalJS use lowerCamelCase names. For example,
+  `commands("graaljs") { command[SSE[PlainText]]("logsFollow") { ... } }` produces
+  `/graaljs/logsFollow`, operationId `graaljs.logsFollow`, CLI `graaljs logsFollow`,
+  and SDK method `tools.graaljs.logsFollow({id})`.
 - `command[A]` declares the HTTP 200 result type. Its handler returns `IO[A]`.
   `PlainText` produces `text/plain`, `Shell` an `application/x-sh` script,
   `Unit` an empty body, `SSE[A]` an event stream, and `JsonModel` types
