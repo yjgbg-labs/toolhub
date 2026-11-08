@@ -184,6 +184,44 @@ await tools.schedule.config.write(config);
 - 旧调用需去掉参数位置包装；仅请求体命令还需去掉外层 `body`。返回仍为 `{status, headers, body}`。
   CLI 参数与 HTTP/OpenAPI 契约保持原有格式。
 
+### OpenCode 会话通知
+
+`notify.send({targetSessionId, message, display})` **仅对 GraalJS 暴露**，不注册 Code Mode 工具、CLI 发送命令或外部 HTTP 发送路由。
+`message` 是模型收到的正文；`display` 是用户界面上的简短展示文字，映射到 OpenCode synthetic 消息的 `description`。
+
+```js
+// GraalJS 任务或 schedule 脚本
+const receipt = (await tools.notify.send({
+  targetSessionId: "ses_目标会话ID", // 替换为真实 OpenCode session ID
+  message: "构建已完成。产物位于 /path/to/artifact。",
+  display: "构建完成"
+})).body;
+console.log(receipt.id, receipt.subscribers);
+```
+
+`notify.subscribe(sessionId)` 是仅对 CLI 暴露的 SSE 命令，HTTP 为 `GET /notify/subscribe?sessionId=ses_...`：
+
+```sh
+groot-cli notify subscribe --sessionId ses_...
+```
+
+- 每个 SSE `data` 是 JSON：`{kind:"ready",notification:null}`、`{kind:"heartbeat",notification:null}` 或
+  `{kind:"message",notification:{id,targetSessionId,message,display,createdAt}}`。
+  `ready` 表示订阅已注册；空闲时每 15 秒发心跳。
+- 只推送给当前在线订阅者；无订阅者返回 `409 notify_offline`，断线期间不缓存、不重放。
+  同会话多订阅者收到相同通知 ID，互不影响其他会话。
+- 每个连接队列最多 64 条；任一队列满时，本次发送整体返回 `429 notify_busy`，不会只发给部分订阅者。
+  `message` 和 `display` 必须非空，UTF-8 上限分别为 64 KiB、4 KiB。
+- 返回 `{id,subscribers}` 表示已进入在线 SSE 队列，不代表 OpenCode 已确认投递。订阅断开释放队列，服务重启不保留通知。
+
+OpenCode 插件自动订阅本 location 的会话：新建、查看、执行或发起 prompt/model 请求时建立连接，空闲后继续订阅。
+已观察的会话 ID 按 location 保存在插件 storage，插件重载时恢复；会话删除或迁出时取消订阅。
+首次安装前已有的空闲会话，在首次查看或运行时接入通知。
+收到通知后调用 `ctx.session.synthetic({sessionID,text:message,description:display,delivery:"steer",resume:true})`，
+用稳定的 `msg_notify_<通知ID>` 做 inbox ID，避免重连/插件实例交接时重复投递。
+SSE 断线自动退避重连；连接建立限时 5 秒、45 秒无事件时重连，长连接不受普通 API 的 `timeoutMs` 限制。
+插件卸载会中止流与重试并清理 hooks；旧服务未提供订阅端点时，插件保持普通工具注册功能。
+
 ### GraalJS 定时任务与重试
 
 `schedule` 使用 `script` 指向服务端 JavaScript 文件的绝对路径，每次成功提交的周期执行和重试都有独立的 GraalJS 任务 ID。
