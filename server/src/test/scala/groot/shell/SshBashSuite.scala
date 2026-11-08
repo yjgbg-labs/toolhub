@@ -13,7 +13,7 @@ import org.http4s.{Method, Request, Status, Uri}
 import scala.concurrent.duration.*
 
 class SshBashSuite extends CatsEffectSuite:
-  // Simulate the SSH control socket and execute the user script directly with Bash.
+  // Simulate the SSH control socket, but execute the real Linux bootstrap and cancellation code.
   private def transport(home: Path): IO[Path] = IO.blocking {
     val file = home.resolve("ssh-test")
     Files.writeString(file, """#!/bin/bash
@@ -38,16 +38,16 @@ class SshBashSuite extends CatsEffectSuite:
         printf 'start\n' >> "$root/masters"
         exit 0
       fi
-      eval "set -- ${remote#exec }"
-      source=${!#}
-      printf '%s' "$source" > "$root/received"
-      printf 'call\n' >> "$root/calls"
-      if [[ "$source" == slow ]]; then printf '%s' "$$" > "$root/pid"; exec sleep 30; fi
-      if [[ "$source" == large ]]; then head -c 65537 /dev/zero; exec sleep 30; fi
+      if [[ "$remote" == *'kill -TERM'* ]]; then
+        printf 'cancel\n' >> "$root/cancelled"
+      else
+        cat > "$root/received"
+        exec 0< "$root/received"
+      fi
       printf 'exit 99\n' > "$root/poison"
       export BASH_ENV="$root/poison"
       # Model sshd's independent remote session rather than inheriting the local SSH group.
-      exec /usr/bin/setsid --fork --wait "$@"
+      eval "exec /usr/bin/setsid --fork --wait ${remote#exec }"
       """)
     Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rwx------"))
     file
@@ -71,7 +71,7 @@ class SshBashSuite extends CatsEffectSuite:
           _ = assertEquals(response.status, Status.Ok)
           _ = assertEquals(io.circe.parser.parse(body).toOption.get.hcursor.get[Int]("exitCode"), Right(7), body)
           payload <- IO.blocking(Files.readString(home.resolve("received")))
-          _ = assertEquals(payload, source)
+          _ = assertEquals(payload, source + "\n")
           _ <- GraalManager.resource(home.resolve("tasks"), IO.pure(sdk)).use { manager => for
             task <- manager.start(JavaScript.source(s"const r=(await tools.shell.execute({env:'r6s',script:${Json.fromString(source).noSpaces}})).body;if(r.exitCode!==7||r.stdout!=='中文🙂\\n'||r.stderr!=='stderr\\n')throw Error(JSON.stringify(r));"), "1s", "10s")
             done <- manager.await(task.id)
@@ -86,10 +86,10 @@ class SshBashSuite extends CatsEffectSuite:
     yield () }
   }
 
-  test("validation avoids SSH; limits and cancellation stop the local client without sending remote cleanup commands") {
+  test("validation avoids SSH; output limits, timeout and cancellation clean up real process groups") {
     temporary.use { home => for
       ssh <- transport(home)
-      slow = "slow"
+      slow = s"printf '%s' $$$$ > '${home.resolve("pid")}'; sleep 30"
       _ <- ShellService.resource(home.resolve("pool"), Vector(ShellEnvironment("r6s", ShellKind.bash, Some("router"))), ssh.toString).use { service =>
         val sdk = GraalCommandSdk(httpApp { ShellRoutes.register(service) })
         def call(script: String, timeout: String = "30s") = sdk.call("shell.execute", JsonModel[ShellRequest].encoder(ShellRequest("r6s", script, timeout)))
@@ -100,7 +100,7 @@ class SshBashSuite extends CatsEffectSuite:
           _ = assertEquals(largeInput.hcursor.get[Int]("status"), Right(413))
           connected <- IO.blocking(Files.exists(home.resolve("masters")))
           _ = assert(!connected)
-          largeOutput <- call("large").timeout(5.seconds)
+          largeOutput <- call("yes x").timeout(5.seconds)
           _ = assertEquals(largeOutput.hcursor.get[Int]("status"), Right(413), largeOutput.noSpaces)
           timed <- call(slow, "500ms")
           _ = assertEquals(timed.hcursor.get[Int]("status"), Right(504))
@@ -113,8 +113,8 @@ class SshBashSuite extends CatsEffectSuite:
           after <- call("pwd")
           _ = assertEquals(after.hcursor.get[Int]("status"), Right(200))
           _ = assertEquals(after.hcursor.downField("body").get[Int]("exitCode"), Right(0))
-          calls <- IO.blocking(Files.readString(home.resolve("calls")))
-          _ = assertEquals(calls, "call\ncall\ncall\ncall\n")
+          cancelled <- IO.blocking(Files.readString(home.resolve("cancelled")))
+          _ = assertEquals(cancelled, "cancel\ncancel\ncancel\n")
         yield ()
       }
     yield () }

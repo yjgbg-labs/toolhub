@@ -28,7 +28,7 @@ object ShellRoutes:
       case error: java.io.IOException => failed(ErrorBody("shell_io", error.getMessage))
     }
     command[ShellResult]("execute") {
-      description("Execute a script directly in a registered environment; return exitCode/stdout/stderr; remote process cleanup belongs to the caller")
+      description("Execute a script in a registered environment; return exitCode/stdout/stderr; cancellation cleans up the invocation")
       val request = body[ShellRequest]("Environment name and script (up to 64 KiB UTF-8); timeout defaults to 30s; cwd is supported for local Bash only")
       handle { service.execute(request.value) }
     }

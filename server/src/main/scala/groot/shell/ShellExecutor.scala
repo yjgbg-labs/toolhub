@@ -9,43 +9,60 @@ import java.io.{ByteArrayOutputStream, InputStream}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, InvalidPathException, Path}
 import java.nio.file.attribute.PosixFilePermissions
+import java.util.UUID
 import java.util.concurrent.{CompletableFuture, TimeUnit}
 import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
 
-/** One execution pipeline; remote script lifecycle belongs to the caller. */
+/** One execution pipeline; only the remote command, payload and cleanup scripts depend on the shell. */
 private[shell] final class ShellExecutor private (environment: ShellEnvironment, connection: Option[ShellExecutor.Connection]):
   import ShellExecutor.*
+  import ShellScripts.quote
 
   def execute(request: ShellRequest): IO[ShellResult] = connection match
-    case None => Process.run(Vector("/bin/bash", "--noprofile", "--norc", "-c", request.script), request.timeout, request.cwd)
+    case None => Process.run(request.script, request.timeout, request.cwd)
     case Some(ssh) => remote(ssh, request)
 
   private def connect(ssh: Connection): IO[Unit] = ssh.mutex.lock.surround {
     val check = ssh.command("-O", "check", ssh.target)
     val start = ssh.command("-o", "ControlMaster=yes", "-o", s"ControlPersist=${ssh.idleSeconds}", "-fN", ssh.target)
-    val log = ssh.directory.resolve("ssh.log")
-    Process.run(check, "10s").flatMap { result =>
-      if result.exitCode == 0 then IO.unit
-      // A background SSH master must not retain the invocation's stdout/stderr pipes.
-      else Process.run(start, "10s", output = Some(log)).flatMap { result =>
-        if result.exitCode == 0 then IO.unit
-        else IO.blocking {
-          val input = Files.newInputStream(log)
-          try new String(input.readNBytes(maxBytes), UTF_8).trim finally input.close()
-        }.flatMap(message => IO.raiseError(ShellFailure("shell_ssh", message)))
-      }
-    }
+    val log = quote(ssh.directory.resolve("ssh.log").toString)
+    Process.run(s"if ! $check >/dev/null 2>&1; then\n$start </dev/null >$log 2>&1 || { cat $log >&2; exit 1; }\nfi", "10s")
+      .flatMap(result => if result.exitCode == 0 then IO.unit else IO.raiseError(ShellFailure("shell_ssh", result.stderr.trim)))
   }
 
-  private def remote(ssh: Connection, request: ShellRequest): IO[ShellResult] = IO(duration(request.timeout)).flatMap { deadline =>
-    val script = ShellCommand.remote(environment.shell, request.script)
-    // Reconnect if the idle timer wins the race, but never retry a possibly executed script.
-    val command = ssh.command("-o", "ControlMaster=auto", "-o", s"ControlPersist=${ssh.idleSeconds}", ssh.target, script)
-    val run = connect(ssh) *> Process.run(command, request.timeout)
+  private def remote(ssh: Connection, request: ShellRequest): IO[ShellResult] = IO {
+    (ShellScripts.payload(environment.shell, request.script), duration(request.timeout))
+  }.flatMap { (payload, deadline) =>
+    val run = Resource.make(IO.blocking {
+      val file = Files.createTempFile(ssh.directory, "script-", ".tmp", PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+      try
+        Files.write(file, payload)
+        file
+      catch
+        case error: Throwable =>
+          Files.deleteIfExists(file)
+          throw error
+    })(file => IO.blocking { Files.deleteIfExists(file); () }).use { file =>
+      val token = UUID.randomUUID().toString
+      val bootstrap = ShellScripts.command(environment.shell, ShellScripts.bootstrap(environment.shell, payload.length, token))
+      // Reconnect if the idle timer wins the race, but never retry a possibly executed script.
+      val command = ssh.command("-o", "ControlMaster=auto", "-o", s"ControlPersist=${ssh.idleSeconds}", ssh.target, bootstrap)
+      connect(ssh) *> Resource.makeCase(IO.unit) { (_, exit) =>
+        if exit == ExitCase.Succeeded then IO.unit else cancelRemote(ssh, token)
+      }.use(_ => Process.run(s"$command < ${quote(file.toString)}", request.timeout))
+    }
     run.timeoutTo(deadline, IO.raiseError(ShellFailure("shell_timeout", s"${environment.shell} exceeded ${request.timeout}")))
   }
+
+  private def cancelRemote(ssh: Connection, token: String): IO[Unit] =
+    val script = ShellScripts.command(environment.shell, ShellScripts.cancellation(environment.shell, token))
+    Process.run(ssh.command(ssh.target, script), "5s").attempt.flatMap {
+      case Right(result) if result.exitCode == 0 => IO.unit
+      case Right(result) => IO(scribe.warn(s"Shell cancellation cleanup failed for $token: ${result.stderr.trim}"))
+      case Left(error) => IO(scribe.warn(s"Shell cancellation cleanup failed for $token: ${error.getMessage}"))
+    }
 
   private def close: IO[Unit] = connection.traverse_ { ssh =>
     Process.run(ssh.command("-O", "exit", ssh.target), "5s").attempt.flatMap {
@@ -70,7 +87,7 @@ private[shell] object ShellExecutor:
     private val base = Vector(executable, "-T", "-S", directory.resolve("control.sock").toString.replace("%", "%%"),
       "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=5",
       "-o", "ConnectionAttempts=1", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2")
-    def command(args: String*): Vector[String] = base ++ args
+    def command(args: String*): String = (base ++ args).map(ShellScripts.quote).mkString(" ")
 
   def resource(home: Path, environment: ShellEnvironment, ssh: String): Resource[IO, ShellExecutor] = for
     connection <- environment.target.traverse { target => for
@@ -94,7 +111,9 @@ private[shell] object ShellExecutor:
 
   /** Both local scripts and SSH channels use the same bounded, cancellable host process runner. */
   private object Process:
-    def run(command: Vector[String], timeout: String, cwd: Option[String] = None, output: Option[Path] = None): IO[ShellResult] = IO.blocking {
+    def run(script: String, timeout: String, cwd: Option[String] = None): IO[ShellResult] = IO.blocking {
+      if script.trim.isEmpty || script.contains('\u0000') then throw ShellFailure("invalid_shell", "script must be nonblank and contain no NUL")
+      if script.getBytes(UTF_8).length > maxBytes then throw ShellFailure("shell_limit", "Shell script exceeds 64 KiB")
       val directory = cwd.map { value =>
         val path = try Path.of(value) catch case _: InvalidPathException => throw ShellFailure("invalid_shell", "Invalid cwd")
         if !path.isAbsolute || !Files.isDirectory(path) then throw ShellFailure("invalid_shell", "cwd must be an existing absolute directory")
@@ -103,10 +122,9 @@ private[shell] object ShellExecutor:
       (directory, duration(timeout))
     }.flatMap { (directory, deadline) =>
       Resource.makeCase(IO.blocking {
-        val builder = new ProcessBuilder((Vector("/usr/bin/setsid", "--") ++ command).asJava)
+        val builder = new ProcessBuilder("/usr/bin/setsid", "--", "/bin/bash", "--noprofile", "--norc", "-c", script)
           .directory(directory.map(_.toFile).orNull)
-        output.foreach(path => builder.redirectOutput(path.toFile).redirectErrorStream(true))
-        // Noninteractive Bash must not execute an inherited BASH_ENV script before the supplied script.
+        // Noninteractive startup must not execute an inherited BASH_ENV script before the supplied script.
         builder.environment().remove("BASH_ENV")
         builder.start()
       }) { (child, exit) =>

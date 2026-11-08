@@ -41,14 +41,12 @@ console.log(result.stdout);
 ```
 
 `shell.execute` 接收 JSON 对象；脚本最多 64 KiB，默认超时 30 秒，每路输出最多 64 KiB。
-脚本直接通过 `-EncodedCommand` 执行，还受目标命令行长度限制。超时/取消只结束本地 SSH 调用，远端进程和文件由用户管理。
 
 ## 输出与引用
 
 - Windows 路径放在 PowerShell 字符串中并正确转义。
 - 结构化结果优先使用 `Select-Object`、`Format-List` 或 `ConvertTo-Json -Depth 5`。
 - 先用短命令验证桥接，再逐步增加复杂表达式。
-- 按需在脚本中设置输出编码和错误策略；要传递外部程序退出码时显式使用 `exit $LASTEXITCODE`。
 
 ```bash
 groot-cli shell execute --body '{"env":"windows","script":"Get-Service sshd | Format-List Name,Status,StartType"}'
