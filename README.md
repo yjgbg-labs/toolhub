@@ -187,7 +187,7 @@ await tools.schedule.config.write(config);
 ### GraalJS 定时任务与重试
 
 `schedule` 使用 `script` 指向服务端 JavaScript 文件的绝对路径，每次成功提交的周期执行和重试都有独立的 GraalJS 任务 ID。
-脚本可用 `console` 和声明自动生成的 `tools.*`（含 `tools.fetch`、`tools.bash`）；宿主命令通过 `tools.bash` 执行，JS 环境不提供 Bun/Node 模块。
+脚本可用 `console` 和声明自动生成的 `tools.*`（含 `tools.http`、`tools.bash`）；宿主命令通过 `tools.bash` 执行，JS 环境不提供 Bun/Node 模块。
 内联 `source`、`command`、`cwd` 和运行状态字段会被拒绝。旧配置升级前应先备份，将源码保存为文件后通过 API 写入路径。
 
 ```json
@@ -475,17 +475,19 @@ groot-cli graaljs start --cpu 2s --timeout 30s --body '
 - `tools` 授予脚本与这些服务端命令相同的能力，包括修改定时任务、提交或取消其他 GraalJS 任务。
   它不是只读接口。独立提交的子任务具有自己的生命周期；父任务结束不会自动取消已提交的子任务。
 
-#### HTTP `fetch`
+#### HTTP 请求 `http`
 
-`fetch` 在 `server/src/main/scala/groot/fetch/FetchRoutes.scala` 中通过
-`command[FetchResponse]("fetch")` 和 `exposeOn(graaljs)` 声明。它进入 GraalJS 的命令树，
+`http` 在 `server/src/main/scala/groot/http/HttpRoutes.scala` 中通过
+`command[HttpResponse]("http")` 和 `exposeOn(graaljs)` 声明。它进入 GraalJS 的命令树，
 OpenAPI 标记为 `x-expose-on: ["graaljs"]`；CLI、Code Mode 目录及公共 HTTP 路由均按该声明过滤。
 网络客户端由应用管理，执行经过统一 SDK 的参数校验、中间件、错误恢复和取消流程。
+
+原 `fetch` 命令已改名为 `http`；已有脚本中的 `tools.fetch(...)` 需改为 `tools.http(...)`。
 
 可以直接使用标准命令接口，响应体中的 HTTP 状态是目标网站的状态，原始字节以 base64 返回：
 
 ```js
-const reply = await tools.fetch({
+const reply = await tools.http({
   url: "https://example.com/api/notes",
   method: "POST",
   headers: {"Content-Type": "application/json"},
@@ -495,7 +497,7 @@ const reply = await tools.fetch({
 console.log(reply.body.status, reply.body.ok, reply.body.bodyBase64);
 ```
 
-`tools.fetch` 完全由 `httpApp` 的命令声明映射，调用及返回遵循普通 SDK 的 JSON 契约。
+`tools.http` 完全由 `httpApp` 的命令声明映射，调用及返回遵循普通 SDK 的 JSON 契约。
 该命令仅声明请求体，因此直接传入请求对象，其中的 `body` 字段是发往目标网站的正文。
 HTTP 行为参考 [Code Mode fetch](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/codemode/fetch.ts)：
 
@@ -543,7 +545,7 @@ await tools.fs.write({
 });
 const state = JSON.parse((await tools.fs.read({path: "/data/reports/state.json"})).body.content);
 
-const reply = await tools.fetch({url: "https://example.com/file.bin"});
+const reply = await tools.http({url: "https://example.com/file.bin"});
 if (!reply.body.ok) throw Error(`HTTP ${reply.body.status}`);
 await tools.fs.write({
   path: "/data/reports/file.bin",

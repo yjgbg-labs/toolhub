@@ -12,7 +12,7 @@ description: 创建、修改或排查 Groot 定时任务及迁移旧版调度时
 - 使用 `groot-cli schedule` 管理任务；一次性构建使用 `groot-cli jobs --job <job>`。
 - CLI、Code Mode 和 GraalJS SDK 都由普通命令声明生成，不添加业务专用适配器。
 - `script` 为服务端 JavaScript 文件的绝对路径；不接受内联 `source`、`command`、`cwd` 或运行状态字段。
-- 脚本使用 `console`、`tools.*`（HTTP 用 `tools.fetch`，宿主命令用 `tools.bash`）；JS 环境不能导入 Bun/Node 模块。
+- 脚本使用 `console`、`tools.*`（HTTP 用 `tools.http`，宿主命令用 `tools.bash`）；JS 环境不能导入 Bun/Node 模块。
 - 调度循环随 `groot-http.service` 启动；不要重启旧 `groot-schedule.service`。
 - 调度由配置变更、任务完成和最近截止时间唤醒；空闲/等待资源时休眠，不轮询文件。
 - 除非用户指定，不创建 cron 或 systemd timer。

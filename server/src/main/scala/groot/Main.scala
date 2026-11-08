@@ -7,7 +7,7 @@ import groot.usejdk.UseJdkRoutes
 import groot.graaljs.{GraalCommandSdk, GraalJsRoutes, GraalManager}
 import groot.schedule.{Scheduler, ScheduleRoutes}
 import groot.sqlite.{SqliteRoutes, SqliteService}
-import groot.fetch.{FetchRoutes, FetchService}
+import groot.http.{HttpRoutes, HttpService}
 import groot.fs.{FsRoutes, FsService}
 import groot.bash.{BashRoutes, BashService}
 import groot.widget.{WidgetRoutes, WidgetService}
@@ -23,7 +23,7 @@ object Main extends IOApp.Simple:
   def run: IO[Unit] = (for
     commands <- Resource.eval(Deferred[IO, GraalCommandSdk])
     sqlite <- SqliteService.resource()
-    fetch <- FetchService.resource
+    http <- HttpService.resource
     widget <- WidgetService.resource()
     state <- StateService.resource()
     powershell <- PowerShellService.resource()
@@ -33,7 +33,7 @@ object Main extends IOApp.Simple:
     wine <- WineService.resource()
     graaljs <- GraalManager.resource(commands = commands.get)
     scheduler <- Scheduler.resource(graaljs, startLoop = false)
-  yield (scheduler, sqlite, fetch, widget, state, powershell, zshOnMac, bashOnR6s, chrome, wine, graaljs, commands)).use { (scheduler, sqlite, fetch, widget, state, powershell, zshOnMac, bashOnR6s, chrome, wine, graaljs, commands) =>
+  yield (scheduler, sqlite, http, widget, state, powershell, zshOnMac, bashOnR6s, chrome, wine, graaljs, commands)).use { (scheduler, sqlite, http, widget, state, powershell, zshOnMac, bashOnR6s, chrome, wine, graaljs, commands) =>
     val app = httpApp {
       server {
         host("0.0.0.0")
@@ -61,7 +61,7 @@ object Main extends IOApp.Simple:
       UseJdkRoutes.register()
       GraalJsRoutes.register(graaljs)
       SqliteRoutes.register(sqlite)
-      FetchRoutes.register(fetch)
+      HttpRoutes.register(http)
       FsRoutes.register(new FsService)
       BashRoutes.register(new BashService)
       WidgetRoutes.register(widget)

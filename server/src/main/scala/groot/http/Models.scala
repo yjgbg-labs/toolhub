@@ -1,11 +1,11 @@
-package groot.fetch
+package groot.http
 
 import framework.model.JsonModel
 
 enum BodyEncoding derives JsonModel:
   case utf8, base64
 
-case class FetchRequest(
+case class HttpRequest(
     url: String,
     method: String = "GET",
     headers: Map[String, String] = Map.empty,
@@ -13,7 +13,7 @@ case class FetchRequest(
     bodyEncoding: BodyEncoding = BodyEncoding.utf8
 ) derives JsonModel
 
-case class FetchResponse(
+case class HttpResponse(
     url: String,
     status: Int,
     statusText: String,
@@ -24,5 +24,5 @@ case class FetchResponse(
     setCookies: List[String]
 ) derives JsonModel
 
-case class FetchError(name: String, message: String) derives JsonModel
-case class FetchFailure(name: String, message: String) extends RuntimeException(message)
+case class HttpError(name: String, message: String) derives JsonModel
+case class HttpFailure(name: String, message: String) extends RuntimeException(message)
