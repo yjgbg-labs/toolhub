@@ -4,11 +4,7 @@ import cats.effect.{Deferred, IO, Resource}
 import cats.effect.std.Mutex
 import cats.syntax.all.*
 import framework.model.JsonModel
-import groot.bash.{BashFailure, BashRequest, BashService}
-import groot.bashonr6s.{BashOnR6sFailure, BashOnR6sService}
 import groot.graaljs.{InvalidGraalTask, Validation}
-import groot.powershell.{PowerShellFailure, PowerShellService}
-import groot.zshonmac.{ZshOnMacFailure, ZshOnMacService}
 import java.nio.channels.FileChannel
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path, StandardCopyOption, StandardOpenOption}
@@ -28,10 +24,10 @@ final class ShellService private (home: Path, ssh: String, mutex: Mutex[IO]):
   private def find(name: String): Entry = entries.getOrElse(name, throw ShellFailure("shell_not_found", s"No shell environment named $name"))
 
   private def create(environment: ShellEnvironment): IO[Entry] = for
-    allocated <- backend(home.resolve("ssh"), environment, ssh).allocated
-    (run, release) = allocated
+    allocated <- ShellExecutor.resource(home.resolve("ssh"), environment, ssh).allocated
+    (executor, release) = allocated
     closed <- Deferred[IO, Unit]
-  yield new Entry(environment, run, release, closed)
+  yield new Entry(environment, executor.execute, release, closed)
 
   private def save(values: Vector[ShellEnvironment]): IO[Unit] = IO.blocking {
     val path = home.resolve("environments.json")
@@ -99,12 +95,7 @@ final class ShellService private (home: Path, ssh: String, mutex: Mutex[IO]):
       entry.users += 1
       entry
     }))(entry => serial(IO { entry.users -= 1 } *> IO.defer(closeIfIdle(entry))))
-      .use(_.run(request)).adaptError {
-        case error: BashFailure => failure(error.code, error.getMessage)
-        case error: BashOnR6sFailure => failure(error.code, error.getMessage)
-        case error: ZshOnMacFailure => failure(error.code, error.getMessage)
-        case error: PowerShellFailure => failure(error.code, error.getMessage)
-      }
+      .use(_.run(request))
 
   private def close: IO[Unit] = serial {
     IO {
@@ -118,7 +109,7 @@ final class ShellService private (home: Path, ssh: String, mutex: Mutex[IO]):
 
 object ShellService:
   private type Run = ShellRequest => IO[ShellResult]
-  private val maxBytes = 64 * 1024
+  private val maxBytes = ShellExecutor.maxBytes
 
   private def duration(value: String): Long =
     try Validation.durationMs("timeout", value)
@@ -141,29 +132,6 @@ object ShellService:
     if request.script.getBytes(UTF_8).length > maxBytes then throw ShellFailure("shell_limit", "Shell script exceeds 64 KiB")
     duration(request.timeout)
     ()
-
-  private def failure(code: String, message: String): ShellFailure =
-    val normalized = if code.endsWith("_limit") then "shell_limit"
-      else if code.endsWith("_timeout") then "shell_timeout"
-      else if code.startsWith("invalid_") then "invalid_shell"
-      else "shell_ssh"
-    ShellFailure(normalized, message)
-
-  private def backend(home: Path, environment: ShellEnvironment, ssh: String): Resource[IO, Run] =
-    environment.target match
-      case None => Resource.pure[IO, Run] { request =>
-        new BashService().apply(BashRequest(request.script, request.cwd, request.timeout)).map(r => ShellResult(r.exitCode, r.stdout, r.stderr))
-      }
-      case Some(target) => environment.shell match
-        case ShellKind.bash => BashOnR6sService.resource(home, target, environment.idle, ssh).map { service =>
-          request => service(request.script, request.timeout).map(r => ShellResult(r.exitCode, r.stdout, r.stderr))
-        }
-        case ShellKind.zsh => ZshOnMacService.resource(home, target, environment.idle, ssh).map { service =>
-          request => service(request.script, request.timeout).map(r => ShellResult(r.exitCode, r.stdout, r.stderr))
-        }
-        case ShellKind.powershell => PowerShellService.resource(home, target, environment.idle, ssh).map { service =>
-          request => service(request.script, request.timeout).map(r => ShellResult(r.exitCode, r.stdout, r.stderr))
-        }
 
   /** Import the previous deployment targets once. Persisted changes, including deletions, win on later starts. */
   def defaults: Vector[ShellEnvironment] = Vector(

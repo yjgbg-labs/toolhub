@@ -251,6 +251,9 @@ await tools.schedule.config.write(config);
 `shell.execute`、`shell.env.add`、`shell.env.list`、`shell.env.delete` 是普通命令声明，统一对 CLI、Code Mode 和 GraalJS 暴露。
 `execute` 接收 `{env, script, timeout?, cwd?}`；SDK 调用返回 `{status, headers, body}`，其中 `body` 为 `{exitCode, stdout, stderr}`。
 
+实现集中在 `groot.shell`：`ShellService` 管理环境，单一 `ShellExecutor` 统一进程、SSH 连接、输出、超时与取消；
+`ShellScripts` 仅封装各 Shell 的启动语法、传输编码和清理脚本。
+
 环境注册表持久保存在 `$GROOT_HOME/shell/environments.json`，通过 API 管理；并发修改串行化，写入使用原子替换。
 首次启动导入四个默认环境，之后以持久化注册表为准；删除的默认环境不会因重启被重新创建。
 

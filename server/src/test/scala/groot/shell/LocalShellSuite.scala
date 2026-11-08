@@ -1,26 +1,26 @@
-package groot.bash
+package groot.shell
 
 import cats.effect.IO
 import cats.syntax.all.*
 import framework.rpcDsl.*
 import groot.graaljs.{GraalCommandSdk, GraalManager, JavaScript}
 import groot.graaljs.GraalTestSupport.*
-import groot.shell.{ShellEnvironment, ShellRequest, ShellRoutes, ShellService}
 import io.circe.Json
 import java.nio.file.{Files, Path}
 import munit.CatsEffectSuite
 import org.http4s.{Method, Request, Status, Uri}
 import scala.concurrent.duration.*
 
-class BashSuite extends CatsEffectSuite:
-  private val service = new BashService
-  private def registered = temporary.flatMap(home => ShellService.resource(home.resolve("shell"), Vector(ShellEnvironment("local")))).map { shell =>
+class LocalShellSuite extends CatsEffectSuite:
+  private def service = temporary.flatMap(home => ShellService.resource(home.resolve("shell"), Vector(ShellEnvironment("local"))))
+  private def registered = service.map { shell =>
     val app = httpApp { ShellRoutes.register(shell) }
     (app, GraalCommandSdk(app))
   }
-  private def call(request: BashRequest) = registered.use { (_, sdk) =>
-    sdk.call("shell.execute", JsonModel[ShellRequest].encoder(ShellRequest("local", request.script, request.timeout, request.cwd)))
+  private def call(script: String, timeout: String = "30s", cwd: Option[String] = None) = registered.use { (_, sdk) =>
+    sdk.call("shell.execute", JsonModel[ShellRequest].encoder(ShellRequest("local", script, timeout, cwd)))
   }
+  private def execute(script: String) = service.use(_.execute(ShellRequest("local", script)))
   private def quote(text: String) = "'" + text.replace("'", "'\\''") + "'"
   private def running(pid: Long): IO[Boolean] = IO.blocking {
     val file = Path.of(s"/proc/$pid/stat")
@@ -39,7 +39,7 @@ class BashSuite extends CatsEffectSuite:
   test("local shell environment is exposed to all clients and preserves cwd, Unicode and nonzero exits") {
     registered.use { (app, _) => temporary.use { home =>
       for
-        response <- call(BashRequest("printf '中文🙂\\n'; printf '%s' \"$PWD\" >&2; exit 7", Some(home.toString)))
+        response <- call("printf '中文🙂\\n'; printf '%s' \"$PWD\" >&2; exit 7", cwd = Some(home.toString))
         _ = assertEquals(response.hcursor.get[Int]("status"), Right(200))
         result = response.hcursor.downField("body")
         _ = assertEquals(result.get[Int]("exitCode"), Right(7))
@@ -55,27 +55,27 @@ class BashSuite extends CatsEffectSuite:
 
   test("validates inputs and drains both streams concurrently with bounded output") {
     for
-      _ <- List(BashRequest(" "), BashRequest("echo ok", Some("relative")), BashRequest("echo ok", timeout = "0s"),
-        BashRequest("echo ok", timeout = "999999999999999999999d")).traverse_ { request =>
-        call(request).map(result => assertEquals(result.hcursor.get[Int]("status"), Right(400)))
+      _ <- List(ShellRequest("local", " "), ShellRequest("local", "echo ok", cwd = Some("relative")), ShellRequest("local", "echo ok", timeout = "0s"),
+        ShellRequest("local", "echo ok", timeout = "999999999999999999999d")).traverse_ { request =>
+        call(request.script, request.timeout, request.cwd).map(result => assertEquals(result.hcursor.get[Int]("status"), Right(400)))
       }
-      large <- call(BashRequest("x" * (BashService.maxBytes + 1)))
+      large <- call("x" * (ShellExecutor.maxBytes + 1))
       _ = assertEquals(large.hcursor.get[Int]("status"), Right(413))
-      output <- service(BashRequest("head -c 60000 /dev/zero & head -c 60000 /dev/zero >&2 & wait"))
+      output <- execute("head -c 60000 /dev/zero & head -c 60000 /dev/zero >&2 & wait")
       _ = assertEquals((output.exitCode, output.stdout.length, output.stderr.length), (0, 60000, 60000))
       // Overflow occurs while the process is still running; it must terminate, not wait for the timeout.
-      overflow <- call(BashRequest("head -c 65537 /dev/zero; sleep 30")).timeout(5.seconds)
+      overflow <- call("head -c 65537 /dev/zero; sleep 30").timeout(5.seconds)
     yield assertEquals(overflow.hcursor.get[Int]("status"), Right(413))
   }
 
   test("timeout and cancellation kill a TERM-resistant process group before returning") {
     temporary.use { home =>
       for
-        timed <- call(BashRequest(blocking(home.resolve("timed")), timeout = "500ms"))
+        timed <- call(blocking(home.resolve("timed")), timeout = "500ms")
         _ = assertEquals(timed.hcursor.get[Int]("status"), Right(504))
         timedIds <- pids(home.resolve("timed"))
         _ <- stopped(timedIds)
-        _ <- service(BashRequest(blocking(home.resolve("cancelled")))).background.use { _ =>
+        _ <- execute(blocking(home.resolve("cancelled"))).background.use { _ =>
           pids(home.resolve("cancelled")).void
         }.timeout(5.seconds)
         cancelledIds <- pids(home.resolve("cancelled"))
@@ -90,7 +90,7 @@ class BashSuite extends CatsEffectSuite:
       // A leader can exit before its background child. Group cleanup must not depend on leader.isAlive.
       val script = s"(trap '' TERM; echo \"$$BASHPID\" > ${quote(path.toString)}; sleep 30) & sleep 0.1; exit 0"
       for
-        _ <- service(BashRequest(script)).background.use(_ => pids(path).void *> IO.sleep(200.millis)).timeout(5.seconds)
+        _ <- execute(script).background.use(_ => pids(path).void *> IO.sleep(200.millis)).timeout(5.seconds)
         ids <- pids(path)
         _ <- stopped(ids)
       yield ()
@@ -99,7 +99,7 @@ class BashSuite extends CatsEffectSuite:
 
   test("normal completion preserves intentionally detached processes with redirected IO") {
     for
-      result <- service(BashRequest("sleep 30 </dev/null >/dev/null 2>&1 & echo $!"))
+      result <- execute("sleep 30 </dev/null >/dev/null 2>&1 & echo $!")
       pid = result.stdout.trim.toLong
       _ <- running(pid).map(alive => assert(alive)).guarantee(IO.blocking {
         ProcessHandle.of(pid).ifPresent(_.destroyForcibly()); ()

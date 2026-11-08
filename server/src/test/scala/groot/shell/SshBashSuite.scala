@@ -1,11 +1,10 @@
-package groot.bashonr6s
+package groot.shell
 
 import cats.effect.IO
 import cats.syntax.all.*
 import framework.rpcDsl.*
 import groot.graaljs.{GraalCommandSdk, GraalManager, JavaScript}
 import groot.graaljs.GraalTestSupport.*
-import groot.shell.{ShellEnvironment, ShellKind, ShellRequest, ShellRoutes, ShellService}
 import io.circe.Json
 import java.nio.file.{Files, Path}
 import java.nio.file.attribute.PosixFilePermissions
@@ -13,7 +12,7 @@ import munit.CatsEffectSuite
 import org.http4s.{Method, Request, Status, Uri}
 import scala.concurrent.duration.*
 
-class BashOnR6sSuite extends CatsEffectSuite:
+class SshBashSuite extends CatsEffectSuite:
   // Simulate the SSH control socket, but execute the real Linux bootstrap and cancellation code.
   private def transport(home: Path): IO[Path] = IO.blocking {
     val file = home.resolve("ssh-test")
@@ -97,7 +96,7 @@ class BashOnR6sSuite extends CatsEffectSuite:
         for
           _ <- List((" ", "30s"), ("x\u0000", "30s"), ("x", ""), ("x", "0s"), ("x", "oops"))
             .traverse_((script, timeout) => call(script, timeout).map(result => assertEquals(result.hcursor.get[Int]("status"), Right(400))))
-          largeInput <- call("x" * (BashOnR6sService.maxBytes + 1))
+          largeInput <- call("x" * (ShellExecutor.maxBytes + 1))
           _ = assertEquals(largeInput.hcursor.get[Int]("status"), Right(413))
           connected <- IO.blocking(Files.exists(home.resolve("masters")))
           _ = assert(!connected)

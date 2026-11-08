@@ -1,11 +1,10 @@
-package groot.zshonmac
+package groot.shell
 
 import cats.effect.IO
 import cats.syntax.all.*
 import framework.rpcDsl.*
 import groot.graaljs.{GraalCommandSdk, GraalManager, JavaScript}
 import groot.graaljs.GraalTestSupport.*
-import groot.shell.{ShellEnvironment, ShellKind, ShellRequest, ShellRoutes, ShellService}
 import io.circe.Json
 import java.nio.file.{Files, Path}
 import java.nio.file.attribute.PosixFilePermissions
@@ -13,8 +12,8 @@ import munit.CatsEffectSuite
 import org.http4s.{Method, Request, Status, Uri}
 import scala.concurrent.duration.*
 
-class ZshOnMacSuite extends CatsEffectSuite:
-  // Exercise actual subprocess IO and ownership without depending on a Mac in CI.
+class SshPowerShellSuite extends CatsEffectSuite:
+  // Exercise real subprocess IO, framing and cancellation without requiring a Windows machine in CI.
   private def transport(home: Path): IO[Path] = IO.blocking {
     val file = home.resolve("ssh-test")
     Files.writeString(file, """#!/usr/bin/env bun
@@ -31,11 +30,12 @@ class ZshOnMacSuite extends CatsEffectSuite:
         if(!args.includes('ControlPersist=300'))throw Error('Unexpected idle timeout');
         await Bun.write(alive,'yes');await appendFile(root+'/masters','start\n');process.exit(0);
       }
-      const remote=args.at(-1);
-      if(!remote.startsWith('exec /bin/zsh -f -c '))throw Error('Unexpected remote shell');
-      if(remote.includes('kill -TERM')){await appendFile(root+'/cancelled','cancel\n');process.exit(0);}
+      const remote=args.at(-1), encoded=remote.split(' -EncodedCommand ')[1];
+      const bootstrap=Buffer.from(encoded,'base64').toString('utf16le');
+      if(bootstrap.includes('taskkill.exe')){await appendFile(root+'/cancelled','cancel\n');process.exit(0);}
       const bytes=await Bun.stdin.bytes();
-      if(!remote.includes('length='+bytes.length+'\n'))throw Error('Incorrect byte count');
+      if(!bootstrap.includes('byte[] '+bytes.length))throw Error('Incorrect byte count');
+      if(bytes[0]!==239||bytes[1]!==187||bytes[2]!==191)throw Error('Missing UTF-8 BOM');
       await Bun.write(root+'/received',bytes);
       const script=new TextDecoder().decode(bytes).trim();
       if(script==='slow'){await Bun.write(root+'/pid',String(process.pid));await Bun.sleep(30000);}
@@ -46,11 +46,11 @@ class ZshOnMacSuite extends CatsEffectSuite:
     file
   }
 
-  test("named Zsh environments work through HTTP and GraalJS with reusable SSH") {
+  test("UTF-8 framing and exit codes survive HTTP and GraalJS; connections are reused and released") {
     temporary.use { home => for
       ssh <- transport(home)
-      source = "print -r -- '中文🙂'\nprintf '%s\\n' \"$HOME\""
-      _ <- ShellService.resource(home.resolve("pool"), Vector(ShellEnvironment("mac", ShellKind.zsh, Some("mac"))), ssh.toString).use { service =>
+      source = "Get-Date\n'中文🙂'"
+      _ <- ShellService.resource(home.resolve("pool"), Vector(ShellEnvironment("windows", ShellKind.powershell, Some("windows"))), ssh.toString).use { service =>
         val app = httpApp { ShellRoutes.register(service) }
         val sdk = GraalCommandSdk(app)
         for
@@ -58,15 +58,15 @@ class ZshOnMacSuite extends CatsEffectSuite:
           operation = io.circe.parser.parse(app.openApiJson).toOption.get.hcursor.downField("paths").downField("/shell/execute").downField("post")
           _ = assertEquals(operation.get[String]("operationId"), Right("shell.execute"))
           response <- app.httpApp(Request[IO](Method.POST, Uri.unsafeFromString("/shell/execute"))
-            .withEntity(JsonModel[ShellRequest].encoder(ShellRequest("mac", source, "10s")).noSpaces)
+            .withEntity(JsonModel[ShellRequest].encoder(ShellRequest("windows", source, "10s")).noSpaces)
             .putHeaders(org.http4s.Header.Raw(org.typelevel.ci.CIString("Content-Type"), "application/json")))
           body <- response.as[String]
           _ = assertEquals(response.status, Status.Ok)
           _ = assertEquals(io.circe.parser.parse(body).toOption.get.hcursor.get[Int]("exitCode"), Right(7))
           payload <- IO.blocking(Files.readString(home.resolve("received")))
-          _ = assertEquals(payload, source + "\n")
+          _ = assertEquals(payload, "\uFEFF" + source + "\n")
           _ <- GraalManager.resource(home.resolve("tasks"), IO.pure(sdk)).use { manager => for
-            task <- manager.start(JavaScript.source("const r=(await tools.shell.execute({env:'mac',script:'pwd'})).body;if(r.exitCode!==7||r.stdout!=='中文🙂\\n'||r.stderr!=='stderr\\n')throw Error(JSON.stringify(r));"), "1s", "10s")
+            task <- manager.start(JavaScript.source("const r=(await tools.shell.execute({env:'windows',script:'Get-Date'})).body;if(r.exitCode!==7||r.stdout!=='中文🙂\\n'||r.stderr!=='stderr\\n')throw Error(JSON.stringify(r));"), "1s", "10s")
             done <- manager.await(task.id)
             _ = assertEquals(done.state, "succeeded", done.error.toString)
           yield () }
@@ -79,16 +79,16 @@ class ZshOnMacSuite extends CatsEffectSuite:
     yield () }
   }
 
-  test("invalid requests do not connect; limits, timeout and cancellation clean up each request") {
+  test("invalid requests never connect; output limits, deadlines and cancellation release local session processes") {
     temporary.use { home => for
       ssh <- transport(home)
-      _ <- ShellService.resource(home.resolve("pool"), Vector(ShellEnvironment("mac", ShellKind.zsh, Some("mac"))), ssh.toString).use { service =>
+      _ <- ShellService.resource(home.resolve("pool"), Vector(ShellEnvironment("windows", ShellKind.powershell, Some("windows"))), ssh.toString).use { service =>
         val sdk = GraalCommandSdk(httpApp { ShellRoutes.register(service) })
-        def call(script: String, timeout: String = "30s") = sdk.call("shell.execute", JsonModel[ShellRequest].encoder(ShellRequest("mac", script, timeout)))
+        def call(script: String, timeout: String = "30s") = sdk.call("shell.execute", JsonModel[ShellRequest].encoder(ShellRequest("windows", script, timeout)))
         for
           _ <- List((" ", "30s"), ("x\u0000", "30s"), ("x", ""), ("x", "0s"), ("x", "oops"))
             .traverse_((script, timeout) => call(script, timeout).map(result => assertEquals(result.hcursor.get[Int]("status"), Right(400))))
-          largeInput <- call("x" * (ZshOnMacService.maxBytes + 1))
+          largeInput <- call("x" * (ShellExecutor.maxBytes + 1))
           _ = assertEquals(largeInput.hcursor.get[Int]("status"), Right(413))
           connected <- IO.blocking(Files.exists(home.resolve("masters")))
           _ = assert(!connected)
@@ -99,10 +99,10 @@ class ZshOnMacSuite extends CatsEffectSuite:
           pid <- IO.blocking(Files.readString(home.resolve("pid")).toLong)
           _ <- awaitUntil(IO(ProcessHandle.of(pid).map[Boolean](_.isAlive).orElse(false)))(!_)
           _ <- IO.blocking(Files.delete(home.resolve("pid")))
-          _ <- service.execute(ShellRequest("mac", "slow")).background.use(_ => awaitUntil(IO.blocking(Files.exists(home.resolve("pid"))))(identity).void)
+          _ <- service.execute(ShellRequest("windows", "slow")).background.use(_ => awaitUntil(IO.blocking(Files.exists(home.resolve("pid"))))(identity).void)
           cancelledPid <- IO.blocking(Files.readString(home.resolve("pid")).toLong)
           _ <- awaitUntil(IO(ProcessHandle.of(cancelledPid).map[Boolean](_.isAlive).orElse(false)))(!_)
-          after <- call("pwd")
+          after <- call("Get-Date")
           _ = assertEquals(after.hcursor.get[Int]("status"), Right(200))
           cancelled <- IO.blocking(Files.readString(home.resolve("cancelled")))
           _ = assertEquals(cancelled, "cancel\ncancel\ncancel\n")

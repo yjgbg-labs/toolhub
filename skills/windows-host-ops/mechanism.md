@@ -26,7 +26,8 @@ CLI / Code Mode / GraalJS
 ```text
 server/src/main/scala/groot/shell/ShellRoutes.scala    统一命令组
 server/src/main/scala/groot/shell/ShellService.scala   环境注册表与执行生命周期
-server/src/main/scala/groot/powershell/PowerShellService.scala  Windows SSH 执行器
+server/src/main/scala/groot/shell/ShellExecutor.scala  统一进程与 SSH 执行器
+server/src/main/scala/groot/shell/ShellScripts.scala   各 Shell 的启动、编码和清理脚本
 ```
 
 ## 排障顺序
