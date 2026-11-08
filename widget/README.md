@@ -112,7 +112,8 @@ LaunchAgent 在 Aqua 桌面会话启动，异常退出后自动重启。
 ### Windows
 
 Windows 客户端位于 `widget/windows/`，使用现有 .NET 6 Windows Desktop 运行时与 SDK；不依赖 Redis、浏览器或 WebView。
-Windows 需要已登录的桌面会话、可用 `groot windows exec` 桥接和挂载在 `WIDGET_WINDOWS_MOUNT`（默认 `/mnt/windows-c`）的 C: 盘。
+Windows 需要已登录的桌面会话、可用的 `shell.execute` 命令及 `windows` 环境和挂载在 `WIDGET_WINDOWS_MOUNT`（默认 `/mnt/windows-c`）的 C: 盘。
+构建脚本通过 `groot-cli shell execute` 执行 PowerShell，单次超时为 10 分钟，并检查返回的 `exitCode`。
 Windows 必须能直接访问 `WIDGET_BASE_URL`；使用 `100.64.0.3` 时应接入同一 Tailscale/Headscale 网络。
 
 ```sh

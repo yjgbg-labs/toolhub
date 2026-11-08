@@ -16,7 +16,14 @@ async function run(args: string[], script?: string, capture = false): Promise<st
   if (await child.exited !== 0) throw Error(`Failed: ${args[0]} ${args[1] ?? ""}`);
   return output.trim();
 }
-const windows = (script: string, capture = false) => run(["groot", "windows", "exec", "--stdin"], `$ErrorActionPreference = 'Stop'\n${script}`, capture);
+async function windows(script: string, capture = false): Promise<string> {
+  const request = JSON.stringify({ env: "windows", script: `$ErrorActionPreference = 'Stop'\n${script}`, timeout: "10m" });
+  const result = JSON.parse(await run(["groot-cli", "shell", "execute", "--body", "-"], request, true)) as { exitCode: number; stdout: string; stderr: string };
+  if (!capture || result.exitCode !== 0) process.stdout.write(result.stdout);
+  process.stderr.write(result.stderr);
+  if (result.exitCode !== 0) throw Error(`Windows command failed (exit ${result.exitCode})`);
+  return result.stdout.trim();
+}
 const mounted = (path: string) => {
   if (!/^C:\\/i.test(path)) throw Error("Windows build directory must be on the mounted C: drive");
   return resolve(mount, path.slice(3).replaceAll("\\", "/"));

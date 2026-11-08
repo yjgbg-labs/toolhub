@@ -5,6 +5,7 @@ import cats.syntax.all.*
 import framework.rpcDsl.*
 import groot.graaljs.{GraalCommandSdk, GraalManager, JavaScript}
 import groot.graaljs.GraalTestSupport.*
+import groot.shell.{ShellEnvironment, ShellRequest, ShellRoutes, ShellService}
 import io.circe.Json
 import java.nio.file.{Files, Path}
 import munit.CatsEffectSuite
@@ -13,9 +14,13 @@ import scala.concurrent.duration.*
 
 class BashSuite extends CatsEffectSuite:
   private val service = new BashService
-  private val app = httpApp { BashRoutes.register(service) }
-  private val sdk = GraalCommandSdk(app)
-  private def call(request: BashRequest) = sdk.call("bash", JsonModel[BashRequest].encoder(request))
+  private def registered = temporary.flatMap(home => ShellService.resource(home.resolve("shell"), Vector(ShellEnvironment("local")))).map { shell =>
+    val app = httpApp { ShellRoutes.register(shell) }
+    (app, GraalCommandSdk(app))
+  }
+  private def call(request: BashRequest) = registered.use { (_, sdk) =>
+    sdk.call("shell.execute", JsonModel[ShellRequest].encoder(ShellRequest("local", request.script, request.timeout, request.cwd)))
+  }
   private def quote(text: String) = "'" + text.replace("'", "'\\''") + "'"
   private def running(pid: Long): IO[Boolean] = IO.blocking {
     val file = Path.of(s"/proc/$pid/stat")
@@ -31,8 +36,8 @@ class BashSuite extends CatsEffectSuite:
   private def blocking(path: Path): String =
     s"trap '' TERM; (trap '' TERM; sleep 30) & echo \"$$$$ $$!\" > ${quote(path.toString)}; wait"
 
-  test("ordinary declaration exposes Bash only to GraalJS and preserves cwd, Unicode and nonzero exits") {
-    temporary.use { home =>
+  test("local shell environment is exposed to all clients and preserves cwd, Unicode and nonzero exits") {
+    registered.use { (app, _) => temporary.use { home =>
       for
         response <- call(BashRequest("printf '中文🙂\\n'; printf '%s' \"$PWD\" >&2; exit 7", Some(home.toString)))
         _ = assertEquals(response.hcursor.get[Int]("status"), Right(200))
@@ -40,12 +45,12 @@ class BashSuite extends CatsEffectSuite:
         _ = assertEquals(result.get[Int]("exitCode"), Right(7))
         _ = assertEquals(result.get[String]("stdout"), Right("中文🙂\n"))
         _ = assertEquals(result.get[String]("stderr"), Right(home.toString))
-        _ = assertEquals(app.endpoints.find(_.operationId == "bash").get.exposedOn, Set(framework.Client.graaljs))
+        _ = assertEquals(app.endpoints.find(_.operationId == "shell.execute").get.exposedOn, Set(framework.Client.cli, framework.Client.codemode, framework.Client.graaljs))
         _ <- List(Method.GET, Method.POST).traverse_ { method =>
           app.httpApp(Request[IO](method, Uri.unsafeFromString("/bash"))).map(r => assertEquals(r.status, Status.NotFound))
         }
       yield ()
-    }
+    } }
   }
 
   test("validates inputs and drains both streams concurrently with bounded output") {
@@ -103,14 +108,14 @@ class BashSuite extends CatsEffectSuite:
   }
 
   test("real GraalJS SDK returns results and cancels subprocesses on task timeout and explicit cancellation") {
-    temporary.use { home => GraalManager.resource(home.resolve("tasks"), IO.pure(sdk)).use { manager =>
+    registered.use { (_, sdk) => temporary.use { home => GraalManager.resource(home.resolve("tasks"), IO.pure(sdk)).use { manager =>
       for
-        ok <- manager.start(JavaScript.source("const r=(await tools.bash({script:\"printf 'sdk'; exit 9\"})).body; if(r.exitCode!==9||r.stdout!=='sdk')throw Error(JSON.stringify(r)); console.log(r.stdout);"), "1s", "10s")
+        ok <- manager.start(JavaScript.source("const r=(await tools.shell.execute({env:'local',script:\"printf 'sdk'; exit 9\"})).body; if(r.exitCode!==9||r.stdout!=='sdk')throw Error(JSON.stringify(r)); console.log(r.stdout);"), "1s", "10s")
         done <- manager.await(ok.id)
         _ = assertEquals(done.state, "succeeded", done.error.toString)
         _ <- List(false, true).traverse_ { cancel =>
           val path = home.resolve(if cancel then "sdk-cancel" else "sdk-timeout")
-          val source = "await tools.bash({script:" + Json.fromString(blocking(path)).noSpaces + "});"
+          val source = "await tools.shell.execute({env:'local',script:" + Json.fromString(blocking(path)).noSpaces + "});"
           for
             task <- manager.start(JavaScript.source(source), "1s", if cancel then "10s" else "500ms")
             ids <- pids(path)
@@ -121,5 +126,5 @@ class BashSuite extends CatsEffectSuite:
           yield ()
         }
       yield ()
-    } }
+    } } }
   }
