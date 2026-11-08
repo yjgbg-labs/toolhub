@@ -1,4 +1,4 @@
-package groot.fetch
+package groot.http
 
 import cats.effect.{IO, Resource}
 import cats.syntax.all.*
@@ -12,35 +12,35 @@ import org.http4s.ember.client.EmberClientBuilder
 import org.typelevel.ci.CIString
 import scala.concurrent.duration.*
 
-/** Buffered HTTP fetch. All transport IO belongs to the task session and is cancelled with it. */
-final class FetchService(client: Client[IO], timeout: FiniteDuration = 30.seconds):
-  import FetchService.*
+/** Buffered HTTP requests. All transport IO belongs to the task session and is cancelled with it. */
+final class HttpService(client: Client[IO], timeout: FiniteDuration = 30.seconds):
+  import HttpService.*
 
-  def apply(input: FetchRequest): IO[FetchResponse] = IO.defer {
+  def apply(input: HttpRequest): IO[HttpResponse] = IO.defer {
     val uri = parseUrl(input.url)
     val upper = input.method.toUpperCase(java.util.Locale.ROOT)
     val normalized = if Set("DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT").contains(upper) then upper else input.method
     val method = Method.fromString(normalized).fold(error => throw error, identity)
     if Set("CONNECT", "TRACE", "TRACK").contains(method.name.toUpperCase(java.util.Locale.ROOT)) then
-      throw FetchFailure("TypeError", s"fetch() does not support method ${method.name}")
+      throw HttpFailure("TypeError", s"http() does not support method ${method.name}")
     if (method == Method.GET || method == Method.HEAD) && input.body.nonEmpty then
-      throw FetchFailure("TypeError", "fetch() request with GET/HEAD method cannot have body")
+      throw HttpFailure("TypeError", "http() request with GET/HEAD method cannot have body")
     val body = input.body.map { text => input.bodyEncoding match
       case BodyEncoding.utf8 => text.getBytes(UTF_8)
       case BodyEncoding.base64 => Base64.getDecoder.decode(text)
     }
-    if input.headers.size > 1024 then throw FetchFailure("TypeError", "fetch() accepts at most 1024 headers")
+    if input.headers.size > 1024 then throw HttpFailure("TypeError", "http() accepts at most 1024 headers")
     val fields = input.headers.toVector.map { (rawName, rawValue) =>
       val name = rawName.toLowerCase(java.util.Locale.ROOT)
       val value = rawValue.dropWhile(c => c == ' ' || c == '\t' || c == '\r' || c == '\n')
         .reverse.dropWhile(c => c == ' ' || c == '\t' || c == '\r' || c == '\n').reverse
       if !name.matches("[!#$%&'*+.^_`|~0-9a-z-]+") || value.exists(c => c == 0 || c == '\r' || c == '\n' || c > 255) then
-        throw FetchFailure("TypeError", "fetch() has an invalid header name or value")
+        throw HttpFailure("TypeError", "http() has an invalid header name or value")
       name -> value
     }.groupMap(_._1)(_._2).toVector.map((name, values) => name -> values.mkString(", "))
     val size = input.url.getBytes(UTF_8).length.toLong + input.method.length +
       fields.map((k, v) => k.length.toLong + v.getBytes(UTF_8).length).sum + body.fold(0)(_.length)
-    if size > maxBytes then throw FetchFailure("RangeError", "fetch() request exceeds 1 MiB")
+    if size > maxBytes then throw HttpFailure("RangeError", "http() request exceeds 1 MiB")
     val typed = if input.body.nonEmpty && input.bodyEncoding == BodyEncoding.utf8 && !fields.exists(_._1 == "content-type") then
       fields :+ ("content-type" -> "text/plain;charset=UTF-8") else fields
     // Framing is computed from the buffered body, including when callers reuse response headers.
@@ -54,16 +54,16 @@ final class FetchService(client: Client[IO], timeout: FiniteDuration = 30.second
     val compressed = if header(accepted.headers, "accept-encoding").isDefined then accepted
       else accepted.putHeaders(Header.Raw(CIString("Accept-Encoding"), "gzip, deflate"))
     follow(compressed, 0)
-  }.timeoutTo(timeout, IO.raiseError(FetchFailure("TimeoutError", "fetch() timed out")))
-    .adaptError { case error if !error.isInstanceOf[FetchFailure] =>
-      FetchFailure("TypeError", s"fetch failed: ${Option(error.getMessage).getOrElse(error.getClass.getSimpleName)}")
+  }.timeoutTo(timeout, IO.raiseError(HttpFailure("TimeoutError", "http() timed out")))
+    .adaptError { case error if !error.isInstanceOf[HttpFailure] =>
+      HttpFailure("TypeError", s"http failed: ${Option(error.getMessage).getOrElse(error.getClass.getSimpleName)}")
     }
 
-  private def follow(request: Request[IO], redirects: Int): IO[FetchResponse] =
+  private def follow(request: Request[IO], redirects: Int): IO[HttpResponse] =
     client.run(request).use { response =>
       val location = header(response.headers, "location")
       if Set(301, 302, 303, 307, 308).contains(response.status.code) && location.nonEmpty then IO {
-        if redirects >= 20 then throw FetchFailure("TypeError", "fetch() exceeded 20 redirects")
+        if redirects >= 20 then throw HttpFailure("TypeError", "http() exceeded 20 redirects")
         val target = parseUrl(request.uri.resolve(Uri.unsafeFromString(location.get)).renderString)
         val rewrite = (Set(301, 302).contains(response.status.code) && request.method == Method.POST) ||
           (response.status.code == 303 && request.method != Method.GET && request.method != Method.HEAD)
@@ -81,7 +81,7 @@ final class FetchService(client: Client[IO], timeout: FiniteDuration = 30.second
           .toVector.sortBy(_._1).map { (name, values) => name -> values.mkString(", ") }
         // Preserve cookie boundaries: Expires and extension attributes can themselves contain commas.
         val setCookies = fields.collect { case field if field.name == CIString("Set-Cookie") => field.value }
-        Right(FetchResponse(request.uri.renderString, response.status.code, response.status.reason,
+        Right(HttpResponse(request.uri.renderString, response.status.code, response.status.reason,
           response.status.isSuccess, redirects > 0, headers.toMap, Base64.getEncoder.encodeToString(bytes), setCookies))
       }
     }.flatMap {
@@ -104,22 +104,22 @@ final class FetchService(client: Client[IO], timeout: FiniteDuration = 30.second
         }
       else response.body
     bytes.take(maxBytes.toLong + 1).compile.to(Array).flatMap { body =>
-      if body.length > maxBytes then IO.raiseError(FetchFailure("RangeError", "fetch() response exceeds 1 MiB"))
+      if body.length > maxBytes then IO.raiseError(HttpFailure("RangeError", "http() response exceeds 1 MiB"))
       else IO.pure(body)
     }
 
-object FetchService:
+object HttpService:
   val maxBytes = 1024 * 1024
 
-  def resource: Resource[IO, FetchService] = EmberClientBuilder.default[IO].withTimeout(30.seconds).build.map(new FetchService(_))
+  def resource: Resource[IO, HttpService] = EmberClientBuilder.default[IO].withTimeout(30.seconds).build.map(new HttpService(_))
 
   private def header(headers: Headers, name: String): Option[String] = headers.headers.find(_.name == CIString(name)).map(_.value)
 
   private def parseUrl(text: String): Uri =
-    val uri = Uri.fromString(text).fold(_ => throw FetchFailure("TypeError", "fetch() URL is invalid"), identity)
+    val uri = Uri.fromString(text).fold(_ => throw HttpFailure("TypeError", "http() URL is invalid"), identity)
     if !uri.scheme.exists(s => s == Uri.Scheme.http || s == Uri.Scheme.https) || uri.host.isEmpty then
-      throw FetchFailure("TypeError", "fetch() requires an absolute HTTP or HTTPS URL")
-    if uri.authority.exists(_.userInfo.nonEmpty) then throw FetchFailure("TypeError", "fetch() URL must not contain credentials")
+      throw HttpFailure("TypeError", "http() requires an absolute HTTP or HTTPS URL")
+    if uri.authority.exists(_.userInfo.nonEmpty) then throw HttpFailure("TypeError", "http() URL must not contain credentials")
     uri.copy(fragment = None)
 
   private def origin(uri: Uri): (Option[Uri.Scheme], Option[Uri.Host], Int) =

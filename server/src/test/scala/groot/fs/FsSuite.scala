@@ -3,7 +3,7 @@ package groot.fs
 import cats.effect.{Deferred, IO, Ref, Resource}
 import cats.syntax.all.*
 import framework.rpcDsl.*
-import groot.fetch.{FetchRoutes, FetchService}
+import groot.http.{HttpRoutes, HttpService}
 import groot.graaljs.{GraalCommandSdk, GraalManager}
 import io.circe.Json
 import java.nio.charset.StandardCharsets.UTF_8
@@ -376,19 +376,19 @@ class FsSuite extends CatsEffectSuite:
     }
   }
 
-  test("GraalJS uses the ordinary fs SDK for fetch downloads and a complete file workflow") {
+  test("GraalJS uses the ordinary fs SDK for http downloads and a complete file workflow") {
     temporary().use { home =>
       val client = Client[IO](_ => Resource.pure(Response[IO](Status.Ok)
         .withBodyStream(fs2.Stream.emits(Array[Byte](0, 127, -128, -1)))))
-      val app = httpApp { FsRoutes.register(service); FetchRoutes.register(new FetchService(client)) }
+      val app = httpApp { FsRoutes.register(service); HttpRoutes.register(new HttpService(client)) }
       GraalManager.resource(home.resolve("tasks"), IO.pure(GraalCommandSdk(app))).use { manager =>
         val root = Json.fromString(home.resolve("workflow").toString).noSpaces
         for
           task <- manager.start(groot.graaljs.JavaScript.source(s"""
-            if (typeof fs !== "undefined" || typeof fetch !== "undefined") throw Error("unexpected business global");
+            if (typeof fs !== "undefined" || typeof http !== "undefined") throw Error("unexpected business global");
             const root = $root;
             await tools.fs.mkdir({path: root});
-            const reply = await tools.fetch({url: "https://example.com/binary"});
+            const reply = await tools.http({url: "https://example.com/binary"});
             await tools.fs.write({path: root + "/binary", body: reply.body.bodyBase64, encoding: "base64"});
             const data = await tools.fs.read({path: root + "/binary", encoding: "base64"});
             if (data.body.content !== "AH+A/w==" || data.body.bytes !== 4) throw Error("binary mismatch");
