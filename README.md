@@ -60,7 +60,7 @@ server/cli/plugin 在本机完成构建与安装，交付方式为构建、测�
 - CLI：将 `cli/dist/groot-cli` 移动到 `~/.local/bin/groot-cli`。
 - 服务端：将 `server/dist/groot.jar` 安装到 `$SERVER_INSTALL_ROOT/server/groot.jar`，然后重启 user service 并检查健康状态。
 - 插件：将 `plugin/dist/index.js` 直接安装为 `$OPENCODE_PLUGIN_DIR/groot.ts`。
-- Widget：Mac 通过 SSH 在 `WIDGET_MAC_HOST` 构建并安装至 `~/Applications/GrootWidget.app`；Windows 通过 `groot windows exec` 构建并安装至 `%LOCALAPPDATA%\GrootWidget\app`，详见 [widget/README.md](widget/README.md)。
+- Widget：Mac 通过 SSH 在 `WIDGET_MAC_HOST` 构建并安装至 `~/Applications/GrootWidget.app`；Windows 通过 `shell.execute` 的 `windows` 环境构建并安装至 `%LOCALAPPDATA%\GrootWidget\app`，详见 [widget/README.md](widget/README.md)。
 
 `config.env` 集中配置 JDK 和安装目标；服务端、CLI、插件分别部署。
 无需为本机交付设置对象存储上传、下载或远程制品版本参数。
@@ -187,7 +187,7 @@ await tools.schedule.config.write(config);
 ### GraalJS 定时任务与重试
 
 `schedule` 使用 `script` 指向服务端 JavaScript 文件的绝对路径，每次成功提交的周期执行和重试都有独立的 GraalJS 任务 ID。
-脚本可用 `console` 和声明自动生成的 `tools.*`（含 `tools.http`、`tools.bash`）；宿主命令通过 `tools.bash` 执行，JS 环境不提供 Bun/Node 模块。
+脚本可用 `console` 和声明自动生成的 `tools.*`（含 `tools.http`、`tools.shell.execute`）；宿主命令通过命名 Shell 环境执行，JS 环境不提供 Bun/Node 模块。
 内联 `source`、`command`、`cwd` 和运行状态字段会被拒绝。旧配置升级前应先备份，将源码保存为文件后通过 API 写入路径。
 
 ```json
@@ -246,12 +246,53 @@ await tools.schedule.config.write(config);
 完整配置现在仅包含 `resources` 和 `jobs`；旧文件的 `tickMs` 可读取但被忽略，新 API 不再返回它。
 配置通过 API 更新会立即唤醒调度。`every: "0ms"` 表示前次完成后立即再次执行。
 
-### GraalJS Bash 命令
+### Shell 环境与执行
 
-`bash` 是普通命令声明，仅 `exposeOn(graaljs)`，通过现有 SDK 调用；不向 CLI、Code Mode 或公共 HTTP 暴露。
+`shell.execute`、`shell.env.add`、`shell.env.list`、`shell.env.delete` 是普通命令声明，统一对 CLI、Code Mode 和 GraalJS 暴露。
+`execute` 接收 `{env, script, timeout?, cwd?}`；SDK 调用返回 `{status, headers, body}`，其中 `body` 为 `{exitCode, stdout, stderr}`。
+
+实现集中在 `groot.shell`：`ShellService` 管理环境，单一 `ShellExecutor` 统一进程、SSH 连接、输出、超时与取消；
+`ShellScripts` 仅封装各 Shell 的启动语法、传输编码和清理脚本。
+
+环境注册表持久保存在 `$GROOT_HOME/shell/environments.json`，通过 API 管理；并发修改串行化，写入使用原子替换。
+首次启动导入四个默认环境，之后以持久化注册表为准；删除的默认环境不会因重启被重新创建。
+
+| 环境 | Shell | 执行位置 | 旧调用迁移 |
+| --- | --- | --- | --- |
+| `local` | `bash` | Groot 服务所在 Linux 主机 | `tools.bash({script, ...})` → `tools.shell.execute({env: "local", script, ...})` |
+| `windows` | `powershell` | SSH 目标 `windows` | `tools.powershell({body, ...})` → `tools.shell.execute({env: "windows", script: body, ...})` |
+| `mac` | `zsh` | SSH 目标 `weichenglong@100.64.0.5` | `tools.zshOnMac({body, ...})` → `tools.shell.execute({env: "mac", script: body, ...})` |
+| `r6s` | `bash` | SSH 目标 `router@100.64.0.7` | `tools.bashOnR6s({body, ...})` → `tools.shell.execute({env: "r6s", script: body, ...})` |
+
+旧四个顶层命令已移除。升级时同步更新定时任务脚本的调用名、`env` 和 `script` 字段。
+
+```sh
+groot-cli shell env list
+groot-cli shell env add --body '{"name":"build","shell":"bash","target":"builder@host","idle":"5m"}'
+groot-cli shell execute --body '{"env":"build","script":"uname -a","timeout":"10s"}'
+groot-cli shell env delete --name build
+```
 
 ```js
-const result = (await tools.bash({
+await tools.shell.env.add({name: "build", shell: "bash", target: "builder@host"});
+const environments = (await tools.shell.env.list()).body;
+const result = (await tools.shell.execute({env: "build", script: "uname -a"})).body;
+await tools.shell.env.delete({name: "build"});
+```
+
+- `env.add` 接收 `{name, shell?, target?, idle?}`。`name` 为非空、无 NUL、最多 128 字符的唯一名称；重名返回 409。
+- `shell` 为 `bash`（默认）、`zsh` 或 `powershell`；省略 `target` 表示本机 Bash，设置 `target` 表示 SSH。
+  远程 Bash 支持 Linux，Zsh 支持 macOS，PowerShell 支持 Windows。目标可用 `user@host` 或服务用户 SSH 配置中的别名。
+- `idle` 默认 `5m`，最短 `1s`；控制 SSH master 的空闲回收。新增环境不立即连接，首次执行时连接。
+- 删除不存在的环境、执行不存在的环境返回 404。删除后不再接受新调用，已开始的调用继续完成，再释放该环境的 SSH 资源。
+  可以立即重新注册同名环境，新旧调用的连接和生命周期相互独立。
+- `timeout` 默认 `30s`，接受正整数 `ms/s/m/h/d`。`cwd` 仅支持本机 Bash；远程工作目录在脚本中用 `cd` 或 `Set-Location` 指定。
+
+#### 本机 Bash（`local`）
+
+```js
+const result = (await tools.shell.execute({
+  env: "local",
   script: "set -euo pipefail\nprintf 'hello\\n'\ndf -Pk /",
   cwd: "/home/user", // 可省略，默认服务的工作目录
   timeout: "10s"    // 默认 30s；接受正整数 ms/s/m/h/d
@@ -267,18 +308,18 @@ if (result.exitCode !== 0) throw Error(result.stderr || `bash exit ${result.exit
 - 命令正常返回时不终止后台进程；启动常驻进程须重定向其 stdin/stdout/stderr，避免继承调用的管道。
 - GraalJS 的 CPU/内存额度只计 JS；子进程不计入这些额度。任务总超时仍会取消未完成的 Bash 调用。
 
-### Windows PowerShell
+#### Windows PowerShell（`windows`）
 
-`powershell` 是普通命令声明，`exposeOn(cli, graaljs, codemode)`，通过服务器上的 OpenSSH 直连 Windows。
+`shell.execute({env: "windows", script})` 通过服务器上的 OpenSSH 直连 Windows。
 默认目标为服务用户 SSH 配置中的 `windows` 别名；本机指向 Headscale 地址 `100.64.0.6:22`、用户 `12394`。
 使用现有 SSH 密钥和 known_hosts，非交互认证并严格校验主机密钥。
 
 ```sh
-groot-cli powershell --timeout 30s --body '"Get-Date; Get-Process | Select-Object -First 3"'
+groot-cli shell execute --body '{"env":"windows","script":"Get-Date; Get-Process | Select-Object -First 3","timeout":"30s"}'
 ```
 
 ```js
-const result = (await tools.powershell({body: "Get-Date", timeout: "30s"})).body;
+const result = (await tools.shell.execute({env: "windows", script: "Get-Date", timeout: "30s"})).body;
 console.log(result.stdout);
 if (result.exitCode !== 0) throw Error(result.stderr || `PowerShell exit ${result.exitCode}`);
 ```
@@ -286,62 +327,60 @@ if (result.exitCode !== 0) throw Error(result.stderr || `PowerShell exit ${resul
 - 返回 `{exitCode, stdout, stderr}`；非零退出码正常返回，脚本自行决定是否抛错。
 - UTF-8 脚本最大 64 KiB，多行和中文按原文传输；每路输出最多 64 KiB。
   使用 Windows PowerShell 5.1，关闭 profile 和交互提示，终止性脚本错误返回非零状态。
-- 脚本由 `body[String]` 接收，HTTP body 是 `application/json` 字符串；CLI 的 `--body` 也需保留 JSON 字符串引号。
-- `timeout` 由普通参数接收（HTTP query、CLI `--timeout`、SDK `timeout`），默认 `30s`，接受正整数 `ms/s/m/h/d`；覆盖连接和执行时间，超时返回 504。
+- HTTP body 是包含 `env` 和 `script` 的 JSON 对象，CLI 使用 `--body`，SDK 直接传入对象。
+- `timeout` 在同一请求对象中指定，覆盖连接和执行时间，超时返回 504。
 - 超时、取消或输出超限时，关闭本地会话并通过独立 SSH 会话请求终止本次 Windows 进程树，清理最多等待 5 秒。
   使用请求专属标记及 PID 创建时间定位进程；远程网络已断开时记录清理失败。
 - OpenSSH `ControlMaster` 复用同一传输连接，每次调用创建独立会话和 PowerShell 进程；并发调用互不共享变量。
   空闲 **5 分钟**自动关闭，下次调用重连；服务正常关闭时释放自己持有的 master。
-- `config.env` 的 `POWERSHELL_SSH_TARGET`、`POWERSHELL_SSH_IDLE` 分别配置目标和空闲时长。
+- `config.env` 的 `POWERSHELL_SSH_TARGET`、`POWERSHELL_SSH_IDLE` 仅在首次初始化注册表时设置 `windows` 的目标和空闲时长。
   SSH 配置和凭据属于运行服务的本机用户；命令不会在连接故障后自动重跑远程脚本。
 
-### macOS Zsh
+#### macOS Zsh（`mac`）
 
-Mac 用户的默认 shell 为 `/bin/zsh`（已实测 5.9），因此命令名为 `zshOnMac`，
-`exposeOn(cli, graaljs, codemode)`。默认经 Headscale SSH 连接 `weichenglong@100.64.0.5:22`。
+`mac` 环境使用 `/bin/zsh`（已实测 5.9），默认经 Headscale SSH 连接 `weichenglong@100.64.0.5:22`。
 
 ```sh
-groot-cli zshOnMac --timeout 30s --body '"print -r -- $ZSH_VERSION; sw_vers"'
+groot-cli shell execute --body '{"env":"mac","script":"print -r -- $ZSH_VERSION; sw_vers","timeout":"30s"}'
 ```
 
 ```js
-const result = (await tools.zshOnMac({body: "pwd; print -r -- '你好🙂'", timeout: "30s"})).body;
+const result = (await tools.shell.execute({env: "mac", script: "pwd; print -r -- '你好🙂'", timeout: "30s"})).body;
 console.log(result.stdout);
 if (result.exitCode !== 0) throw Error(result.stderr || `Zsh exit ${result.exitCode}`);
 ```
 
-- 脚本通过 `body[String]` 接收（HTTP/CLI body 是 JSON 字符串）；`timeout` 为普通参数，默认 `30s`，接受正整数 `ms/s/m/h/d`。
-- Service 直接接收 `script` 和 `timeout`，返回 `{exitCode, stdout, stderr}`，非零退出码正常返回。
+- HTTP/CLI body 使用 `{env, script, timeout?}` JSON 对象，`timeout` 默认 `30s`。
+- 返回 `{exitCode, stdout, stderr}`，非零退出码正常返回。
 - 实际执行 `/bin/zsh -f`，非交互、非登录模式，默认从远程用户 home 开始；每次调用使用独立 shell、临时脚本和进程组。
   UTF-8 脚本最大 64 KiB，每路输出最多 64 KiB；脚本从 stdin 按字节数传输，执行时 stdin 为 `/dev/null`。
 - OpenSSH `ControlMaster` 复用连接，空闲 **5 分钟**释放，下次调用重连；服务正常关闭时释放所属 master。
 - 超时、取消或输出超限时，清理本次远程进程组（包括通常继承该组的子进程），清理最多等待 5 秒。
   使用请求标记、进程启动时间和进程组身份校验；远程网络断开时记录清理失败。主动脱离进程组的守护进程自行管理。
-- `config.env` 中的 `ZSH_ON_MAC_SSH_TARGET` 和 `ZSH_ON_MAC_SSH_IDLE` 配置目标及空闲时长。
+- `config.env` 中的 `ZSH_ON_MAC_SSH_TARGET` 和 `ZSH_ON_MAC_SSH_IDLE` 仅在首次初始化注册表时设置 `mac` 环境。
   使用服务用户的 SSH 密钥及 known_hosts，严格校验主机密钥；执行故障不自动重跑脚本。
 
-### R6S Bash
+#### R6S Bash（`r6s`）
 
-R6S 运行 Armbian/Debian 13，默认 shell 为 Bash 5.2。`bashOnR6s` 通过 Headscale SSH
-连接 `router@100.64.0.7:22`，`exposeOn(cli, graaljs, codemode)`。
+R6S 运行 Armbian/Debian 13，默认 shell 为 Bash 5.2。`r6s` 环境通过 Headscale SSH 连接 `router@100.64.0.7:22`。
 
 ```sh
-groot-cli bashOnR6s --timeout 30s --body '"printf \"%s\\n\" \"$BASH_VERSION\"; uname -a"'
+groot-cli shell execute --body '{"env":"r6s","script":"printf \"%s\\n\" \"$BASH_VERSION\"; uname -a","timeout":"30s"}'
 ```
 
 ```js
-const result = (await tools.bashOnR6s({body: "hostname; uptime", timeout: "30s"})).body;
+const result = (await tools.shell.execute({env: "r6s", script: "hostname; uptime", timeout: "30s"})).body;
 console.log(result.stdout);
 if (result.exitCode !== 0) throw Error(result.stderr || `Bash exit ${result.exitCode}`);
 ```
 
-- 脚本由 `body[String]` 接收，HTTP/CLI body 为 JSON 字符串；`timeout` 是普通参数，默认 `30s`，接受正整数 `ms/s/m/h/d`。
-- Service 直接接收 `script`、`timeout`，返回 `{exitCode, stdout, stderr}`；非零退出码正常返回。
+- HTTP/CLI body 使用 `{env, script, timeout?}` JSON 对象，`timeout` 默认 `30s`。
+- 返回 `{exitCode, stdout, stderr}`；非零退出码正常返回。
 - 执行 `/bin/bash --noprofile --norc`，移除 `BASH_ENV`，以 `router` 用户从 home 目录执行；需要提权的命令可显式使用现有 `sudo -n`。
 - UTF-8 脚本及每路输出各限 64 KiB，脚本通过 stdin 按字节数传输，执行时 stdin 为 `/dev/null`。
 - OpenSSH ControlMaster 复用连接，空闲 **5 分钟**自动释放。每次调用独立 shell 和进程组；超时、取消、输出超限会清理本次进程组，清理最多等待 5 秒。
   主动脱离进程组的守护进程自行管理，网络断开时记录远程清理失败；连接故障不自动重跑脚本。
-- `BASH_ON_R6S_SSH_TARGET`、`BASH_ON_R6S_SSH_IDLE` 配置 SSH 目标和空闲时长，使用服务用户的 SSH 密钥及 known_hosts。
+- `BASH_ON_R6S_SSH_TARGET`、`BASH_ON_R6S_SSH_IDLE` 仅在首次初始化注册表时设置 `r6s` 环境，使用服务用户的 SSH 密钥及 known_hosts。
 - 路由器已安装官方 Tailscale 1.104.4，服务开机自启，加入 `https://headscale.yjgbg.com:28443` 的 `emma` 网络。
   节点名 `r6s`，地址 `100.64.0.7` / `fd7a:115c:a1e0::7`；关闭接管 DNS、接受子网路由、出口节点及 Tailscale SSH，使用现有 OpenSSH。
   `netfilter-mode=off` 配合 nftables 的 `tailscale0` 入站规则；systemd drop-in 在防火墙启动和 reload 后补回该规则。

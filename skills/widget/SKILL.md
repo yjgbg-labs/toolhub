@@ -58,7 +58,7 @@ groot widget install
 
 ```bash
 groot widget config read
-groot windows exec 'Get-Process GrootWidget -ErrorAction Stop | Select-Object Name,Id,SessionId,Responding | ConvertTo-Json'
+groot-cli shell execute --body '{"env":"windows","script":"Get-Process GrootWidget -ErrorAction Stop | Select-Object Name,Id,SessionId,Responding | ConvertTo-Json"}'
 ```
 
 - 必须确认 Redis Hash 中存在最新状态，设置 String 可正常读取。

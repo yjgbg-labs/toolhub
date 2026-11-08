@@ -1,4 +1,4 @@
-package groot.bashonr6s
+package groot.shell
 
 import cats.effect.IO
 import cats.syntax.all.*
@@ -12,7 +12,7 @@ import munit.CatsEffectSuite
 import org.http4s.{Method, Request, Status, Uri}
 import scala.concurrent.duration.*
 
-class BashOnR6sSuite extends CatsEffectSuite:
+class SshBashSuite extends CatsEffectSuite:
   // Simulate the SSH control socket, but execute the real Linux bootstrap and cancellation code.
   private def transport(home: Path): IO[Path] = IO.blocking {
     val file = home.resolve("ssh-test")
@@ -53,23 +53,19 @@ class BashOnR6sSuite extends CatsEffectSuite:
     file
   }
 
-  test("HTTP and GraalJS execute Bash with string body, query timeout and reusable SSH") {
+  test("HTTP and GraalJS execute Bash in a named environment with reusable SSH") {
     temporary.use { home => for
       ssh <- transport(home)
       source = "printf '%s\\n' '中文🙂'\nprintf 'stderr\\n' >&2\nexit 7"
-      _ <- BashOnR6sService.resource(home.resolve("pool"), ssh = ssh.toString).use { service =>
-        val app = httpApp { BashOnR6sRoutes.register(service) }
+      _ <- ShellService.resource(home.resolve("pool"), Vector(ShellEnvironment("r6s", ShellKind.bash, Some("router"))), ssh.toString).use { service =>
+        val app = httpApp { ShellRoutes.register(service) }
         val sdk = GraalCommandSdk(app)
         for
           _ <- IO(assertEquals(app.endpoints.head.exposedOn, Set(framework.Client.cli, framework.Client.graaljs, framework.Client.codemode)))
-          operation = io.circe.parser.parse(app.openApiJson).toOption.get.hcursor.downField("paths").downField("/bashOnR6s").downField("post")
-          _ = assertEquals(operation.downField("requestBody").downField("content").downField("application/json").downField("schema").get[String]("type"), Right("string"))
-          timeout = operation.get[Vector[Json]]("parameters").toOption.get.find(_.hcursor.get[String]("name") == Right("timeout")).get.hcursor
-          _ = assertEquals(timeout.get[String]("in"), Right("query"))
-          _ = assertEquals(timeout.get[Boolean]("required"), Right(false))
-          _ = assertEquals(timeout.downField("schema").get[String]("default"), Right("30s"))
-          response <- app.httpApp(Request[IO](Method.POST, Uri.unsafeFromString("/bashOnR6s?timeout=10s"))
-            .withEntity(Json.fromString(source).noSpaces)
+          operation = io.circe.parser.parse(app.openApiJson).toOption.get.hcursor.downField("paths").downField("/shell/execute").downField("post")
+          _ = assertEquals(operation.get[String]("operationId"), Right("shell.execute"))
+          response <- app.httpApp(Request[IO](Method.POST, Uri.unsafeFromString("/shell/execute"))
+            .withEntity(JsonModel[ShellRequest].encoder(ShellRequest("r6s", source, "10s")).noSpaces)
             .putHeaders(org.http4s.Header.Raw(org.typelevel.ci.CIString("Content-Type"), "application/json")))
           body <- response.as[String]
           _ = assertEquals(response.status, Status.Ok)
@@ -77,7 +73,7 @@ class BashOnR6sSuite extends CatsEffectSuite:
           payload <- IO.blocking(Files.readString(home.resolve("received")))
           _ = assertEquals(payload, source + "\n")
           _ <- GraalManager.resource(home.resolve("tasks"), IO.pure(sdk)).use { manager => for
-            task <- manager.start(JavaScript.source(s"const r=(await tools.bashOnR6s({body:${Json.fromString(source).noSpaces}})).body;if(r.exitCode!==7||r.stdout!=='中文🙂\\n'||r.stderr!=='stderr\\n')throw Error(JSON.stringify(r));"), "1s", "10s")
+            task <- manager.start(JavaScript.source(s"const r=(await tools.shell.execute({env:'r6s',script:${Json.fromString(source).noSpaces}})).body;if(r.exitCode!==7||r.stdout!=='中文🙂\\n'||r.stderr!=='stderr\\n')throw Error(JSON.stringify(r));"), "1s", "10s")
             done <- manager.await(task.id)
             _ = assertEquals(done.state, "succeeded", done.error.toString)
           yield () }
@@ -94,13 +90,13 @@ class BashOnR6sSuite extends CatsEffectSuite:
     temporary.use { home => for
       ssh <- transport(home)
       slow = s"printf '%s' $$$$ > '${home.resolve("pid")}'; sleep 30"
-      _ <- BashOnR6sService.resource(home.resolve("pool"), ssh = ssh.toString).use { service =>
-        val sdk = GraalCommandSdk(httpApp { BashOnR6sRoutes.register(service) })
-        def call(script: String, timeout: String = "30s") = sdk.call("bashOnR6s", Json.obj("body" -> Json.fromString(script), "timeout" -> Json.fromString(timeout)))
+      _ <- ShellService.resource(home.resolve("pool"), Vector(ShellEnvironment("r6s", ShellKind.bash, Some("router"))), ssh.toString).use { service =>
+        val sdk = GraalCommandSdk(httpApp { ShellRoutes.register(service) })
+        def call(script: String, timeout: String = "30s") = sdk.call("shell.execute", JsonModel[ShellRequest].encoder(ShellRequest("r6s", script, timeout)))
         for
           _ <- List((" ", "30s"), ("x\u0000", "30s"), ("x", ""), ("x", "0s"), ("x", "oops"))
             .traverse_((script, timeout) => call(script, timeout).map(result => assertEquals(result.hcursor.get[Int]("status"), Right(400))))
-          largeInput <- call("x" * (BashOnR6sService.maxBytes + 1))
+          largeInput <- call("x" * (ShellExecutor.maxBytes + 1))
           _ = assertEquals(largeInput.hcursor.get[Int]("status"), Right(413))
           connected <- IO.blocking(Files.exists(home.resolve("masters")))
           _ = assert(!connected)
@@ -111,7 +107,7 @@ class BashOnR6sSuite extends CatsEffectSuite:
           pid <- IO.blocking(Files.readString(home.resolve("pid")).toLong)
           _ <- awaitUntil(IO(ProcessHandle.of(pid).map[Boolean](_.isAlive).orElse(false)))(!_)
           _ <- IO.blocking(Files.delete(home.resolve("pid")))
-          _ <- service(slow).background.use(_ => awaitUntil(IO.blocking(Files.exists(home.resolve("pid"))))(identity).void)
+          _ <- service.execute(ShellRequest("r6s", slow)).background.use(_ => awaitUntil(IO.blocking(Files.exists(home.resolve("pid"))))(identity).void)
           cancelledPid <- IO.blocking(Files.readString(home.resolve("pid")).toLong)
           _ <- awaitUntil(IO(ProcessHandle.of(cancelledPid).map[Boolean](_.isAlive).orElse(false)))(!_)
           after <- call("pwd")
@@ -120,6 +116,33 @@ class BashOnR6sSuite extends CatsEffectSuite:
           cancelled <- IO.blocking(Files.readString(home.resolve("cancelled")))
           _ = assertEquals(cancelled, "cancel\ncancel\ncancel\n")
         yield ()
+      }
+    yield () }
+  }
+
+  test("deleting and recreating an environment preserves its running SSH call and releases the old master afterwards") {
+    temporary.use { home => for
+      ssh <- transport(home)
+      _ <- ShellService.resource(home.resolve("pool"), Vector(ShellEnvironment("remote", target = Some("router"))), ssh.toString).use { service =>
+        val source = s"touch '${home.resolve("ready")}'; while [ ! -f '${home.resolve("release")}' ]; do sleep 0.01; done; printf remote"
+        cats.effect.Resource.make(service.execute(ShellRequest("remote", source)).start)(_.cancel).use { fiber => for
+          _ <- awaitUntil(IO.blocking(Files.exists(home.resolve("ready"))))(identity)
+          _ <- service.delete("remote")
+          closedEarly <- IO.blocking(Files.exists(home.resolve("closed")))
+          _ = assert(!closedEarly)
+          missing <- service.execute(ShellRequest("remote", "printf wrong")).attempt
+          _ = assert(missing.isLeft)
+          _ <- service.add(ShellEnvironment("remote"))
+          replacement <- service.execute(ShellRequest("remote", "printf local"))
+          _ = assertEquals(replacement.stdout, "local")
+          _ <- IO.blocking(Files.createFile(home.resolve("release")))
+          original <- fiber.joinWithNever
+          _ = assertEquals(original.stdout, "remote")
+          closed <- IO.blocking(Files.readString(home.resolve("closed")))
+          _ = assertEquals(closed, "yes")
+          after <- service.execute(ShellRequest("remote", "printf alive"))
+          _ = assertEquals(after.stdout, "alive")
+        yield () }
       }
     yield () }
   }

@@ -9,12 +9,9 @@ import groot.schedule.{Scheduler, ScheduleRoutes}
 import groot.sqlite.{SqliteRoutes, SqliteService}
 import groot.http.{HttpRoutes, HttpService}
 import groot.fs.{FsRoutes, FsService}
-import groot.bash.{BashRoutes, BashService}
+import groot.shell.{ShellRoutes, ShellService}
 import groot.widget.{WidgetRoutes, WidgetService}
 import groot.state.{StateRoutes, StateService}
-import groot.powershell.{PowerShellRoutes, PowerShellService}
-import groot.zshonmac.{ZshOnMacRoutes, ZshOnMacService}
-import groot.bashonr6s.{BashOnR6sRoutes, BashOnR6sService}
 import groot.chrome.{ChromeRoutes, ChromeService}
 import groot.wine.{WineRoutes, WineService}
 import scala.concurrent.duration.*
@@ -26,14 +23,12 @@ object Main extends IOApp.Simple:
     http <- HttpService.resource
     widget <- WidgetService.resource()
     state <- StateService.resource()
-    powershell <- PowerShellService.resource()
-    zshOnMac <- ZshOnMacService.resource()
-    bashOnR6s <- BashOnR6sService.resource()
+    shell <- ShellService.resource()
     chrome <- ChromeService.resource()
     wine <- WineService.resource()
     graaljs <- GraalManager.resource(commands = commands.get)
     scheduler <- Scheduler.resource(graaljs, startLoop = false)
-  yield (scheduler, sqlite, http, widget, state, powershell, zshOnMac, bashOnR6s, chrome, wine, graaljs, commands)).use { (scheduler, sqlite, http, widget, state, powershell, zshOnMac, bashOnR6s, chrome, wine, graaljs, commands) =>
+  yield (scheduler, sqlite, http, widget, state, shell, chrome, wine, graaljs, commands)).use { (scheduler, sqlite, http, widget, state, shell, chrome, wine, graaljs, commands) =>
     val app = httpApp {
       server {
         host("0.0.0.0")
@@ -63,12 +58,9 @@ object Main extends IOApp.Simple:
       SqliteRoutes.register(sqlite)
       HttpRoutes.register(http)
       FsRoutes.register(new FsService)
-      BashRoutes.register(new BashService)
+      ShellRoutes.register(shell)
       WidgetRoutes.register(widget)
       StateRoutes.register(state)
-      PowerShellRoutes.register(powershell)
-      ZshOnMacRoutes.register(zshOnMac)
-      BashOnR6sRoutes.register(bashOnR6s)
       ChromeRoutes.register(chrome)
       WineRoutes.register(wine)
       command[PlainText]("health") {

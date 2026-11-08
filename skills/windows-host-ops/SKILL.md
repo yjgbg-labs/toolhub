@@ -9,8 +9,8 @@ description: 从Linux检查或修改Windows主机时使用
 
 ## 核心约定
 
-- 先用 `groot windows status` 检查本地 Windows 服务和反向 SSH 状态。
-- 通过 `groot windows exec` 操作 Windows；兼容别名为 `groot windows powershell`。
+- 先用 `groot-cli shell env list` 确认 `windows` 环境，再运行 `Get-Date` 检查连接。
+- 通过 `tools.shell.execute({env: "windows", script})` 或 `groot-cli shell execute` 操作 Windows。
 - Windows `C:` 通过 SSHFS 挂载在 `/mnt/windows-c`，不要假设存在 WSL 的 `/mnt/c`。
 - 优先使用 PowerShell 原生命令，不要无故套用 `cmd.exe`。
 - 修改系统、服务、注册表、显示器、网络或输入设备前，先读取现状并说明影响。
@@ -21,25 +21,26 @@ description: 从Linux检查或修改Windows主机时使用
 执行内联 PowerShell：
 
 ```bash
-groot windows exec "Get-Date"
-groot windows exec "Get-TimeZone | Format-List Id,DisplayName"
-groot windows exec "Get-ChildItem 'C:\\Users'"
+groot-cli shell execute --body '{"env":"windows","script":"Get-Date"}'
+groot-cli shell execute --body '{"env":"windows","script":"Get-TimeZone | Format-List Id,DisplayName"}'
+groot-cli shell execute --body '{"env":"windows","script":"Get-ChildItem C:\\Users"}'
 ```
 
-执行本地脚本：
+执行 Linux 上的本地 PowerShell 脚本（文件内容进入 `script` 字段）：
 
 ```bash
-groot windows exec --script ./script.ps1
-groot windows exec --script ./script.ps1 arg1 "arg with spaces"
+jq -n --rawfile script ./script.ps1 '{env:"windows",script:$script}' | groot-cli shell execute --body -
 ```
 
-从 stdin 执行脚本：
+Code Mode 先用 `search` 查找签名，然后调用：
 
-```bash
-groot windows exec --stdin < ./script.ps1
+```js
+const result = (await tools.shell.execute({env: "windows", script: "Get-Date", timeout: "30s"})).body;
+if (result.exitCode !== 0) throw Error(result.stderr || `PowerShell exit ${result.exitCode}`);
+console.log(result.stdout);
 ```
 
-不要写成 `groot windows exec -Command ...`；该桥接不使用原生 `powershell.exe` 的参数解析方式。
+`shell.execute` 接收 JSON 对象；脚本最多 64 KiB，默认超时 30 秒，每路输出最多 64 KiB。
 
 ## 输出与引用
 
@@ -48,19 +49,19 @@ groot windows exec --stdin < ./script.ps1
 - 先用短命令验证桥接，再逐步增加复杂表达式。
 
 ```bash
-groot windows exec "Get-Service sshd | Format-List Name,Status,StartType"
-groot windows exec "Get-Process | Select-Object -First 5 Name,Id,CPU | ConvertTo-Json -Depth 3"
+groot-cli shell execute --body '{"env":"windows","script":"Get-Service sshd | Format-List Name,Status,StartType"}'
+groot-cli shell execute --body '{"env":"windows","script":"Get-Process | Select-Object -First 5 Name,Id,CPU | ConvertTo-Json -Depth 3"}'
 ```
 
 ## Windows 文件
 
 - 先用 `mountpoint -q /mnt/windows-c` 判断挂载状态。
-- 正常情况下由 Groot Schedule 的 `windows-c-mount` 任务每 10 秒检测并恢复挂载。
+- 挂载与 Shell 的 SSH 连接独立；自动恢复情况以当前 `groot-cli schedule list` 为准。
 - 不要在 Windows 离线时把挂载不可用误判为文件不存在。
 
 ## 故障处理
 
-先运行 `groot windows status` 和 `groot windows exec "Get-Date"`。桥接失败或挂载异常时，再读取 [mechanism.md](./mechanism.md)，不要在日常操作中预加载实现细节。
+先检查 `groot-cli health`、`groot-cli shell env list` 和 `windows` 环境的 `Get-Date`。连接或挂载异常时，再读取 [mechanism.md](./mechanism.md)。
 
 ## 不适用范围
 
@@ -68,4 +69,4 @@ groot windows exec "Get-Process | Select-Object -First 5 Name,Id,CPU | ConvertTo
 - 只修改当前仓库文件的任务。
 - 可以直接用本地 Linux 工具完成的任务。
 
-工作区已有 `win_set_input.ps1`、`win_display_modes.ps1` 和 `win_ddc_runner.ps1` 等脚本。显示器、输入源、EDID 或 Windows 硬件控制任务应先检查这些脚本，再决定是否通过 `--script` 执行。
+工作区已有 `win_set_input.ps1`、`win_display_modes.ps1` 和 `win_ddc_runner.ps1` 等脚本。显示器、输入源、EDID 或 Windows 硬件控制任务应先检查这些脚本，再将所需内容放入 `script` 执行。
