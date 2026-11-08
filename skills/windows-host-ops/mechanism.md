@@ -17,8 +17,8 @@ CLI / Code Mode / GraalJS
 - 首次初始化的 `windows` 环境使用 `POWERSHELL_SSH_TARGET`（默认 SSH 别名 `windows`）和 `POWERSHELL_SSH_IDLE`（默认 `5m`）。
 - 目标的用户、端口、私钥和代理配置来自运行 `groot-http.service` 的用户 SSH 配置；严格检查 known_hosts，采用非交互认证。
 - 通过 `shell.env.add/list/delete` 管理环境。删除环境后可重新注册同名配置；正在执行的旧调用完成后释放旧连接。
-- PowerShell 以 UTF-8 BOM 和准确字节数传输到远端临时 `.ps1`，使用 Windows PowerShell 5.1 执行，完成后删除。
-- 连接或执行超时默认 30 秒。超时、取消、输出超限会请求终止本次 Windows 进程树；用请求标记和 PID 创建时间定位，远程清理最多等待 5 秒。
+- 用户脚本以 UTF-16LE Base64 直接交给 Windows PowerShell 5.1 的 `-EncodedCommand`，不生成远端临时文件。
+- 连接或执行超时默认 30 秒。超时、取消、输出超限只结束本地 SSH 调用；远端进程树、文件和退出码策略由用户脚本管理。
 - 连接故障不会自动重跑脚本。每次调用使用独立 PowerShell 进程；空闲连接默认 5 分钟释放。
 
 ## 实现入口
@@ -27,7 +27,7 @@ CLI / Code Mode / GraalJS
 server/src/main/scala/groot/shell/ShellRoutes.scala    统一命令组
 server/src/main/scala/groot/shell/ShellService.scala   环境注册表与执行生命周期
 server/src/main/scala/groot/shell/ShellExecutor.scala  统一进程与 SSH 执行器
-server/src/main/scala/groot/shell/ShellScripts.scala   各 Shell 的启动、编码和清理脚本
+server/src/main/scala/groot/shell/ShellCommand.scala   各 Shell 的直接执行命令与参数编码
 ```
 
 ## 排障顺序

@@ -32,11 +32,11 @@ class SshZshSuite extends CatsEffectSuite:
       }
       const remote=args.at(-1);
       if(!remote.startsWith('exec /bin/zsh -f -c '))throw Error('Unexpected remote shell');
-      if(remote.includes('kill -TERM')){await appendFile(root+'/cancelled','cancel\n');process.exit(0);}
-      const bytes=await Bun.stdin.bytes();
-      if(!remote.includes('length='+bytes.length+'\n'))throw Error('Incorrect byte count');
-      await Bun.write(root+'/received',bytes);
-      const script=new TextDecoder().decode(bytes).trim();
+      const decode=Bun.spawn(['/bin/bash','--noprofile','--norc','-c','set -- '+remote.slice(5)+'; printf "%s" "${!#}"'],{stdout:'pipe'});
+      const script=await new Response(decode.stdout).text();
+      if(await decode.exited!==0)throw Error('Cannot parse remote command');
+      await Bun.write(root+'/received',script);
+      await appendFile(root+'/calls','call\n');
       if(script==='slow'){await Bun.write(root+'/pid',String(process.pid));await Bun.sleep(30000);}
       if(script==='large'){await Bun.stdout.write('x'.repeat(65537));await Bun.sleep(30000);}
       await Bun.stdout.write('中文🙂\n');await Bun.stderr.write('stderr\n');process.exit(7);
@@ -63,7 +63,7 @@ class SshZshSuite extends CatsEffectSuite:
           _ = assertEquals(response.status, Status.Ok)
           _ = assertEquals(io.circe.parser.parse(body).toOption.get.hcursor.get[Int]("exitCode"), Right(7))
           payload <- IO.blocking(Files.readString(home.resolve("received")))
-          _ = assertEquals(payload, source + "\n")
+          _ = assertEquals(payload, source)
           _ <- GraalManager.resource(home.resolve("tasks"), IO.pure(sdk)).use { manager => for
             task <- manager.start(JavaScript.source("const r=(await tools.shell.execute({env:'mac',script:'pwd'})).body;if(r.exitCode!==7||r.stdout!=='中文🙂\\n'||r.stderr!=='stderr\\n')throw Error(JSON.stringify(r));"), "1s", "10s")
             done <- manager.await(task.id)
@@ -78,7 +78,7 @@ class SshZshSuite extends CatsEffectSuite:
     yield () }
   }
 
-  test("invalid requests do not connect; limits, timeout and cancellation clean up each request") {
+  test("invalid requests do not connect; limits and cancellation stop only the local SSH client") {
     temporary.use { home => for
       ssh <- transport(home)
       _ <- ShellService.resource(home.resolve("pool"), Vector(ShellEnvironment("mac", ShellKind.zsh, Some("mac"))), ssh.toString).use { service =>
@@ -103,8 +103,8 @@ class SshZshSuite extends CatsEffectSuite:
           _ <- awaitUntil(IO(ProcessHandle.of(cancelledPid).map[Boolean](_.isAlive).orElse(false)))(!_)
           after <- call("pwd")
           _ = assertEquals(after.hcursor.get[Int]("status"), Right(200))
-          cancelled <- IO.blocking(Files.readString(home.resolve("cancelled")))
-          _ = assertEquals(cancelled, "cancel\ncancel\ncancel\n")
+          calls <- IO.blocking(Files.readString(home.resolve("calls")))
+          _ = assertEquals(calls, "call\ncall\ncall\ncall\n")
         yield ()
       }
     yield () }

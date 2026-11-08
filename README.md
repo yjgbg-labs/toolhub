@@ -252,7 +252,7 @@ await tools.schedule.config.write(config);
 `execute` 接收 `{env, script, timeout?, cwd?}`；SDK 调用返回 `{status, headers, body}`，其中 `body` 为 `{exitCode, stdout, stderr}`。
 
 实现集中在 `groot.shell`：`ShellService` 管理环境，单一 `ShellExecutor` 统一进程、SSH 连接、输出、超时与取消；
-`ShellScripts` 仅封装各 Shell 的启动语法、传输编码和清理脚本。
+`ShellCommand` 仅生成各 Shell 的直接执行命令。远端脚本的进程管理、退出码策略和文件清理由调用方负责。
 
 环境注册表持久保存在 `$GROOT_HOME/shell/environments.json`，通过 API 管理；并发修改串行化，写入使用原子替换。
 首次启动导入四个默认环境，之后以持久化注册表为准；删除的默认环境不会因重启被重新创建。
@@ -287,6 +287,9 @@ await tools.shell.env.delete({name: "build"});
 - 删除不存在的环境、执行不存在的环境返回 404。删除后不再接受新调用，已开始的调用继续完成，再释放该环境的 SSH 资源。
   可以立即重新注册同名环境，新旧调用的连接和生命周期相互独立。
 - `timeout` 默认 `30s`，接受正整数 `ms/s/m/h/d`。`cwd` 仅支持本机 Bash；远程工作目录在脚本中用 `cd` 或 `Set-Location` 指定。
+- 远程脚本直接通过 Bash/Zsh `-c` 或 PowerShell `-EncodedCommand` 执行；超时、取消、输出超限只结束本地 SSH 调用。
+  用户自行管理远端进程和资源，Groot 不发送额外的启动、进程跟踪或终止脚本。
+- API 接收的脚本上限为 64 KiB；直接执行还受本机、SSH 服务端和目标 Shell 的命令行长度限制（包括转义或 Base64 编码后的长度）。
 
 #### 本机 Bash（`local`）
 
@@ -325,12 +328,11 @@ if (result.exitCode !== 0) throw Error(result.stderr || `PowerShell exit ${resul
 ```
 
 - 返回 `{exitCode, stdout, stderr}`；非零退出码正常返回，脚本自行决定是否抛错。
-- UTF-8 脚本最大 64 KiB，多行和中文按原文传输；每路输出最多 64 KiB。
-  使用 Windows PowerShell 5.1，关闭 profile 和交互提示，终止性脚本错误返回非零状态。
+- 用户脚本以 UTF-16LE Base64 传给 Windows PowerShell 5.1 的 `-EncodedCommand`，关闭 profile 和交互提示；每路输出最多 64 KiB。
+  退出码采用 PowerShell 原生语义；调用方在脚本中设置所需的错误策略、输出编码，并按需用 `exit $LASTEXITCODE` 传递外部程序退出码。
 - HTTP body 是包含 `env` 和 `script` 的 JSON 对象，CLI 使用 `--body`，SDK 直接传入对象。
 - `timeout` 在同一请求对象中指定，覆盖连接和执行时间，超时返回 504。
-- 超时、取消或输出超限时，关闭本地会话并通过独立 SSH 会话请求终止本次 Windows 进程树，清理最多等待 5 秒。
-  使用请求专属标记及 PID 创建时间定位进程；远程网络已断开时记录清理失败。
+- 超时、取消或输出超限时结束本地 SSH 调用；Windows 进程树和用户临时文件由调用方管理。
 - OpenSSH `ControlMaster` 复用同一传输连接，每次调用创建独立会话和 PowerShell 进程；并发调用互不共享变量。
   空闲 **5 分钟**自动关闭，下次调用重连；服务正常关闭时释放自己持有的 master。
 - `config.env` 的 `POWERSHELL_SSH_TARGET`、`POWERSHELL_SSH_IDLE` 仅在首次初始化注册表时设置 `windows` 的目标和空闲时长。
@@ -352,11 +354,10 @@ if (result.exitCode !== 0) throw Error(result.stderr || `Zsh exit ${result.exitC
 
 - HTTP/CLI body 使用 `{env, script, timeout?}` JSON 对象，`timeout` 默认 `30s`。
 - 返回 `{exitCode, stdout, stderr}`，非零退出码正常返回。
-- 实际执行 `/bin/zsh -f`，非交互、非登录模式，默认从远程用户 home 开始；每次调用使用独立 shell、临时脚本和进程组。
-  UTF-8 脚本最大 64 KiB，每路输出最多 64 KiB；脚本从 stdin 按字节数传输，执行时 stdin 为 `/dev/null`。
+- 直接执行 `/bin/zsh -f -c <script>`，非交互、非登录模式，默认从远程用户 home 开始；每次调用使用独立 Shell。
+  脚本以命令行参数传输，stdin 为 EOF；每路输出最多 64 KiB。
 - OpenSSH `ControlMaster` 复用连接，空闲 **5 分钟**释放，下次调用重连；服务正常关闭时释放所属 master。
-- 超时、取消或输出超限时，清理本次远程进程组（包括通常继承该组的子进程），清理最多等待 5 秒。
-  使用请求标记、进程启动时间和进程组身份校验；远程网络断开时记录清理失败。主动脱离进程组的守护进程自行管理。
+- 超时、取消或输出超限时结束本地 SSH 调用；远端进程与文件由调用方管理。
 - `config.env` 中的 `ZSH_ON_MAC_SSH_TARGET` 和 `ZSH_ON_MAC_SSH_IDLE` 仅在首次初始化注册表时设置 `mac` 环境。
   使用服务用户的 SSH 密钥及 known_hosts，严格校验主机密钥；执行故障不自动重跑脚本。
 
@@ -376,10 +377,10 @@ if (result.exitCode !== 0) throw Error(result.stderr || `Bash exit ${result.exit
 
 - HTTP/CLI body 使用 `{env, script, timeout?}` JSON 对象，`timeout` 默认 `30s`。
 - 返回 `{exitCode, stdout, stderr}`；非零退出码正常返回。
-- 执行 `/bin/bash --noprofile --norc`，移除 `BASH_ENV`，以 `router` 用户从 home 目录执行；需要提权的命令可显式使用现有 `sudo -n`。
-- UTF-8 脚本及每路输出各限 64 KiB，脚本通过 stdin 按字节数传输，执行时 stdin 为 `/dev/null`。
-- OpenSSH ControlMaster 复用连接，空闲 **5 分钟**自动释放。每次调用独立 shell 和进程组；超时、取消、输出超限会清理本次进程组，清理最多等待 5 秒。
-  主动脱离进程组的守护进程自行管理，网络断开时记录远程清理失败；连接故障不自动重跑脚本。
+- 直接执行 `/bin/bash --noprofile --norc -c <script>`，移除 `BASH_ENV`，以 `router` 用户从 home 目录执行；需要提权的命令可显式使用现有 `sudo -n`。
+- 脚本以命令行参数传输，stdin 为 EOF；每路输出最多 64 KiB。
+- OpenSSH ControlMaster 复用连接，空闲 **5 分钟**自动释放。超时、取消、输出超限只结束本地 SSH 调用，远端进程与文件由调用方管理。
+  连接故障不自动重跑脚本。
 - `BASH_ON_R6S_SSH_TARGET`、`BASH_ON_R6S_SSH_IDLE` 仅在首次初始化注册表时设置 `r6s` 环境，使用服务用户的 SSH 密钥及 known_hosts。
 - 路由器已安装官方 Tailscale 1.104.4，服务开机自启，加入 `https://headscale.yjgbg.com:28443` 的 `emma` 网络。
   节点名 `r6s`，地址 `100.64.0.7` / `fd7a:115c:a1e0::7`；关闭接管 DNS、接受子网路由、出口节点及 Tailscale SSH，使用现有 OpenSSH。

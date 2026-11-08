@@ -13,7 +13,7 @@ import org.http4s.{Method, Request, Status, Uri}
 import scala.concurrent.duration.*
 
 class SshPowerShellSuite extends CatsEffectSuite:
-  // Exercise real subprocess IO, framing and cancellation without requiring a Windows machine in CI.
+  // Exercise command encoding and local SSH client IO without requiring a Windows machine in CI.
   private def transport(home: Path): IO[Path] = IO.blocking {
     val file = home.resolve("ssh-test")
     Files.writeString(file, """#!/usr/bin/env bun
@@ -31,13 +31,9 @@ class SshPowerShellSuite extends CatsEffectSuite:
         await Bun.write(alive,'yes');await appendFile(root+'/masters','start\n');process.exit(0);
       }
       const remote=args.at(-1), encoded=remote.split(' -EncodedCommand ')[1];
-      const bootstrap=Buffer.from(encoded,'base64').toString('utf16le');
-      if(bootstrap.includes('taskkill.exe')){await appendFile(root+'/cancelled','cancel\n');process.exit(0);}
-      const bytes=await Bun.stdin.bytes();
-      if(!bootstrap.includes('byte[] '+bytes.length))throw Error('Incorrect byte count');
-      if(bytes[0]!==239||bytes[1]!==187||bytes[2]!==191)throw Error('Missing UTF-8 BOM');
-      await Bun.write(root+'/received',bytes);
-      const script=new TextDecoder().decode(bytes).trim();
+      const script=Buffer.from(encoded,'base64').toString('utf16le');
+      await Bun.write(root+'/received',script);
+      await appendFile(root+'/calls','call\n');
       if(script==='slow'){await Bun.write(root+'/pid',String(process.pid));await Bun.sleep(30000);}
       if(script==='large'){await Bun.stdout.write('x'.repeat(65537));await Bun.sleep(30000);}
       await Bun.stdout.write('中文🙂\n');await Bun.stderr.write('stderr\n');process.exit(7);
@@ -46,7 +42,7 @@ class SshPowerShellSuite extends CatsEffectSuite:
     file
   }
 
-  test("UTF-8 framing and exit codes survive HTTP and GraalJS; connections are reused and released") {
+  test("direct Unicode commands and exit codes survive HTTP and GraalJS; connections are reused and released") {
     temporary.use { home => for
       ssh <- transport(home)
       source = "Get-Date\n'中文🙂'"
@@ -64,7 +60,7 @@ class SshPowerShellSuite extends CatsEffectSuite:
           _ = assertEquals(response.status, Status.Ok)
           _ = assertEquals(io.circe.parser.parse(body).toOption.get.hcursor.get[Int]("exitCode"), Right(7))
           payload <- IO.blocking(Files.readString(home.resolve("received")))
-          _ = assertEquals(payload, "\uFEFF" + source + "\n")
+          _ = assertEquals(payload, source)
           _ <- GraalManager.resource(home.resolve("tasks"), IO.pure(sdk)).use { manager => for
             task <- manager.start(JavaScript.source("const r=(await tools.shell.execute({env:'windows',script:'Get-Date'})).body;if(r.exitCode!==7||r.stdout!=='中文🙂\\n'||r.stderr!=='stderr\\n')throw Error(JSON.stringify(r));"), "1s", "10s")
             done <- manager.await(task.id)
@@ -104,8 +100,8 @@ class SshPowerShellSuite extends CatsEffectSuite:
           _ <- awaitUntil(IO(ProcessHandle.of(cancelledPid).map[Boolean](_.isAlive).orElse(false)))(!_)
           after <- call("Get-Date")
           _ = assertEquals(after.hcursor.get[Int]("status"), Right(200))
-          cancelled <- IO.blocking(Files.readString(home.resolve("cancelled")))
-          _ = assertEquals(cancelled, "cancel\ncancel\ncancel\n")
+          calls <- IO.blocking(Files.readString(home.resolve("calls")))
+          _ = assertEquals(calls, "call\ncall\ncall\ncall\n")
         yield ()
       }
     yield () }

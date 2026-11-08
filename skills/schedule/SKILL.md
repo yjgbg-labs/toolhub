@@ -130,7 +130,7 @@ if (result.exitCode !== 0) throw Error(result.stderr || `bash exit ${result.exit
 ```
 
 `shell.execute` 对三个客户端暴露；默认环境有 `local/windows/mac/r6s`，支持默认 `30s` 超时及本机绝对 `cwd`，返回 `exitCode/stdout/stderr`。
-脚本及每路输出上限各 64 KiB。超时/取消会清理进程组；正常返回保留已重定向 IO 的后台进程。JS CPU/内存限额不限制子进程。
+脚本及每路输出上限各 64 KiB，远程命令另受目标命令行长度限制。超时/取消清理本地进程组或 SSH 客户端，远端进程由脚本管理。JS CPU/内存限额不限制子进程。
 
 ## 升级与排障
 
