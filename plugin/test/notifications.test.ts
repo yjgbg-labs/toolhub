@@ -6,14 +6,11 @@ import { startNotifications } from "../src/notifications";
 import { operationTools } from "../src/tools";
 import { document } from "./fixture";
 
-const prefix = "notify/session/%2Ftest%2Fone//";
-
 function channel<T>() {
   const values: T[] = [], waiters: ((value: T) => void)[] = [];
   return {
     push(value: T) { const waiter = waiters.shift(); if (waiter) waiter(value); else values.push(value); },
     take(): Promise<T> { return values.length ? Promise.resolve(values.shift()!) : new Promise(resolve => waiters.push(resolve)); },
-    get size() { return values.length; },
   };
 }
 
@@ -22,86 +19,48 @@ function fixture() {
   doc.paths["/notify/send"] = { post: { operationId: "notify.send", "x-expose-on": ["graaljs"],
     responses: { "200": { description: "ok" } } } };
   doc.paths["/notify/subscribe"] = { get: { operationId: "notify.subscribe", "x-expose-on": ["cli"],
-    parameters: [{ name: "sessionId", in: "query", required: true, schema: { type: "string" } }],
     responses: { "200": { description: "SSE", content: { "text/event-stream": { schema: { type: "string" } } } } } } };
-  const streams = new Map<string, Set<ReadableStreamDefaultController<Uint8Array>>>();
-  const connections = channel<string>(), disconnections = channel<string>();
+  const streams = new Map<number, ReadableStreamDefaultController<Uint8Array>>();
+  const connections = channel<number>(), disconnections = channel<number>();
   const encoder = new TextEncoder();
-  const requests: { sessionId: string; auth: string | null; accept: string | null }[] = [];
+  const requests: { query: string; auth: string | null; accept: string | null }[] = [];
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 0, fetch(request) {
     const url = new URL(request.url);
     if (url.pathname === "/api/openapi.json") return Response.json(doc);
     if (url.pathname !== "/api/notify/subscribe") return new Response(null, { status: 404 });
-    const sessionId = url.searchParams.get("sessionId")!;
-    requests.push({ sessionId, auth: request.headers.get("Authorization"), accept: request.headers.get("Accept") });
-    let streamController: ReadableStreamDefaultController<Uint8Array>;
-    let removed = false;
-    const remove = () => {
-      if (removed) return;
-      removed = true;
-      streams.get(sessionId)?.delete(streamController);
-      disconnections.push(sessionId);
-    };
+    const id = requests.push({ query: url.search, auth: request.headers.get("Authorization"), accept: request.headers.get("Accept") });
+    const remove = () => { if (streams.delete(id)) disconnections.push(id); };
     return new Response(new ReadableStream<Uint8Array>({
       start(controller) {
-        streamController = controller;
-        if (!streams.has(sessionId)) streams.set(sessionId, new Set());
-        streams.get(sessionId)!.add(controller);
+        streams.set(id, controller);
         controller.enqueue(encoder.encode('data: {"kind":"ready"}\n\n'));
-        connections.push(sessionId);
+        connections.push(id);
         request.signal.addEventListener("abort", remove, { once: true });
       }, cancel: remove,
     }), { headers: { "Content-Type": "text/event-stream" } });
   } });
-  function send(sessionId: string, message: string, display: string, id = crypto.randomUUID()) {
-    const bytes = encoder.encode(`data: ${JSON.stringify({kind: "message", notification: {id, targetSessionId: sessionId, message, display, createdAt: "2026-11-09T00:00:00Z"}})}\r\n\r\n`);
-    for (const stream of streams.get(sessionId) ?? []) {
+  function send(targetSessionId: string, message: string, display: string, id = crypto.randomUUID()) {
+    const bytes = encoder.encode(`data: ${JSON.stringify({kind: "message", notification: {id, targetSessionId, message, display, createdAt: "2026-11-09T00:00:00Z"}})}\r\n\r\n`);
+    for (const stream of streams.values()) {
       for (let i = 0; i < bytes.length; i += 2) stream.enqueue(bytes.slice(i, i + 2));
     }
     return id;
   }
-  return { baseUrl: `${server.url.toString().replace(/\/$/, "")}/api`, server, streams, connections, disconnections, send, requests };
+  function disconnect(id: number) {
+    streams.get(id)!.close();
+    if (streams.delete(id)) disconnections.push(id);
+  }
+  return { baseUrl: `${server.url.toString().replace(/\/$/, "")}/api`, server, connections, disconnections, send, requests, disconnect };
 }
 
-function context(saved = new Map<string, any>()) {
-  const hooks = new Map<string, (event: any) => Promise<void>>();
+function context() {
   const delivered = channel<any>();
-  const sessions = new Map<string, any>();
-  const location = { directory: "/test/one" };
-  let events!: ReadableStreamDefaultController<any>;
-  let disposed = 0, eventAborted = false;
-  const source = new ReadableStream({ start(controller) { events = controller; } });
-  const ctx = {
-    location,
-    session: {
-      async get({ sessionID }: any) { return sessions.get(sessionID) ?? { id: sessionID, location, time: {} }; },
-      async synthetic(input: any) { delivered.push(input); return input; },
-      async hook(name: string, callback: (event: any) => Promise<void>) {
-        hooks.set(name, callback);
-        return { async dispose() { disposed++; hooks.delete(name); } };
-      },
-    },
-    storage: {
-      async set(key: string, value: any) { saved.set(key, value); },
-      async remove(key: string) { saved.delete(key); },
-      async scan({ prefix, after, limit }: any) {
-        const keys = [...saved.keys()].filter(key => key.startsWith(prefix) && (!after || key > after)).sort();
-        return { entries: keys.slice(0, limit).map(key => ({key, value: saved.get(key)})), next: keys.length > limit ? keys[limit - 1] : undefined };
-      },
-    },
-    event: { async *subscribe({ signal }: { signal: AbortSignal }) {
-      const reader = source.getReader();
-      const abort = () => { eventAborted = true; void reader.cancel(); };
-      signal.addEventListener("abort", abort, { once: true });
-      try { while (!signal.aborted) { const value = await reader.read(); if (value.done) return; yield value.value; } }
-      finally { signal.removeEventListener("abort", abort); reader.releaseLock(); }
-    } },
-  };
-  return { ctx: ctx as unknown as Context, hooks, delivered, sessions, saved, emit: (event: any) => events.enqueue(event),
-    get disposed() { return disposed; }, get eventAborted() { return eventAborted; } };
+  // No session hooks, location discovery, event subscription or persistent session registry is needed.
+  const ctx = { session: { async synthetic(input: any) { delivered.push(input); return input; } } };
+  return { ctx: ctx as unknown as Context, delivered };
 }
 
-test("live SSE is discovered without exposing notify tools; hooks subscribe once and deliver message/display", async () => {
+test("one parameterless authenticated stream delivers all targets without exposing notify tools", async () => {
   const api = fixture(), fake = context();
   const client = await ApiClient.connect({ baseUrl: api.baseUrl, headers: {Authorization: "Bearer test"}, timeoutMs: 100 });
   expect(client.catalog.streams.has("notify.subscribe")).toBe(true);
@@ -109,55 +68,50 @@ test("live SSE is discovered without exposing notify tools; hooks subscribe once
   await expect(client.call("notify.send", {})).rejects.toThrow("Unknown operation");
   const cleanup = await startNotifications(fake.ctx, client);
   try {
-    await Promise.all([fake.hooks.get("prompt")!({sessionID: "ses_one"}), fake.hooks.get("context")!({sessionID: "ses_one"})]);
-    expect(api.requests).toEqual([{sessionId: "ses_one", auth: "Bearer test", accept: "text/event-stream"}]);
+    expect(api.requests).toEqual([{query: "", auth: "Bearer test", accept: "text/event-stream"}]);
     const id = api.send("ses_one", "正文 🧪\n下一行", "展示文字");
+    api.send("ses_preexisting_idle", "another target", "Done");
     expect(await fake.delivered.take()).toMatchObject({sessionID: "ses_one", text: "正文 🧪\n下一行", description: "展示文字",
       id: `msg_notify_${id.replaceAll("-", "")}`, delivery: "steer", resume: true});
-    expect(fake.saved.has(prefix + "ses_one")).toBe(true);
+    expect(await fake.delivered.take()).toMatchObject({sessionID: "ses_preexisting_idle", text: "another target", description: "Done"});
+    expect(api.requests).toHaveLength(1);
+    await cleanup();
+    expect(await api.disconnections.take()).toBe(1);
   } finally { await cleanup(); await api.server.stop(true); }
-  expect(fake.disposed).toBe(2);
-  expect(fake.eventAborted).toBe(true);
 });
 
-test("EOF reconnects, synthetic admission retries with the same ID, and deleting a session releases its stream", async () => {
+test("EOF reconnects and synthetic admission retries with the same notification ID", async () => {
   const api = fixture(), fake = context();
-  const client = await ApiClient.connect({baseUrl: api.baseUrl});
-  const cleanup = await startNotifications(fake.ctx, client);
+  const cleanup = await startNotifications(fake.ctx, await ApiClient.connect({baseUrl: api.baseUrl}));
   try {
-    await fake.hooks.get("context")!({sessionID: "ses_one"});
-    expect(await api.connections.take()).toBe("ses_one");
-    for (const stream of api.streams.get("ses_one")!) stream.close();
-    expect(await api.connections.take()).toBe("ses_one");
+    expect(await api.connections.take()).toBe(1);
+    api.disconnect(1);
+    expect(await api.connections.take()).toBe(2);
     let calls = 0;
     const original = fake.ctx.session.synthetic;
     fake.ctx.session.synthetic = async (...args) => { if (++calls === 1) throw new Error("temporary admission failure"); return original(...args); };
-    // Closed controllers are removed here because this fixture forces EOF rather than a client disconnect.
-    const live = [...api.streams.get("ses_one")!].at(-1)!;
-    api.streams.set("ses_one", new Set([live]));
     const id = api.send("ses_one", "resumed", "Ready");
     expect((await fake.delivered.take()).id).toBe(`msg_notify_${id.replaceAll("-", "")}`);
     expect(calls).toBe(2);
-    fake.emit({type: "session.deleted", data: {sessionID: "ses_one"}});
-    expect(await api.disconnections.take()).toBe("ses_one");
+    expect(api.requests.every(request => request.query === "")).toBe(true);
   } finally { await cleanup(); await api.server.stop(true); }
 });
 
-test("restore and session lifecycle events respect locations; foreign sessions are never subscribed", async () => {
-  const foreignKey = "notify/session/%2Felsewhere//ses_foreign";
-  const api = fixture(), fake = context(new Map([[prefix + "ses_saved", true], [foreignKey, true]]));
-  fake.sessions.set("ses_foreign", {location: {directory: "/elsewhere"}, time: {}});
+test("an unavailable target cannot indefinitely block notifications for other sessions", async () => {
+  const api = fixture(), fake = context();
+  let failures = 0;
+  const original = fake.ctx.session.synthetic;
+  fake.ctx.session.synthetic = async (...args) => {
+    if (args[0].sessionID === "ses_missing") { failures++; throw new Error("session not found"); }
+    return original(...args);
+  };
   const cleanup = await startNotifications(fake.ctx, await ApiClient.connect({baseUrl: api.baseUrl}));
   try {
-    expect(await api.connections.take()).toBe("ses_saved");
-    await fake.hooks.get("context")!({sessionID: "ses_foreign"});
-    fake.emit({type: "session.created", data: {sessionID: "ses_new", location: {directory: "/test/one"}}});
-    expect(await api.connections.take()).toBe("ses_new");
-    fake.sessions.set("ses_new", {location: {directory: "/elsewhere"}, time: {}});
-    fake.emit({type: "session.moved", data: {sessionID: "ses_new", location: {directory: "/elsewhere"}}});
-    expect(await api.disconnections.take()).toBe("ses_new");
-    expect(api.requests.map(value => value.sessionId).sort()).toEqual(["ses_new", "ses_saved"]);
-    expect(fake.saved.has(foreignKey)).toBe(true);
+    api.send("ses_missing", "unavailable", "Missing");
+    api.send("ses_other", "delivered", "Ready");
+    expect((await fake.delivered.take()).sessionID).toBe("ses_other");
+    expect(failures).toBe(3);
+    expect(api.requests).toHaveLength(1);
   } finally { await cleanup(); await api.server.stop(true); }
 });
 

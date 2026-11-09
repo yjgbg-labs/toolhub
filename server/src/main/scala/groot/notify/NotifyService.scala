@@ -8,10 +8,9 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.util.UUID
 import scala.concurrent.duration.*
 
-/** Live-only fanout. A bounded queue belongs to each connected subscriber, never to an offline session. */
+/** Live-only global fanout. Subscribers route each notification using targetSessionId. */
 final class NotifyService private (mutex: Mutex[IO], stopped: Deferred[IO, Unit], capacity: Int, heartbeat: FiniteDuration):
-  private type Subscribers = Map[String, Queue[IO, Notification]]
-  private var sessions = Map.empty[String, Subscribers]
+  private var listeners = Map.empty[String, Queue[IO, Notification]]
   private var closed = false
 
   private def serial[A](action: => IO[A]): IO[A] = mutex.lock.surround(IO.uncancelable(_ => IO.defer(action)))
@@ -29,8 +28,8 @@ final class NotifyService private (mutex: Mutex[IO], stopped: Deferred[IO, Unit]
           throw NotifyFailure("notify_limit", "message is limited to 64 KiB and display to 4 KiB UTF-8")
       }
       subscribers <- IO {
-        val values = sessions.getOrElse(request.targetSessionId, Map.empty).values.toVector
-        if values.isEmpty then throw NotifyFailure("notify_offline", s"No online subscriber for ${request.targetSessionId}")
+        val values = listeners.values.toVector
+        if values.isEmpty then throw NotifyFailure("notify_offline", "No online notification subscriber")
         values
       }
       sizes <- subscribers.traverse(_.size)
@@ -42,19 +41,15 @@ final class NotifyService private (mutex: Mutex[IO], stopped: Deferred[IO, Unit]
     yield NotifyReceipt(message.id, subscribers.size)
   }
 
-  def subscribe(sessionId: String): IO[Stream[IO, NotifyEvent]] = IO {
-    NotifyService.validateSession(sessionId)
+  def subscribe: IO[Stream[IO, NotifyEvent]] = IO {
     val registration = Resource.make(serial {
       for
         _ <- IO(ensureOpen())
         queue <- Queue.bounded[IO, Notification](capacity)
         id <- IO(UUID.randomUUID().toString)
-        _ <- IO { sessions += sessionId -> (sessions.getOrElse(sessionId, Map.empty) + (id -> queue)) }
+        _ <- IO { listeners += id -> queue }
       yield (id, queue)
-    }) { (id, _) => serial(IO {
-      val remaining = sessions.getOrElse(sessionId, Map.empty) - id
-      if remaining.isEmpty then sessions -= sessionId else sessions += sessionId -> remaining
-    }) }
+    }) { (id, _) => serial(IO { listeners -= id }) }
     Stream.resource(registration).flatMap { (_, queue) =>
       Stream.emit(NotifyEvent(NotifyEventKind.ready)) ++
         Stream.repeatEval(queue.take).map(value => NotifyEvent(NotifyEventKind.message, Some(value)))
@@ -62,7 +57,7 @@ final class NotifyService private (mutex: Mutex[IO], stopped: Deferred[IO, Unit]
     }.interruptWhen(stopped.get.attempt)
   }
 
-  private def close: IO[Unit] = serial(IO { closed = true; sessions = Map.empty } *> stopped.complete(()).void)
+  private def close: IO[Unit] = serial(IO { closed = true; listeners = Map.empty } *> stopped.complete(()).void)
 
 object NotifyService:
   private def validateSession(value: String): Unit =

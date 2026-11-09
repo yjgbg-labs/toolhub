@@ -199,28 +199,28 @@ const receipt = (await tools.notify.send({
 console.log(receipt.id, receipt.subscribers);
 ```
 
-`notify.subscribe(sessionId)` 是仅对 CLI 暴露的 SSE 命令，HTTP 为 `GET /notify/subscribe?sessionId=ses_...`：
+`notify.subscribe()` 是无参、仅对 CLI 暴露的 SSE 命令，HTTP 为 `GET /notify/subscribe`，广播所有会话的通知：
 
 ```sh
-groot-cli notify subscribe --sessionId ses_...
+groot-cli notify subscribe
 ```
 
 - 每个 SSE `data` 是 JSON：`{kind:"ready",notification:null}`、`{kind:"heartbeat",notification:null}` 或
   `{kind:"message",notification:{id,targetSessionId,message,display,createdAt}}`。
   `ready` 表示订阅已注册；空闲时每 15 秒发心跳。
-- 只推送给当前在线订阅者；无订阅者返回 `409 notify_offline`，断线期间不缓存、不重放。
-  同会话多订阅者收到相同通知 ID，互不影响其他会话。
+- 每条通知广播给全部在线订阅者，接收方按 `targetSessionId` 投递到目标会话。
+  无订阅者返回 `409 notify_offline`，断线期间不缓存、不重放；所有订阅者收到相同通知 ID 和顺序。
 - 每个连接队列最多 64 条；任一队列满时，本次发送整体返回 `429 notify_busy`，不会只发给部分订阅者。
   `message` 和 `display` 必须非空，UTF-8 上限分别为 64 KiB、4 KiB。
-- 返回 `{id,subscribers}` 表示已进入在线 SSE 队列，不代表 OpenCode 已确认投递。订阅断开释放队列，服务重启不保留通知。
+- 返回 `{id,subscribers}` 表示已进入在线 SSE 队列，不代表目标会话存在或 OpenCode 已确认投递。
+  订阅断开释放队列，服务重启不保留通知。
 
-OpenCode 插件自动订阅本 location 的会话：新建、查看、执行或发起 prompt/model 请求时建立连接，空闲后继续订阅。
-已观察的会话 ID 按 location 保存在插件 storage，插件重载时恢复；会话删除或迁出时取消订阅。
-首次安装前已有的空闲会话，在首次查看或运行时接入通知。
-收到通知后调用 `ctx.session.synthetic({sessionID,text:message,description:display,delivery:"steer",resume:true})`，
-用稳定的 `msg_notify_<通知ID>` 做 inbox ID，避免重连/插件实例交接时重复投递。
+OpenCode 插件启动时自动建立一条全局订阅连接，无需逐会话注册，也无需维护会话列表、hooks 或 storage。
+收到通知后调用 `ctx.session.synthetic({sessionID:targetSessionId,text:message,description:display,delivery:"steer",resume:true})`，
+已有的空闲会话也可直接接收。用稳定的 `msg_notify_<通知ID>` 做 inbox ID，避免插件实例交接时重复投递。
+单条通知投递失败最多尝试 3 次，之后记录错误并继续处理其他通知。
 SSE 断线自动退避重连；连接建立限时 5 秒、45 秒无事件时重连，长连接不受普通 API 的 `timeoutMs` 限制。
-插件卸载会中止流与重试并清理 hooks；旧服务未提供订阅端点时，插件保持普通工具注册功能。
+插件卸载会中止流与重试；旧服务未提供订阅端点时，插件保持普通工具注册功能。
 
 ### GraalJS 定时任务与重试
 

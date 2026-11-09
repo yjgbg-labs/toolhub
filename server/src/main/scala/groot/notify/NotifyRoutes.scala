@@ -6,9 +6,9 @@ import framework.rpcDsl.*
 
 object NotifyRoutes:
   def register(service: NotifyService)(using CommandsScope): Unit = commands("notify") {
-    description("Push notifications to online OpenCode session subscribers")
+    description("Broadcast notifications to online subscribers for delivery to target OpenCode sessions")
     val invalid = response.json[ErrorBody](400) { description("Invalid session ID or notification") }
-    val offline = response.json[ErrorBody](409) { description("The target session has no online subscriber") }
+    val offline = response.json[ErrorBody](409) { description("No notification subscriber is online") }
     val large = response.json[ErrorBody](413) { description("Notification exceeds its UTF-8 size limit") }
     val busy = response.json[ErrorBody](429) { description("Subscriber queue is full; nothing was published") }
     val closed = response.json[ErrorBody](503) { description("Notification service is shutting down") }
@@ -24,14 +24,13 @@ object NotifyRoutes:
     }
     command[NotifyReceipt]("send") {
       exposeOn(graaljs)
-      description("Send message and display text to online subscribers of targetSessionId; success means queued for SSE, not acknowledged by OpenCode")
+      description("Broadcast message, display and targetSessionId to all online subscribers; success means queued for SSE, not acknowledged by OpenCode")
       val input = body[NotifyRequest]("Target session, model-visible message, and user-visible display description")
       handle { service.send(input.value) }
     }
     command[SSE[NotifyEvent]]("subscribe") {
       exposeOn(cli)
-      description("Subscribe to one session: ready, message and 15-second heartbeat events; live only, no replay")
-      val session = param[String]("sessionId", "OpenCode session ID") { minLength(1); maxLength(128) }
-      handle { service.subscribe(session.value).map(SSE(_)) }
+      description("Subscribe to notifications for all sessions: ready, message and 15-second heartbeat events; live only, no replay")
+      handle { service.subscribe.map(SSE(_)) }
     }
   }
