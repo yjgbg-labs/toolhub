@@ -132,7 +132,7 @@ groot-cli jobs --job widget-windows-deploy
 
 托盘仅提供“显示 / 隐藏”。保留深色等宽字体、拖动、圆角、置顶、DPI 缩放和自动高度；内容超出屏幕时使用鼠标滚轮。
 Windows 11 22H2+ 使用 DWM 原生 Desktop Acrylic 亚克力背景；文字和灯以独立透明前景绘制，不支持时使用深色背景。
-应用和托盘使用 [OpenCode 官网](https://opencode.ai/brand) 提供的黑色方形图标，原始资产和 Windows 多分辨率图标位于 `windows/Assets/`。
+应用和托盘使用 [OpenCode 官网](https://opencode.ai/brand) 提供的白色方形图标（适用于深色背景），原始资产和 Windows 多分辨率图标位于 `windows/Assets/`。
 灯尺寸为亮灯 16 / 灭灯 12 逻辑点，灭灯色 `#080A0C`。连接断开时保留最后快照并显示橙色提示，自动退避重连。
 拖动结束仅保存本机位置；Mac 和 Windows 各自恢复位置，服务端推送及另一台设备的拖动都不会覆盖本机坐标。
 `WIDGET_DIAGNOSTICS=1` 部署会额外输出自身窗口的 `widget.png`，默认关闭。
