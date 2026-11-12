@@ -15,6 +15,7 @@ import groot.state.{StateRoutes, StateService}
 import groot.chrome.{ChromeRoutes, ChromeService}
 import groot.wine.{WineRoutes, WineService}
 import groot.notify.{NotifyRoutes, NotifyService}
+import groot.wechat.{WechatRoutes, WechatService}
 import scala.concurrent.duration.*
 
 object Main extends IOApp.Simple:
@@ -28,9 +29,10 @@ object Main extends IOApp.Simple:
     chrome <- ChromeService.resource()
     wine <- WineService.resource()
     notify <- NotifyService.resource()
+    wechat <- WechatService.resource(notify)
     graaljs <- GraalManager.resource(commands = commands.get)
     scheduler <- Scheduler.resource(graaljs, startLoop = false)
-  yield (scheduler, sqlite, http, widget, state, shell, chrome, wine, notify, graaljs, commands)).use { (scheduler, sqlite, http, widget, state, shell, chrome, wine, notify, graaljs, commands) =>
+  yield (scheduler, sqlite, http, widget, state, shell, chrome, wine, notify, wechat, graaljs, commands)).use { (scheduler, sqlite, http, widget, state, shell, chrome, wine, notify, wechat, graaljs, commands) =>
     val app = httpApp {
       server {
         host("0.0.0.0")
@@ -66,6 +68,7 @@ object Main extends IOApp.Simple:
       ChromeRoutes.register(chrome)
       WineRoutes.register(wine)
       NotifyRoutes.register(notify)
+      WechatRoutes.register(wechat)
       command[PlainText]("health") {
         handle { IO.pure(PlainText("ok")) }
       }
