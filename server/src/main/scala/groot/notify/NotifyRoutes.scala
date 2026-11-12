@@ -23,7 +23,7 @@ object NotifyRoutes:
         output(ErrorBody(error.code, error.getMessage))
     }
     command[NotifyReceipt]("send") {
-      exposeOn(graaljs)
+      exposeOn(codemode, graaljs)
       description("Broadcast message and targetSessionId to all online subscribers; success means queued for SSE, not acknowledged by OpenCode")
       val input = body[NotifyRequest]("Target session and full message; the plugin derives a truncated display preview from the message")
       handle { service.send(input.value) }

@@ -186,12 +186,12 @@ await tools.schedule.config.write(config);
 
 ### OpenCode 会话通知
 
-`notify.send({targetSessionId, message})` **仅对 GraalJS 暴露**，不注册 Code Mode 工具、CLI 发送命令或外部 HTTP 发送路由。
+`notify.send({targetSessionId, message})` **对 Code Mode 和 GraalJS 暴露**，HTTP 为 `POST /notify/send`，不注册 CLI 发送命令。
 `message` 是模型收到的完整正文；插件直接用它生成 OpenCode synthetic 消息的 `description`。
 展示最多 120 个 Unicode 码点：不超长时原样显示，超长时取前 117 个码点并追加 `...`，不拆开 emoji 的代理对。
 
 ```js
-// GraalJS 任务或 schedule 脚本
+// Code Mode、GraalJS 任务或 schedule 脚本
 const receipt = (await tools.notify.send({
   targetSessionId: "ses_目标会话ID", // 替换为真实 OpenCode session ID
   message: "构建已完成。产物位于 /path/to/artifact。"
