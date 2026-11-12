@@ -1,8 +1,9 @@
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import type { ValidateFunction } from "ajv";
-import { Catalog } from "./catalog";
+import { Catalog, type Operation } from "./catalog";
 import { transport, type Fetch } from "./transport";
+import { sse } from "./sse";
 
 export interface ClientOptions {
   baseUrl: string;
@@ -43,7 +44,7 @@ export class ApiClient {
     ajv.addFormat("int64", { type: "number", validate: Number.isSafeInteger });
     ajv.addFormat("float", { type: "number", validate: Number.isFinite });
     ajv.addFormat("double", { type: "number", validate: Number.isFinite });
-    for (const op of catalog.operations) this.validate.set(op.id, ajv.compile(op.inputSchema));
+    for (const op of [...catalog.operations, ...catalog.streams.values()]) this.validate.set(op.id, ajv.compile(op.inputSchema));
   }
 
   static async connect(options: ClientOptions): Promise<ApiClient> {
@@ -58,9 +59,8 @@ export class ApiClient {
     return new ApiClient(new Catalog(await response.json()), options);
   }
 
-  async call(id: string, input?: unknown, signal?: AbortSignal): Promise<ApiResult> {
-    const operation = this.catalog.byId.get(id);
-    if (!operation) throw new Error(`Unknown operation: ${id}`);
+  private request(operation: Operation, input: unknown) {
+    const id = operation.id;
     const bodyOnly = !!operation.body && operation.parameters.length === 0;
     if (!bodyOnly && input === undefined) input = {};
     const validate = this.validate.get(id)!;
@@ -107,9 +107,16 @@ export class ApiClient {
       body = operation.body.mediaType === "text/plain" ? payload as string : JSON.stringify(payload);
       headers.set("Content-Type", operation.body.mediaType);
     }
+    return { url, headers, body, method: operation.method };
+  }
+
+  async call(id: string, input?: unknown, signal?: AbortSignal): Promise<ApiResult> {
+    const operation = this.catalog.byId.get(id);
+    if (!operation) throw new Error(`Unknown operation: ${id}`);
+    const { url, ...request } = this.request(operation, input);
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const response = await this.fetch(url, {
-      method: operation.method, headers, body, redirect: "error",
+      ...request, redirect: "error",
       signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
     });
     const text = await response.text();
@@ -120,5 +127,19 @@ export class ApiClient {
     };
     if (!response.ok) throw new ApiError(id, result);
     return result;
+  }
+
+  /** A caller-owned long-lived stream; normal request timeouts do not terminate healthy subscriptions. */
+  async *subscribe(id: string, input: unknown, signal: AbortSignal): AsyncGenerator<unknown> {
+    const operation = this.catalog.streams.get(id);
+    if (!operation) throw new Error(`Unknown stream: ${id}`);
+    const { url, ...request } = this.request(operation, input);
+    request.headers.set("Accept", "text/event-stream");
+    const response = await this.fetch(url, { ...request, redirect: "error", signal });
+    if (!response.ok || !response.headers.get("Content-Type")?.startsWith("text/event-stream") || !response.body) {
+      await response.body?.cancel();
+      throw new Error(`${id}: expected SSE, received HTTP ${response.status}`);
+    }
+    for await (const data of sse(response.body)) yield JSON.parse(data);
   }
 }
