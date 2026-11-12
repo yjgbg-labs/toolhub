@@ -6,18 +6,21 @@ import io.circe.Json
 final case class ChromeFailure(code: String, message: String) extends RuntimeException(message)
 
 case class ChromeInstance(instanceName: String, status: String, kiosk: Boolean, headless: Boolean,
-    pid: Option[Long], profilePath: String) derives JsonModel
+    pid: Option[Long], profilePath: String, extraArgs: Vector[String] = Vector.empty) derives JsonModel
 case class ChromeTab(tabName: String, targetId: String, url: String, title: String) derives JsonModel
 case class PageInfo(url: String, title: String) derives JsonModel
 case class SnapshotNode(ref: Option[String], frameId: String, role: String, name: String,
-    value: Option[Json], depth: Int) derives JsonModel
-case class PageSnapshot(url: String, title: String, nodes: Vector[SnapshotNode], truncated: Boolean) derives JsonModel
+    value: Option[Json], depth: Int, parentRef: Option[String], nodeType: Option[Int],
+    tagName: Option[String], clickable: Boolean) derives JsonModel
+case class PageSnapshot(url: String, title: String, nodes: Vector[SnapshotNode], truncated: Boolean,
+    text: Option[String] = None) derives JsonModel
 case class Screenshot(path: String, mimeType: String, width: Int, height: Int) derives JsonModel
 case class ChromeCookie(name: String, value: String, domain: String, path: String, expires: Double,
     httpOnly: Boolean, secure: Boolean, sameSite: Option[String], partitionKey: Option[Json]) derives JsonModel
 
 private[chrome] case class SavedInstance(instanceName: String, kiosk: Boolean, headless: Boolean,
-    pid: Option[Long] = None, startedAt: Option[String] = None, tabs: Map[String, String] = Map.empty) derives JsonModel
+    pid: Option[Long] = None, startedAt: Option[String] = None, tabs: Map[String, String] = Map.empty,
+    extraArgs: Vector[String] = Vector.empty) derives JsonModel
 
 private[chrome] object ChromeJson:
   def str(value: String): Json = Json.fromString(value)
@@ -33,6 +36,16 @@ private[chrome] object ChromeValidation:
       throw ChromeFailure("invalid_chrome", "Names must contain 1–64 ASCII letters, digits, dots, underscores or hyphens, starting with a letter or digit")
   def timeout(value: Int): Unit =
     if value < 1 || value > 120000 then throw ChromeFailure("invalid_chrome", "timeoutMs must be between 1 and 120000")
+  def extraArgs(values: Vector[String]): Unit =
+    if values.size > 128 || values.map(_.length.toLong).sum > 65536 then
+      throw ChromeFailure("invalid_chrome", "extraArgs exceeds 128 arguments or 65536 characters")
+    values.foreach { value =>
+      if value.length > 4096 || value.contains('\u0000') || !value.matches("(?s)--[A-Za-z0-9][A-Za-z0-9-]*(=.*)?") then
+        throw ChromeFailure("invalid_chrome", "Each extraArgs entry must be --flag or --flag=value, at most 4096 characters")
+      val flag = value.takeWhile(_ != '=')
+      if Set("--user-data-dir", "--headless", "--kiosk")(flag) || flag.startsWith("--remote-debugging-") then
+        throw ChromeFailure("invalid_chrome", s"$flag is managed by the Chrome service; use the instance mode parameters for headless/kiosk")
+    }
   def domain(value: String): String =
     val normalized = try java.net.IDN.toASCII(value.stripPrefix(".").stripSuffix(".")).toLowerCase(java.util.Locale.ROOT)
       catch case _: IllegalArgumentException => throw ChromeFailure("invalid_chrome", "domain must be a valid hostname")
