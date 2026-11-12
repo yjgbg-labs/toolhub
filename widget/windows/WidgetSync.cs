@@ -42,7 +42,12 @@ internal sealed partial class WidgetForm
         var changed = latest?.Revision != snapshot.Revision || !canvas.Connected;
         latest = snapshot;
         Connection(true);
-        if (settings != snapshot.Settings) { settings = snapshot.Settings; changed = true; }
+        if (settings != snapshot.Settings)
+        {
+            settings = snapshot.Settings;
+            ApplyWindowSettings();
+            changed = true;
+        }
         canvas.Apply(snapshot.Items, settings);
         if (!changed) return;
         if (!dragging) ApplyLayout();
