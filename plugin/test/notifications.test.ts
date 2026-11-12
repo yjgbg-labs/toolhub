@@ -16,7 +16,11 @@ function channel<T>() {
 
 function fixture() {
   const doc = document() as any;
-  doc.paths["/notify/send"] = { post: { operationId: "notify.send", "x-expose-on": ["graaljs"],
+  doc.paths["/notify/send"] = { post: { operationId: "notify.send", "x-expose-on": ["codemode", "graaljs"],
+    requestBody: { required: true, content: { "application/json": { schema: {
+      type: "object", properties: { targetSessionId: { type: "string" }, message: { type: "string" } },
+      required: ["targetSessionId", "message"], additionalProperties: false,
+    } } } },
     responses: { "200": { description: "ok" } } } };
   doc.paths["/notify/subscribe"] = { get: { operationId: "notify.subscribe", "x-expose-on": ["cli"],
     responses: { "200": { description: "SSE", content: { "text/event-stream": { schema: { type: "string" } } } } } } };
@@ -24,9 +28,13 @@ function fixture() {
   const connections = channel<number>(), disconnections = channel<number>();
   const encoder = new TextEncoder();
   const requests: { query: string; auth: string | null; accept: string | null }[] = [];
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 0, fetch(request) {
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 0, async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname === "/api/openapi.json") return Response.json(doc);
+    if (url.pathname === "/api/notify/send" && request.method === "POST") {
+      const input = await request.json() as { targetSessionId: string; message: string };
+      return Response.json({ id: send(input.targetSessionId, input.message), subscribers: streams.size });
+    }
     if (url.pathname !== "/api/notify/subscribe") return new Response(null, { status: 404 });
     const id = requests.push({ query: url.search, auth: request.headers.get("Authorization"), accept: request.headers.get("Accept") });
     const remove = () => { if (streams.delete(id)) disconnections.push(id); };
@@ -60,16 +68,18 @@ function context() {
   return { ctx: ctx as unknown as Context, delivered };
 }
 
-test("one parameterless authenticated stream delivers all targets without exposing notify tools", async () => {
+test("Code Mode send delivers through one authenticated stream while subscribe stays outside tools", async () => {
   const api = fixture(), fake = context();
   const client = await ApiClient.connect({ baseUrl: api.baseUrl, headers: {Authorization: "Bearer test"}, timeoutMs: 100 });
   expect(client.catalog.streams.has("notify.subscribe")).toBe(true);
-  expect(operationTools(client).some(tool => tool.options?.namespace === "notify")).toBe(false);
-  await expect(client.call("notify.send", {})).rejects.toThrow("Unknown operation");
+  expect(operationTools(client).filter(tool => tool.options?.namespace === "notify").map(tool => tool.name)).toEqual(["send"]);
+  await expect(client.call("notify.subscribe", {})).rejects.toThrow("Unknown operation");
   const cleanup = await startNotifications(fake.ctx, client);
   try {
     expect(api.requests).toEqual([{query: "", auth: "Bearer test", accept: "text/event-stream"}]);
-    const id = api.send("ses_one", "正文 🧪\n下一行");
+    const sent = await client.call("notify.send", { targetSessionId: "ses_one", message: "正文 🧪\n下一行" });
+    expect(sent.status).toBe(200);
+    const { id } = sent.body as { id: string };
     api.send("ses_preexisting_idle", "another target");
     expect(await fake.delivered.take()).toMatchObject({sessionID: "ses_one", text: "正文 🧪\n下一行", description: "正文 🧪\n下一行",
       id: `msg_notify_${id.replaceAll("-", "")}`, delivery: "steer", resume: true});

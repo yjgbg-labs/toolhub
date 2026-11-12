@@ -9,6 +9,7 @@ import groot.graaljs.GraalTestSupport.*
 import io.circe.Json
 import munit.CatsEffectSuite
 import org.http4s.{Method, Request, Status, Uri}
+import org.http4s.circe.*
 import scala.concurrent.duration.*
 
 class NotifySuite extends CatsEffectSuite:
@@ -93,20 +94,21 @@ class NotifySuite extends CatsEffectSuite:
     yield ()
   }
 
-  test("HTTP errors, SSE framing and GraalJS-only send exposure share the ordinary command contract") {
+  test("HTTP errors, SSE framing and Code Mode/GraalJS send exposure share the ordinary command contract") {
     NotifyService.resource().use { service =>
       val app = httpApp { NotifyRoutes.register(service) }
       val sdk = GraalCommandSdk(app)
       assertEquals(sdk.commands, Vector("notify.send"))
-      assertEquals(app.endpoints.find(_.operationId == "notify.send").get.exposedOn, Set(graaljs))
+      assertEquals(app.endpoints.find(_.operationId == "notify.send").get.exposedOn, Set(codemode, graaljs))
       assertEquals(app.endpoints.find(_.operationId == "notify.subscribe").get.exposedOn, Set(cli))
       assertEquals(io.circe.parser.parse(app.openApiJson).toOption.get.hcursor.downField("paths")
-        .downField("/notify/send").downField("post").get[List[String]]("x-expose-on"), Right(List("graaljs")))
+        .downField("/notify/send").downField("post").get[List[String]]("x-expose-on"), Right(List("codemode", "graaljs")))
       assertEquals(io.circe.parser.parse(app.openApiJson).toOption.get.hcursor.downField("paths")
         .downField("/notify/subscribe").downField("get").get[List[Json]]("parameters").getOrElse(Nil), Nil)
       for
-        hidden <- app.httpApp(Request[IO](Method.POST, Uri.unsafeFromString("/notify/send")))
-        _ = assertEquals(hidden.status, Status.NotFound)
+        httpOffline <- app.httpApp(Request[IO](Method.POST, Uri.unsafeFromString("/notify/send"))
+          .withEntity(JsonModel[NotifyRequest].encoder(input)))
+        _ = assertEquals(httpOffline.status, Status.Conflict)
         offline <- sdk.call("notify.send", JsonModel[NotifyRequest].encoder(input))
         _ = assertEquals(offline.hcursor.get[Int]("status"), Right(409))
         _ <- List(input.copy(message = " "), input.copy(message = ""), input.copy(targetSessionId = "wrong"))
@@ -119,8 +121,9 @@ class NotifySuite extends CatsEffectSuite:
           .evalMap(lines.offer).compile.drain.background.use { _ => for
             ready <- lines.take.timeout(3.seconds)
             _ = assert(ready.contains("ready"))
-            sent <- sdk.call("notify.send", JsonModel[NotifyRequest].encoder(input))
-            _ = assertEquals(sent.hcursor.get[Int]("status"), Right(200))
+            sent <- app.httpApp(Request[IO](Method.POST, Uri.unsafeFromString("/notify/send"))
+              .withEntity(JsonModel[NotifyRequest].encoder(input)))
+            _ = assertEquals(sent.status, Status.Ok)
             line <- lines.take.timeout(3.seconds)
             event = io.circe.parser.parse(line.stripPrefix("data: ")).toOption.get
             _ = assertEquals(event.hcursor.downField("notification").get[String]("message"), Right(input.message))
