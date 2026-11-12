@@ -12,7 +12,7 @@ import org.http4s.{Method, Request, Status, Uri}
 import scala.concurrent.duration.*
 
 class NotifySuite extends CatsEffectSuite:
-  private val input = NotifyRequest("ses_target", "完成 🧪\n第二行", "任务完成")
+  private val input = NotifyRequest("ses_target", "完成 🧪\n第二行")
   private def reader(service: NotifyService): Resource[IO, Queue[IO, NotifyEvent]] = for
     events <- Resource.eval(Queue.unbounded[IO, NotifyEvent])
     stream <- Resource.eval(service.subscribe)
@@ -109,7 +109,7 @@ class NotifySuite extends CatsEffectSuite:
         _ = assertEquals(hidden.status, Status.NotFound)
         offline <- sdk.call("notify.send", JsonModel[NotifyRequest].encoder(input))
         _ = assertEquals(offline.hcursor.get[Int]("status"), Right(409))
-        _ <- List(input.copy(message = " "), input.copy(display = ""), input.copy(targetSessionId = "wrong"))
+        _ <- List(input.copy(message = " "), input.copy(message = ""), input.copy(targetSessionId = "wrong"))
           .traverse_(value => sdk.call("notify.send", JsonModel[NotifyRequest].encoder(value)).map(reply => assertEquals(reply.hcursor.get[Int]("status"), Right(400))))
         large <- sdk.call("notify.send", JsonModel[NotifyRequest].encoder(input.copy(message = "界" * 22000)))
         _ = assertEquals(large.hcursor.get[Int]("status"), Right(413))
@@ -133,11 +133,11 @@ class NotifySuite extends CatsEffectSuite:
     temporary.use { home => NotifyService.resource().use { service =>
       val sdk = GraalCommandSdk(httpApp { NotifyRoutes.register(service) })
       reader(service).use { events => GraalManager.resource(home, commands = IO.pure(sdk)).use { manager => for
-        task <- manager.start(JavaScript.source("await tools.notify.send({targetSessionId:'ses_target',message:'任务完成',display:'Done'});"), "1s", "10s")
+        task <- manager.start(JavaScript.source("await tools.notify.send({targetSessionId:'ses_target',message:'任务完成'});"), "1s", "10s")
         completed <- awaitUntil(manager.status(task.id))(_.finishedAt.nonEmpty)
         _ = assertEquals(completed.state, "succeeded", completed.error.toString)
         event <- events.take.timeout(3.seconds)
-        _ = assertEquals(event.notification.map(_.display), Some("Done"))
+        _ = assertEquals(event.notification.map(_.message), Some("任务完成"))
       yield () } }
     } }
   }

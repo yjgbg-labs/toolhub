@@ -22,10 +22,10 @@ final class NotifyService private (mutex: Mutex[IO], stopped: Deferred[IO, Unit]
       _ <- IO {
         ensureOpen()
         NotifyService.validateSession(request.targetSessionId)
-        if request.message.trim.isEmpty || request.display.trim.isEmpty then
-          throw NotifyFailure("invalid_notify", "message and display must be nonblank")
-        if request.message.getBytes(UTF_8).length > 65536 || request.display.getBytes(UTF_8).length > 4096 then
-          throw NotifyFailure("notify_limit", "message is limited to 64 KiB and display to 4 KiB UTF-8")
+        if request.message.trim.isEmpty then
+          throw NotifyFailure("invalid_notify", "message must be nonblank")
+        if request.message.getBytes(UTF_8).length > 65536 then
+          throw NotifyFailure("notify_limit", "message is limited to 64 KiB UTF-8")
       }
       subscribers <- IO {
         val values = listeners.values.toVector
@@ -36,7 +36,7 @@ final class NotifyService private (mutex: Mutex[IO], stopped: Deferred[IO, Unit]
       // All writers hold the mutex; readers can only free slots. Reject before publishing to anyone.
       _ <- IO.raiseWhen(sizes.exists(_ >= capacity))(NotifyFailure("notify_busy", "A subscriber is not keeping up; retry later"))
       now <- IO.realTimeInstant
-      message <- IO(Notification(UUID.randomUUID().toString, request.targetSessionId, request.message, request.display, now.toString))
+      message <- IO(Notification(UUID.randomUUID().toString, request.targetSessionId, request.message, now.toString))
       _ <- subscribers.traverse_(_.offer(message))
     yield NotifyReceipt(message.id, subscribers.size)
   }

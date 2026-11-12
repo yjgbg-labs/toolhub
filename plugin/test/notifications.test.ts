@@ -39,8 +39,8 @@ function fixture() {
       }, cancel: remove,
     }), { headers: { "Content-Type": "text/event-stream" } });
   } });
-  function send(targetSessionId: string, message: string, display: string, id = crypto.randomUUID()) {
-    const bytes = encoder.encode(`data: ${JSON.stringify({kind: "message", notification: {id, targetSessionId, message, display, createdAt: "2026-11-09T00:00:00Z"}})}\r\n\r\n`);
+  function send(targetSessionId: string, message: string, id = crypto.randomUUID()) {
+    const bytes = encoder.encode(`data: ${JSON.stringify({kind: "message", notification: {id, targetSessionId, message, createdAt: "2026-11-09T00:00:00Z"}})}\r\n\r\n`);
     for (const stream of streams.values()) {
       for (let i = 0; i < bytes.length; i += 2) stream.enqueue(bytes.slice(i, i + 2));
     }
@@ -69,11 +69,16 @@ test("one parameterless authenticated stream delivers all targets without exposi
   const cleanup = await startNotifications(fake.ctx, client);
   try {
     expect(api.requests).toEqual([{query: "", auth: "Bearer test", accept: "text/event-stream"}]);
-    const id = api.send("ses_one", "正文 🧪\n下一行", "展示文字");
-    api.send("ses_preexisting_idle", "another target", "Done");
-    expect(await fake.delivered.take()).toMatchObject({sessionID: "ses_one", text: "正文 🧪\n下一行", description: "展示文字",
+    const id = api.send("ses_one", "正文 🧪\n下一行");
+    api.send("ses_preexisting_idle", "another target");
+    expect(await fake.delivered.take()).toMatchObject({sessionID: "ses_one", text: "正文 🧪\n下一行", description: "正文 🧪\n下一行",
       id: `msg_notify_${id.replaceAll("-", "")}`, delivery: "steer", resume: true});
-    expect(await fake.delivered.take()).toMatchObject({sessionID: "ses_preexisting_idle", text: "another target", description: "Done"});
+    expect(await fake.delivered.take()).toMatchObject({sessionID: "ses_preexisting_idle", text: "another target", description: "another target"});
+    const boundary = "界".repeat(116) + "🧪abc";
+    api.send("ses_one", boundary);
+    expect(await fake.delivered.take()).toMatchObject({text: boundary, description: boundary});
+    api.send("ses_one", boundary + "d");
+    expect(await fake.delivered.take()).toMatchObject({text: boundary + "d", description: "界".repeat(116) + "🧪..."});
     expect(api.requests).toHaveLength(1);
     await cleanup();
     expect(await api.disconnections.take()).toBe(1);
@@ -90,7 +95,7 @@ test("EOF reconnects and synthetic admission retries with the same notification 
     let calls = 0;
     const original = fake.ctx.session.synthetic;
     fake.ctx.session.synthetic = async (...args) => { if (++calls === 1) throw new Error("temporary admission failure"); return original(...args); };
-    const id = api.send("ses_one", "resumed", "Ready");
+    const id = api.send("ses_one", "resumed");
     expect((await fake.delivered.take()).id).toBe(`msg_notify_${id.replaceAll("-", "")}`);
     expect(calls).toBe(2);
     expect(api.requests.every(request => request.query === "")).toBe(true);
@@ -107,8 +112,8 @@ test("an unavailable target cannot indefinitely block notifications for other se
   };
   const cleanup = await startNotifications(fake.ctx, await ApiClient.connect({baseUrl: api.baseUrl}));
   try {
-    api.send("ses_missing", "unavailable", "Missing");
-    api.send("ses_other", "delivered", "Ready");
+    api.send("ses_missing", "unavailable");
+    api.send("ses_other", "delivered");
     expect((await fake.delivered.take()).sessionID).toBe("ses_other");
     expect(failures).toBe(3);
     expect(api.requests).toHaveLength(1);
