@@ -16,5 +16,6 @@
 //> using dep org.graalvm.polyglot:polyglot:25.4.4.1.1
 //> using dep org.graalvm.js:js-isolate-linux-amd64-community:25.4.4.1.1
 //> using dep org.xerial:sqlite-jdbc:3.54.1.0
+//> using dep com.google.zxing:core:3.5.4
 //> using test.dep org.typelevel::munit-cats-effect:2.2.1
 //> using test.dep io.swagger.parser.v3:swagger-parser-v3:2.1.48

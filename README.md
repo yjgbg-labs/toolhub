@@ -222,6 +222,45 @@ OpenCode 插件启动时自动建立一条全局订阅连接，无需逐会话�
 SSE 断线自动退避重连；连接建立限时 5 秒、45 秒无事件时重连，长连接不受普通 API 的 `timeoutMs` 限制。
 插件卸载会中止流与重试；旧服务未提供订阅端点时，插件保持普通工具注册功能。
 
+### 微信多账号接入
+
+`wechat.login`、`wechat.accounts`、`wechat.send`、`wechat.bind` 对 CLI、Code Mode 和 GraalJS 暴露。
+每个微信账号独立保存凭据、长轮询游标和会话上下文；扫码得到的 `ilink_user_id` 就是 `wechatid`，无需预填用户名。
+同一微信号的手机/电脑不能按物理设备区分；多个微信号可同时连接。
+
+```ts
+// 返回 text/plain：loginId、可扫描字符二维码及备用链接。后台继续等待扫码，五分钟过期。
+const login = await tools.wechat.login({});
+console.log(login.body);
+
+// 查询状态；需要 PIN 时提交手机显示的数字。成功后显示 wechatid。
+console.log((await tools.wechat.login({ loginId: "wxlogin_..." })).body);
+console.log((await tools.wechat.login({ loginId: "wxlogin_...", verifyCode: "123456" })).body);
+
+// 列出已登录账号及绑定、连接状态、待投递分片数（不返回凭据）。
+const accounts = (await tools.wechat.accounts()).body;
+await tools.wechat.bind({ wechatid: "...@im.wechat", session: "ses_..." });
+await tools.wechat.send({ wechatid: "...@im.wechat", message: "任务完成" });
+await tools.wechat.bind({ wechatid: "...@im.wechat", session: null }); // 暂停转发
+```
+
+- HTTP：`POST /wechat/login`、`GET /wechat/accounts`、`POST /wechat/send`、`POST /wechat/bind`。
+  字符二维码需要等宽字体、保留空白，并以深色字/浅色背景显示；CLI 可用 `groot-cli wechat login --body '{}'`。
+- 登录采用官方本人扫码流程，支持 PIN、跨节点跳转、过期和已连接状态。
+  同一 `wechatid` 重新登录替换旧连接并保留会话绑定；服务重启自动恢复所有账号。
+- `send` 接收 1–4000 个 Unicode 字符。首次发送前，请先从微信向 ClawBot 发一条消息，取得 `context_token`。
+  微信可能拒绝过期上下文；返回 `clientId` 和可选 `messageId` 仅表示接口受理，不代表手机已收到。
+  凭据过期时账号状态为 `login_required`，重新扫码恢复。
+- 路由范围是该用户**发给 ClawBot 的消息**，不是其全部微信聊天。
+  文字直接转发；图片、文件、视频、语音等消息项转发完整协议元数据（含已有语音识别文字），当前不自动下载解密附件。
+  消息附带 `wechatid`、原消息 ID 和分片序号；大消息按 Unicode 边界拆分，适配 notify 的 64 KiB 限制。
+- 入站消息、去重键、游标、上下文和绑定保存在 `$GROOT_HOME/wechat/wechat.sqlite3`（目录 `0700`、文件 `0600`）。
+  未绑定、notify 离线或队列满时保留待投递消息；绑定或恢复订阅后继续投递，待投递消息采用当前绑定（已经开始投递的分片除外）。
+  notify 接受后清空消息正文并保留去重键。notify 目前没有目标会话确认：接受之后插件断线或目标会话不存在仍可能丢失，
+  进程在接受与落库之间崩溃可能重放；这不是端到端恰好一次投递。
+
+协议参考：[Tencent/openclaw-weixin 3.0.0-beta-0 / 0ad1ae9](https://github.com/Tencent/openclaw-weixin/blob/0ad1ae91347a938f52f1e4e2abd6dcda51e05f9e/docs/protocol.md)。
+
 ### GraalJS 定时任务与重试
 
 `schedule` 使用 `script` 指向服务端 JavaScript 文件的绝对路径，每次成功提交的周期执行和重试都有独立的 GraalJS 任务 ID。
