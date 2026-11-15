@@ -12,7 +12,6 @@
 //> using dep com.softwaremill.sttp.apispec::openapi-circe:0.12.1
 //> using dep com.outr::scribe:3.19.0
 //> using dep com.outr::scribe-slf4j2:3.19.0
-//> using dep org.snakeyaml:snakeyaml-engine:3.2
 //> using dep org.graalvm.polyglot:polyglot:25.4.4.1.1
 //> using dep org.graalvm.js:js-isolate-linux-amd64-community:25.4.4.1.1
 //> using dep org.xerial:sqlite-jdbc:3.54.1.0

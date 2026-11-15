@@ -5,8 +5,8 @@ import { join } from "node:path";
 const directory = await mkdtemp("/tmp/opencode/native-install-");
 afterAll(() => rm(directory, { recursive: true, force: true }));
 const root = new URL("../../", import.meta.url).pathname;
-const jobs = Bun.YAML.parse(await Bun.file(join(root, "jobs.yaml")).text()) as { jobs: { name: string; run: string }[] };
-const run = jobs.jobs.find(job => job.name === "cli-deploy")!.run;
+const config = Bun.TOML.parse(await Bun.file(join(root, "mise.toml")).text()) as { tasks: Record<string, { run: string }> };
+const run = config.tasks["cli-deploy"]!.run;
 const bytes = await readFile(join(root, "cli/dist/groot-cli"));
 
 async function fixture(name: string) {

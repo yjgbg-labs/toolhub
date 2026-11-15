@@ -43,13 +43,13 @@ description: 修改或排查 Groot Windows 原生悬浮窗时使用
 3. 执行统一验证：
 
 ```bash
-groot jobs build
+mise run widget-windows-build
 ```
 
 4. C# 改动合并后重新安装原生程序：
 
 ```bash
-groot widget install
+mise run widget-windows-deploy
 ```
 
 5. 通过实际 Windows 截图检查 DPI、行高、文字基线、灯尺寸和自动高度。

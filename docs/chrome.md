@@ -103,9 +103,9 @@ CDP 使用随机端口并绑定本机回环地址。浏览器 stdout/stderr 写�
 实例资料、元数据和命名映射保存在 `$CHROME_HOME/instances/<instanceName>/`。
 
 ```sh
-groot-cli jobs --job chrome-test   # 使用真实 headless Chromium 和本地页面验证
-CHROME_KIOSK_TEST=1 groot-cli jobs --job chrome-test  # 同时验证真实桌面的 kiosk 启动
-groot-cli jobs --job server-deploy
+mise run chrome-test   # 使用真实 headless Chromium 和本地页面验证
+CHROME_KIOSK_TEST=1 mise run chrome-test  # 同时验证真实桌面的 kiosk 启动
+mise run server-deploy
 ```
 
 `chrome-test` 在用户 home 下建立独立临时资料目录，完成后关闭并删除测试实例。
