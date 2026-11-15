@@ -8,8 +8,8 @@ test("the installed bundle loads outside the repository and executes dynamically
   const api = fixture();
   try {
     const root = new URL("../../", import.meta.url).pathname;
-    const jobs = Bun.YAML.parse(await Bun.file(`${root}/jobs.yaml`).text()) as { jobs: { name: string; run: string }[] };
-    const child = Bun.spawn(["sh", "-e", "-c", jobs.jobs.find(job => job.name === "pluging-deploy")!.run], {
+    const config = Bun.TOML.parse(await Bun.file(`${root}/mise.toml`).text()) as { tasks: Record<string, { run: string }> };
+    const child = Bun.spawn(["sh", "-e", "-c", config.tasks["pluging-deploy"]!.run], {
       cwd: root, stdout: "pipe", stderr: "pipe",
       env: { ...process.env, INSTALL_ONLY: "1", CHECK_ONLY: "0", OPENCODE_PLUGIN_DIR: directory },
     });

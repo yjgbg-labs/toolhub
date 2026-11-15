@@ -2,8 +2,6 @@ package groot
 
 import cats.effect.{Deferred, IO, IOApp, Resource}
 import framework.rpcDsl.*
-import groot.jobs.JobsRoutes
-import groot.usejdk.UseJdkRoutes
 import groot.graaljs.{GraalCommandSdk, GraalJsRoutes, GraalManager}
 import groot.schedule.{Scheduler, ScheduleRoutes}
 import groot.sqlite.{SqliteRoutes, SqliteService}
@@ -54,8 +52,6 @@ object Main extends IOApp.Simple:
       }
 
       ScheduleRoutes.register(scheduler)
-      JobsRoutes.register()
-      UseJdkRoutes.register()
       GraalJsRoutes.register(graaljs)
       SqliteRoutes.register(sqlite)
       HttpRoutes.register(http)

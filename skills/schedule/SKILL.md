@@ -9,7 +9,7 @@ description: 创建、修改或排查 Groot 定时任务及迁移旧版调度时
 
 ## 核心约定
 
-- 使用 `groot-cli schedule` 管理任务；一次性构建使用 `groot-cli jobs --job <job>`。
+- 使用 `groot-cli schedule` 管理任务；一次性构建使用 `mise run <task>`。
 - CLI、Code Mode 和 GraalJS SDK 都由普通命令声明生成，不添加业务专用适配器。
 - `script` 为服务端 JavaScript 文件的绝对路径；不接受内联 `source`、`command`、`cwd` 或运行状态字段。
 - 脚本使用 `console`、`tools.*`（HTTP 用 `tools.http`，Shell 用 `tools.shell.execute({env, script})`）；JS 环境不能导入 Bun/Node 模块。
@@ -137,7 +137,7 @@ if (result.exitCode !== 0) throw Error(result.stderr || `bash exit ${result.exit
 - 升级旧 `command`/内联 `source` 配置前，备份配置、状态、日志及引用脚本；旧配置不能直接由新版启动。
 - 将内联源码保存为持久 `.js` 文件；通过旧 API 写入空任务配置，部署新版，再通过新 API 写入 `script` 路径。
 - 依赖系统命令、SSH、Windows 命令且无法直接迁移的任务先保留备份，明确告知暂停的任务。
-- 部署使用项目的 `groot-cli jobs --job server-deploy`，再验证 health、task ID、真实终态和重试。
+- 部署使用项目的 `mise run server-deploy`，再验证 health、task ID、真实终态和重试。
 - 用 `schedule log` 与 `graaljs logs/status` 定位脚本错误；重试耗尽不会自动停用后续周期。
 - 服务关闭等待活动 Context 清理；重启保留配置、状态及日志。
 

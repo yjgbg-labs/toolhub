@@ -6,8 +6,8 @@ import { pathToFileURL } from "node:url";
 const directory = await mkdtemp("/tmp/opencode/plugin-deploy-");
 afterAll(() => rm(directory, { recursive: true, force: true }));
 const root = new URL("../../", import.meta.url).pathname;
-const jobs = Bun.YAML.parse(await Bun.file(join(root, "jobs.yaml")).text()) as { jobs: { name: string; run: string }[] };
-const run = jobs.jobs.find(job => job.name === "pluging-deploy")!.run;
+const config = Bun.TOML.parse(await Bun.file(join(root, "mise.toml")).text()) as { tasks: Record<string, { run: string }> };
+const run = config.tasks["pluging-deploy"]!.run;
 const bundle = 'export default { id: "groot", setup(ctx) { return ctx.options; } };';
 
 async function fixture(name: string) {
