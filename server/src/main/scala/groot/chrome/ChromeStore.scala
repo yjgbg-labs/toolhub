@@ -100,11 +100,13 @@ private[chrome] object ChromeStore:
   }
 
   def launch(executable: String, store: ChromeStore, state: SavedInstance): IO[ProcessHandle] = IO.blocking {
+    ChromeValidation.extraArgs(state.extraArgs)
     val profile = store.profile(state.instanceName)
     Files.deleteIfExists(profile.resolve("DevToolsActivePort"))
     val args = Vector(executable, s"--user-data-dir=$profile", "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0",
       "--no-first-run", "--no-default-browser-check", "--disable-session-crashed-bubble", "--window-size=1280,800") ++
-      (if state.headless then Vector("--headless=new") else if state.kiosk then Vector("--kiosk") else Vector.empty) ++ Vector("about:blank")
+      (if state.headless then Vector("--headless=new") else if state.kiosk then Vector("--kiosk") else Vector.empty) ++
+      state.extraArgs ++ Vector("about:blank")
     val builder = new ProcessBuilder(new java.util.ArrayList(args.asJava)).redirectErrorStream(true)
       .redirectOutput(ProcessBuilder.Redirect.appendTo(store.directory(state.instanceName).resolve("chrome.log").toFile))
     if !state.headless then

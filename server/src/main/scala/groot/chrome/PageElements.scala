@@ -78,8 +78,20 @@ private[chrome] final class PageElements(page: ChromePage):
     if click then dispatch("mousePressed", "left", 1).guarantee(dispatch("mouseReleased", "left", 1).timeout(2.seconds).attempt.void)
     else dispatch("mouseMoved", "none", 0)
   }
-  def click(target: String, frame: Option[String]): IO[Unit] = retry(resolve(target, frame).use(pointer(_, true)))
-  def hover(target: String, frame: Option[String]): IO[Unit] = retry(resolve(target, frame).use(pointer(_, false)))
+  // AX StaticText refs resolve to DOM Text objects. Normalize only pointer targets, once;
+  // retain normal visibility/disabled/hit-testing checks and native event bubbling.
+  private def pointerElement(e: Element): Resource[IO, Element] =
+    if !e.reference then Resource.pure(e) else Resource.make(for
+      response <- page.cdp.call("Runtime.callFunctionOn", obj("objectId" -> str(e.id),
+        "functionDeclaration" -> str("function(){return this.nodeType===3 ? this.parentElement : this;}"),
+        "returnByValue" -> Json.False), Some(e.frame.session))
+      _ <- IO.raiseUnless(field(response, "exceptionDetails").isNull)(ChromeFailure("chrome_script_error", "Could not resolve pointer target"))
+      id <- Option(text(field(response, "result"), "objectId")).filter(_.nonEmpty)
+        .liftTo[IO](ChromeFailure("chrome_stale_ref", "Text node no longer has a parent element; take a new snapshot"))
+    yield e.copy(id = id))(node => page.cdp.call("Runtime.releaseObject", obj("objectId" -> str(node.id)), Some(node.frame.session)).void.timeout(2.seconds).attempt.void)
+
+  def click(target: String, frame: Option[String]): IO[Unit] = retry(resolve(target, frame).flatMap(pointerElement).use(pointer(_, true)))
+  def hover(target: String, frame: Option[String]): IO[Unit] = retry(resolve(target, frame).flatMap(pointerElement).use(pointer(_, false)))
   def input(target: String, frame: Option[String], value: String, clear: Boolean): IO[Unit] =
     IO.raiseWhen(value.length > 65536)(ChromeFailure("invalid_chrome", "Input exceeds 65536 characters")) *>
       retry(resolve(target, frame).use { e => for

@@ -29,11 +29,12 @@ object ChromeRoutes:
 
     commands("instance") {
       command[ChromeInstance]("start") {
-        description("Start or reuse a named persistent profile; stop before changing its display mode")
+        description("Start or reuse a named persistent profile; stop before changing its display mode or extraArgs")
         val name = param[String]("instanceName", "Persistent instance name")
         val kiosk = param[Boolean]("kiosk", "Full-screen kiosk window; incompatible with headless") { default(false) }
         val headless = param[Boolean]("headless", "Run without a graphical window") { default(false) }
-        handle { service.start(name.value, kiosk.value, headless.value) }
+        val args = param[List[String]]("extraArgs", "Additional Chrome switches, each --flag or --flag=value; appended after defaults. Profile, debugging and mode flags are managed") { default(List.empty[String]) }
+        handle { service.start(name.value, kiosk.value, headless.value, args.value.toVector) }
       }
       command[Vector[ChromeInstance]]("list") {
         description("List managed running and stopped instances")
@@ -92,9 +93,11 @@ object ChromeRoutes:
         handle { onPage(_.goto(url.value, wait.value)) }
       }
       command[PageSnapshot]("snapshot") {
-        description("Read the accessibility tree across frames; refs are replaced by each snapshot and expire on navigation")
+        description("Read a tree with parent refs, DOM types and click hints; format=text is compact, interactiveOnly filters controls. Each snapshot replaces refs")
         val limit = param[Int]("maxNodes", "Maximum returned nodes") { default(1000); minimum(1); maximum(5000) }
-        handle { onPage(_.snapshot(limit.value)) }
+        val format = param[String]("format", "json returns nodes; text returns a compact tree in text with an empty nodes array") { default("json") }
+        val interactive = param[Boolean]("interactiveOnly", "Only controls and elements Chromium identifies as clickable; limits apply after filtering") { default(false) }
+        handle { onPage(_.snapshot(limit.value, format.value, interactive.value)) }
       }
       command[Screenshot]("screenshot") {
         description("Save a PNG on the server; returns absolute path, MIME type and dimensions")
@@ -102,7 +105,7 @@ object ChromeRoutes:
         handle { onPage(_.screenshot(full.value)) }
       }
       for action <- Vector("click", "hover") do command[Unit](action) {
-        description(s"${action.capitalize} a snapshot ref or unique CSS selector; waits for visibility and actionability")
+        description(s"${action.capitalize} a snapshot ref or unique CSS selector; text refs target their parent element; waits for visibility and actionability")
         val target = param[String]("target", "Snapshot ref or CSS selector, including open shadow roots")
         val frame = param[Option[String]]("frameId", "Frame from snapshot; default is the top frame; refs carry their frame")
         handle { onPage(p => if action == "click" then p.elements.click(target.value, frame.value) else p.elements.hover(target.value, frame.value)) }
