@@ -2,6 +2,8 @@ package frameworktests
 
 import cats.effect.{Deferred, IO, Ref, Resource}
 import cats.syntax.all.*
+import framework.http.LogScope
+import framework.rpc.{CommandScope, CommandsScope}
 import framework.rpcDsl.*
 import groot.graaljs.GraalCommandSdk
 import io.circe.Json
@@ -61,6 +63,39 @@ class AccessLogSuite extends CatsEffectSuite:
       assertEquals(field(logs.head, "source"), "http")
       assertEquals(logs.head.hcursor.get[Int]("status"), Right(200))
       assert(logs.head.hcursor.get[Long]("durationMs").toOption.get >= 0)
+    }
+  }
+
+  test("shared LogScope helpers configure RPC groups, commands and inputs through the same HTTP DSL") {
+    def skip(using LogScope): Unit = framework.httpDsl.logSkip()
+    def groupPolicy(using CommandsScope): Unit = skip
+    def commandPolicy(using CommandScope[String]): Unit = skip
+    var change: () => Unit = () => ()
+    val app = httpApp {
+      server { accessLog() }
+      commands("quiet") {
+        groupPolicy
+        command[String]("read") { handle { IO.pure("ok") } }
+      }
+      command[String]("quietCommand") {
+        commandPolicy
+        change = () => skip
+        handle { IO.pure("ok") }
+      }
+      command[String]("visible") {
+        val token = param[String]("token", "Token") { skip }
+        handle { IO.pure(token.value) }
+      }
+    }
+    intercept[IllegalArgumentException](change())
+    capture(for
+      _ <- app.httpApp(request("/quiet/read"))
+      _ <- app.httpApp(request("/quietCommand"))
+      value <- app.httpApp(request("/visible?token=shared-scope-secret")).flatMap(_.as[String])
+    yield value).map { (value, logs) =>
+      assert(value.contains("shared-scope-secret"))
+      assertEquals(logs.map(field(_, "command")), Vector("visible"))
+      assertEquals(params(logs.head), Json.obj())
     }
   }
 

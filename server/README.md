@@ -194,6 +194,12 @@ val app = httpApp {
 - Configuration freezes with the application. Repeated `accessLog()` or
   `logSkip()` calls are idempotent.
 
+Both DSLs use the same `logSkip()(using framework.http.LogScope)` implementation;
+the RPC DSL re-exports it directly. HTTP declarations, inputs and RPC command
+scopes implement this interface, so shared helpers can accept `using LogScope`.
+RPC command wrappers delegate to the underlying HTTP scope's configuration and
+freeze gate; command groups use their own declaration state.
+
 Example record (shown without its timestamp and request ID):
 
 ```json

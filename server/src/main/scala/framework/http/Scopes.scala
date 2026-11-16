@@ -23,7 +23,8 @@ trait TagScope extends ConfigScope:
   private[framework] val tags = ArrayBuffer.empty[String]
 
 trait LogScope extends ConfigScope:
-  private[framework] var logSkipValue = false
+  private[framework] def logSkipValue: Boolean
+  private[framework] def logSkipValue_=(value: Boolean): Unit
 
 final class ServerScope private[framework] (private[framework] val gate: ConfigurationGate) extends ConfigScope:
   private[framework] var hostValue = "127.0.0.1"
@@ -55,6 +56,7 @@ final class OpenApiScope private[framework] (private[framework] val gate: Config
   private[framework] val infoScope = new InfoScope(gate)
 
 final class InputScope[A] private[framework] (private[framework] val gate: ConfigurationGate) extends DescriptionScope with LogScope:
+  private[framework] var logSkipValue = false
   private[framework] var defaultValue: Option[A] = None
   private[framework] val constraints = ArrayBuffer.empty[Constraint[A]]
 
@@ -63,6 +65,7 @@ final class ResponseScope private[framework] (private[framework] val gate: Confi
 abstract class DeclarationScope private[framework] (
     private[framework] val gate: ConfigurationGate
 ) extends DescriptionScope with TagScope with LogScope:
+  private[framework] var logSkipValue = false
   private val inputFactories = ArrayBuffer.empty[() => InputSpec[?]]
   private val outputFactories = ArrayBuffer.empty[() => ResponseSpec]
   private[framework] val middlewareValue = ArrayBuffer.empty[Handler => Handler]
