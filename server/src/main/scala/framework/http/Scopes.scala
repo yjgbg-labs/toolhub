@@ -22,11 +22,15 @@ trait DescriptionScope extends ConfigScope:
 trait TagScope extends ConfigScope:
   private[framework] val tags = ArrayBuffer.empty[String]
 
+trait LogScope extends ConfigScope:
+  private[framework] var logSkipValue = false
+
 final class ServerScope private[framework] (private[framework] val gate: ConfigurationGate) extends ConfigScope:
   private[framework] var hostValue = "127.0.0.1"
   private[framework] var portValue = 18080
   private[framework] var maxBodyBytesValue = 1024L * 1024L
   private[framework] var corsScope: Option[CorsScope] = None
+  private[framework] var accessLogValue = false
 
 final class CorsScope private[framework] (private[framework] val gate: ConfigurationGate) extends ConfigScope:
   private[framework] var allowedOriginsValue = Set("*")
@@ -50,7 +54,7 @@ final class OpenApiScope private[framework] (private[framework] val gate: Config
   private[framework] var endpointValue = "/openapi.json"
   private[framework] val infoScope = new InfoScope(gate)
 
-final class InputScope[A] private[framework] (private[framework] val gate: ConfigurationGate) extends DescriptionScope:
+final class InputScope[A] private[framework] (private[framework] val gate: ConfigurationGate) extends DescriptionScope with LogScope:
   private[framework] var defaultValue: Option[A] = None
   private[framework] val constraints = ArrayBuffer.empty[Constraint[A]]
 
@@ -58,7 +62,7 @@ final class ResponseScope private[framework] (private[framework] val gate: Confi
 
 abstract class DeclarationScope private[framework] (
     private[framework] val gate: ConfigurationGate
-) extends DescriptionScope with TagScope:
+) extends DescriptionScope with TagScope with LogScope:
   private val inputFactories = ArrayBuffer.empty[() => InputSpec[?]]
   private val outputFactories = ArrayBuffer.empty[() => ResponseSpec]
   private[framework] val middlewareValue = ArrayBuffer.empty[Handler => Handler]
@@ -67,7 +71,7 @@ abstract class DeclarationScope private[framework] (
 
   private[framework] def freezeDeclarations(): ScopeDecl =
     ScopeDecl(inputFactories.map(_()).toVector, outputFactories.map(_()).toVector, middlewareValue.toVector, tags.toVector,
-      exposureValue.getOrElse(Client.all))
+      exposureValue.getOrElse(Client.all), logSkipValue)
 
   private[framework] def parameter[A](name: String, location: InputLocation)(using codec: ParamCodec[A]): Input[A] =
     gate.check()
@@ -87,7 +91,7 @@ abstract class DeclarationScope private[framework] (
           case RawInput.Values(values) if values.isEmpty => missing.toRight("Missing required parameter")
           case RawInput.Values(values) => codec.decode(values)
           case _ => Left("Expected a parameter")
-        })
+        }, logSkip = config.logSkipValue)
     )
     handle
 
@@ -110,7 +114,7 @@ abstract class DeclarationScope private[framework] (
           case RawInput.Body(Some(json)) => model.decoder.decodeJson(json).left.map(_.getMessage)
           case RawInput.Body(None) => missing.toRight("Missing required request body")
           case _ => Left(s"Expected a $mediaType body")
-        }, Some(mediaType))
+        }, Some(mediaType), config.logSkipValue)
     )
     handle
 
@@ -167,6 +171,7 @@ final class AppScope private[framework] () extends ConfigScope:
   private[framework] def freeze(): ApplicationDecl =
     gate.close()
     val info = openApiScope.infoScope
-    ApplicationDecl(ServerSettings(serverScope.hostValue, serverScope.portValue, serverScope.maxBodyBytesValue, serverScope.corsScope.map(_.freeze())),
+    ApplicationDecl(ServerSettings(serverScope.hostValue, serverScope.portValue, serverScope.maxBodyBytesValue,
+      serverScope.corsScope.map(_.freeze()), serverScope.accessLogValue),
       OpenApiSettings(openApiScope.endpointValue, info.titleValue, info.versionValue, info.descriptionValue),
       routes.flatMap(_.freeze()).toVector, extensions.iterator.map((name, value) => name -> value()).toMap)

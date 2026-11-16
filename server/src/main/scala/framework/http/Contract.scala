@@ -31,7 +31,8 @@ private[framework] final case class InputSpec[A](
     repeated: Boolean,
     constraints: Vector[Constraint[A]],
     decodeRaw: RawInput => Either[String, A],
-    bodyMediaType: Option[String] = None
+    bodyMediaType: Option[String] = None,
+    logSkip: Boolean = false
 ):
   def decode(raw: RawInput): Either[FieldError, A] =
     decodeRaw(raw).flatMap { value =>
@@ -61,7 +62,8 @@ private[framework] final case class EndpointSpec(
     inputs: Vector[InputSpec[?]],
     outputs: Vector[ResponseSpec],
     responses: Vector[ResponseContract],
-    exposedOn: Set[Client] = Client.all
+    exposedOn: Set[Client] = Client.all,
+    logSkip: Boolean = false
 )
 
 private[framework] final case class BoundEndpoint(spec: EndpointSpec, run: RequestContext => IO[EndpointResult]):

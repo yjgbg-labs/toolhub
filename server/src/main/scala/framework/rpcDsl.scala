@@ -1,7 +1,7 @@
 package framework
 
 import cats.effect.IO
-import framework.http.{AppScope, DescriptionScope, EndpointScope, ResponseScope, RoutesScope}
+import framework.http.{AppScope, DescriptionScope, EndpointScope, InputScope, ResponseScope, RoutesScope}
 import framework.rpc.{Command, CommandGroup, CommandScope, CommandsScope, Metadata}
 import framework.runtime.Application
 
@@ -12,7 +12,7 @@ object rpcDsl:
   export framework.rpc.{PlainText, Shell, SSE, SuccessResponse}
   export framework.http.{ParamCodec, RequestContext, EndpointResult, Handler, Input, Output}
   export httpDsl.{server, host, port, maxBodyBytes, openapi, endpoint, info, title, version,
-    cors, allowOrigins, allowMethods, allowHeaders, exposeHeaders, allowCredentials, maxAge,
+    cors, allowOrigins, allowMethods, allowHeaders, exposeHeaders, allowCredentials, maxAge, accessLog,
     default, constraint, minimum, maximum, minLength, maxLength, pattern, value}
 
   private def group(scope: CommandsScope): CommandGroup = scope match
@@ -61,6 +61,10 @@ object rpcDsl:
   def description(value: String)(using scope: CommandsScope | DescriptionScope): Unit = scope match
     case commands: CommandsScope => httpDsl.description(value)(using commands.http)
     case description: DescriptionScope => httpDsl.description(value)(using description)
+
+  def logSkip()(using scope: CommandsScope | InputScope[?]): Unit = scope match
+    case commands: CommandsScope => httpDsl.logSkip()(using commands.http)
+    case input: InputScope[?] => httpDsl.logSkip()(using input)
 
   /** Ancestor declarations are upper bounds; a child may further narrow exposure. */
   def exposeOn(first: Client, rest: Client*)(using scope: CommandsScope): Unit =
