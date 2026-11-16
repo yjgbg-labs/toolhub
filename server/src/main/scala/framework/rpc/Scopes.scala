@@ -1,8 +1,8 @@
 package framework.rpc
 
-import framework.http.{DeclarationScope, EndpointScope, Output, RoutesScope}
+import framework.http.{ConfigurationGate, DeclarationScope, EndpointScope, LogScope, Output, RoutesScope}
 
-sealed trait CommandsScope:
+sealed trait CommandsScope extends LogScope:
   private[framework] def http: DeclarationScope
 
 sealed trait CommandScope[A] extends CommandsScope:
@@ -23,4 +23,7 @@ private[framework] final class CommandGroup(
 private[framework] final class Command[A](
     val http: EndpointScope,
     val success: Output[A]
-) extends CommandScope[A]
+) extends CommandScope[A]:
+  private[framework] def gate: ConfigurationGate = http.gate
+  private[framework] def logSkipValue: Boolean = http.logSkipValue
+  private[framework] def logSkipValue_=(value: Boolean): Unit = http.logSkipValue = value

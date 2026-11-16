@@ -35,7 +35,8 @@ framework/
 │   ├── Shell.scala
 │   ├── SSE.scala
 │   └── SuccessResponse.scala
-└── runtime/
+ └── runtime/
+    ├── AccessLog.scala
     ├── Cors.scala
     └── Application.scala
 ```
@@ -147,6 +148,91 @@ CORS controls browser response sharing, not API authentication or route
 registration: actual requests still use the normal router, and in-process GraalJS
 calls bypass this HTTP-only policy. HTTPS/mixed-content and browser local-network
 permissions are separate from server CORS configuration.
+
+### Access logs
+
+Groot's `Main` enables `server { accessLog() }` by default. Both DSLs expose this
+setting; other applications opt in by declaring it. Records are single-line JSON
+written directly to **standard output**, collected by systemd/journald when the
+server runs as a service:
+
+```sh
+journalctl --user -u groot-http.service -f -o cat
+```
+
+```scala
+import cats.effect.IO
+import framework.rpcDsl.*
+
+val app = httpApp {
+  server { accessLog() }
+  commands("internal") {
+    logSkip() // This declaration block and all descendant commands.
+    command[String]("read") { handle { IO.pure("ok") } }
+  }
+  command[String]("health") {
+    logSkip() // This command, including failed requests.
+    handle { IO.pure("ok") }
+  }
+  command[String]("login") {
+    val username = param[String]("username", "Username")
+    val password = param[String]("password", "Password") { logSkip() }
+    handle { IO.pure(username.value) }
+  }
+}
+```
+
+- `logSkip()` in the root RPC scope, `commands`, or `command` suppresses access
+  records for the affected commands. Ancestors and local declarations combine
+  with OR: a child cannot re-enable logging. Declarations made after a child still
+  apply. Reopened groups have independent declaration scopes.
+- `param[A](...) { logSkip() }` omits only that input. The parameter's
+  `InputScope[A]` takes precedence over the surrounding command scope.
+  `body[A](...) { logSkip() }` and `body.text(...) { logSkip() }` omit the whole body.
+- The HTTP DSL supports the same policy in `routes`, endpoints and input blocks
+  (`path`, `query`, `header`, `cookie`, `body.json` and `body.text`).
+- Configuration freezes with the application. Repeated `accessLog()` or
+  `logSkip()` calls are idempotent.
+
+Both DSLs use the same `logSkip()(using framework.http.LogScope)` implementation;
+the RPC DSL re-exports it directly. HTTP declarations, inputs and RPC command
+scopes implement this interface, so shared helpers can accept `using LogScope`.
+RPC command wrappers delegate to the underlying HTTP scope's configuration and
+freeze gate; command groups use their own declaration state.
+
+Example record (shown without its timestamp and request ID):
+
+```json
+{"type":"access","event":"request","source":"http","command":"users.get","method":"GET","path":"/users/get","status":200,"durationMs":12,"outcome":"completed","params":{"query.id":"7"},"paramsTruncated":false}
+```
+
+Each record includes `time` (UTC) and a generated `requestId`. `source` is `http`
+for the public application or `in_process` for endpoint/GraalJS calls. Inputs in
+`params` use location-qualified keys (`query.id`, `path.id`, `header.x-token`,
+`cookie.session`, `body`) to avoid collisions. Non-body values are the submitted
+strings (arrays for repeated inputs), or declared defaults when absent; bodies
+are parsed JSON or text. Invalid or unreadable bodies are omitted.
+
+Only declared, unskipped inputs are captured. Matched paths use the route template,
+so skipped path values cannot reappear there; raw query strings, undeclared
+headers/cookies, response payloads and exception messages are not part of access
+records. For an unknown route, the path is recorded without its query string.
+Input values over 2 KiB become a marked preview; entire lines are limited to
+8 KiB by dropping trailing inputs and setting `paramsTruncated`.
+
+Logging surrounds validation, error handling and CORS, covering 400/413/415,
+404/405/500, OpenAPI, HEAD and preflight responses. A preflight uses its requested
+method's logging policy. For a 405 with several methods at the same path, it is
+skipped only if all those endpoints skip logging. Access logging does not change
+the separate application error logs.
+
+Ordinary requests emit `event: "request"` when the response is ready;
+`durationMs` measures time to that response, excluding its subsequent transmission.
+Cancellation before a response emits `outcome: "canceled"` with `status: null`.
+Streaming responses emit `stream_open` when ready and `stream_close` when consumed,
+failed or canceled, sharing the request ID. Close duration measures the entire
+lifetime, and `outcome` distinguishes `completed`, `error` and `canceled`.
+Logging observes the stream's finalizer without reading or buffering its contents.
 
 ## RPC
 

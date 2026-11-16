@@ -32,27 +32,55 @@ final class Application private[framework] (
   private val publicEndpoints = ordered.filter(endpoint => endpoint.spec.exposedOn.exists(_ != Client.graaljs))
   private val docs = PathPattern.parse(openApiSettings.endpoint)
 
-  private def httpHandler(run: (Request[IO], Vector[String]) => IO[Response[IO]]): HttpApp[IO] = Kleisli { request =>
+  private def httpHandler(
+      visible: Vector[BoundEndpoint],
+      source: String,
+      cors: Option[CorsSettings] = None,
+      includeDocs: Boolean = false
+  ): HttpApp[IO] = Kleisli { request =>
     IO.defer {
       val actual = request.uri.path.segments.map(_.decoded()).toVector
       val segments = if actual.lastOption.contains("") then actual.dropRight(1) else actual
-      run(request, segments)
+      val isDocs = includeDocs && docs.matches(segments).nonEmpty
+      val matches = if isDocs then Vector.empty else
+        visible.flatMap(endpoint => endpoint.spec.path.matches(segments).map(endpoint -> _))
+      val samePath = matches.headOption.toVector.flatMap { (best, _) =>
+        matches.filter(_._1.spec.path.value == best.spec.path.value)
+      }
+      val method = if cors.nonEmpty && request.method.name == "OPTIONS" && headerValues(request, "Origin").nonEmpty then
+        headerValues(request, "Access-Control-Request-Method").headOption.getOrElse(request.method.name)
+      else request.method.name
+      // Resolve logging policy even for validation errors, 405s and CORS preflights.
+      val logged = samePath.find(_._1.spec.method == method)
+        .orElse(samePath.find(!_._1.spec.logSkip)).orElse(samePath.headOption).map(_._1.spec)
+      AccessLog(serverSettings.accessLog, request, logged, source) { log =>
+        def failed(error: Throwable): IO[Response[IO]] =
+          log.failed(error) *> IO(scribe.error("Request failed", error))
+            .as(errorResponse(500, "internal_error", "Internal server error"))
+        val handler: HttpApp[IO] = Kleisli { req =>
+          IO.defer(if isDocs then document(req) else route(req, samePath, log)).handleErrorWith(failed)
+        }
+        val decorated = cors.fold(handler)(Cors(_, handler))
+        decorated(request).handleErrorWith(failed).map { response =>
+          if request.method.name == "HEAD" then response.withBodyStream(fs2.Stream.empty) else response
+        }
+      }
     }.handleErrorWith { error =>
-      IO(scribe.error("Request failed", error)).as(errorResponse(500, "internal_error", "Internal server error"))
-    }.map { response =>
-      if request.method.name == "HEAD" then response.withBodyStream(fs2.Stream.empty) else response
+      // Failures before route selection still have an access record and a 500 response.
+      AccessLog(serverSettings.accessLog, request, None, source) { log =>
+        log.failed(error) *> IO(scribe.error("Request failed", error))
+          .as(errorResponse(500, "internal_error", "Internal server error"))
+      }.map(response => if request.method.name == "HEAD" then response.withBodyStream(fs2.Stream.empty) else response)
     }
   }
 
-  val httpApp: HttpApp[IO] =
-    val handler = httpHandler(dispatch)
-    serverSettings.cors.fold(handler)(Cors(_, handler))
+  val httpApp: HttpApp[IO] = httpHandler(publicEndpoints, "http", serverSettings.cors, includeDocs = true)
 
   val endpoints: Vector[Endpoint] = ordered.map { endpoint =>
     val spec = endpoint.spec
     new Endpoint(spec.operationId, spec.method, spec.path.value, spec.inputs.map { input =>
       Endpoint.Input(input.name, input.location, input.schema.node(), input.bodyMediaType)
-    }, spec.exposedOn, httpHandler((request, segments) => route(request, segments, Vector(endpoint))))
+    }, spec.exposedOn, httpHandler(Vector(endpoint), "in_process"))
   }
 
   def resource: Resource[IO, org.http4s.server.Server] =
@@ -66,61 +94,72 @@ final class Application private[framework] (
 
   def serve: IO[Nothing] = resource.useForever
 
-  private def dispatch(request: Request[IO], segments: Vector[String]): IO[Response[IO]] =
-    if docs.matches(segments).nonEmpty then
-      if Set("GET", "HEAD").contains(request.method.name) then
-        val matches = headerValues(request, "If-None-Match").flatMap(_.split(",")).exists { value =>
-          val tag = value.trim.stripPrefix("W/")
-          tag == "*" || tag == etag
-        }
-        val result = if matches then Response[IO](Status.NotModified) else textResponse(200, openApiJson, "application/json")
-        IO.pure(result.putHeaders(Header.Raw(CIString("ETag"), etag)))
-      else IO.pure(errorResponse(405, "method_not_allowed", "Method not allowed")
-        .putHeaders(Header.Raw(CIString("Allow"), "GET, HEAD")))
-    else route(request, segments, publicEndpoints)
+  private def document(request: Request[IO]): IO[Response[IO]] =
+    if Set("GET", "HEAD").contains(request.method.name) then
+      val matches = headerValues(request, "If-None-Match").flatMap(_.split(",")).exists { value =>
+        val tag = value.trim.stripPrefix("W/")
+        tag == "*" || tag == etag
+      }
+      val result = if matches then Response[IO](Status.NotModified) else textResponse(200, openApiJson, "application/json")
+      IO.pure(result.putHeaders(Header.Raw(CIString("ETag"), etag)))
+    else IO.pure(errorResponse(405, "method_not_allowed", "Method not allowed")
+      .putHeaders(Header.Raw(CIString("Allow"), "GET, HEAD")))
 
-  private def route(request: Request[IO], segments: Vector[String], visible: Vector[BoundEndpoint]): IO[Response[IO]] =
-    val matches = visible.flatMap(endpoint => endpoint.spec.path.matches(segments).map(params => endpoint -> params))
-    matches.headOption match
-      case None => IO.pure(errorResponse(404, "not_found", "Route not found"))
-      case Some((best, _)) =>
-        val samePath = matches.filter(_._1.spec.path.value == best.spec.path.value)
-        samePath.find(_._1.spec.method == request.method.name) match
-          case None => IO.pure(errorResponse(405, "method_not_allowed", "Method not allowed")
-            .putHeaders(Header.Raw(CIString("Allow"), samePath.map(_._1.spec.method).distinct.sorted.mkString(", "))))
-          case Some((endpoint, params)) => execute(endpoint, params, request)
+  private def route(
+      request: Request[IO],
+      matches: Vector[(BoundEndpoint, Map[String, String])],
+      log: AccessLog.Context
+  ): IO[Response[IO]] =
+    if matches.isEmpty then IO.pure(errorResponse(404, "not_found", "Route not found"))
+    else matches.find(_._1.spec.method == request.method.name) match
+      case None => IO.pure(errorResponse(405, "method_not_allowed", "Method not allowed")
+        .putHeaders(Header.Raw(CIString("Allow"), matches.map(_._1.spec.method).distinct.sorted.mkString(", "))))
+      case Some((endpoint, params)) => execute(endpoint, params, request, log)
 
-  private def execute(endpoint: BoundEndpoint, params: Map[String, String], request: Request[IO]): IO[Response[IO]] =
+  private def execute(endpoint: BoundEndpoint, params: Map[String, String], request: Request[IO], log: AccessLog.Context): IO[Response[IO]] =
     val spec = endpoint.spec
+    def values(input: InputSpec[?]): Vector[String] = input.location match
+      case InputLocation.Path => params.get(input.name).toVector
+      case InputLocation.Query => request.uri.query.multiParams.get(input.name).toVector.flatten
+      case InputLocation.Header => headerValues(request, input.name)
+      case InputLocation.Cookie => request.cookies.filter(_.name == input.name).map(_.content).toVector
+      case InputLocation.Body => Vector.empty
+    val logParams = spec.inputs.filter(i => i.location != InputLocation.Body && !i.logSkip).traverse_ { input =>
+      log.input(s"${input.location.toString.toLowerCase}.${input.name}", {
+        val raw = values(input)
+        if raw.isEmpty then input.default
+        else if raw.size == 1 && !input.repeated then Some(Json.fromString(raw.head))
+        else Some(Json.fromValues(raw.map(Json.fromString)))
+      })
+    }
     val body = spec.inputs.find(_.location == InputLocation.Body) match
       case Some(input) => readBody(request, input.bodyMediaType.get)
       case None => IO.pure(Right(None): Either[Response[IO], Option[Json]])
-    body.flatMap {
+    logParams *> body.flatMap {
       case Left(response) => IO.pure(response)
       case Right(json) =>
+        val logBody = spec.inputs.find(i => i.location == InputLocation.Body && !i.logSkip)
+          .fold(IO.unit)(input => log.input("body", json.orElse(input.default)))
         val results = spec.inputs.map { input =>
           val raw = input.location match
-            case InputLocation.Path   => RawInput.Values(params.get(input.name).toVector)
-            case InputLocation.Query  => RawInput.Values(request.uri.query.multiParams.get(input.name).toVector.flatten)
-            case InputLocation.Header => RawInput.Values(headerValues(request, input.name))
-            case InputLocation.Cookie => RawInput.Values(request.cookies.filter(_.name == input.name).map(_.content).toVector)
-            case InputLocation.Body   => RawInput.Body(json)
+            case InputLocation.Body => RawInput.Body(json)
+            case _ => RawInput.Values(values(input))
           input.decode(raw)
         }
         val errors = results.collect { case Left(error) => error }.toList
-        if errors.nonEmpty then IO.pure(errorResponse(400, "invalid_request", "Request validation failed", errors))
+        logBody *> (if errors.nonEmpty then IO.pure(errorResponse(400, "invalid_request", "Request validation failed", errors))
         else
           val context = new RequestContext(endpoint.inputSlots, results.collect { case Right(value) => value })
-          endpoint.run(context).map { result =>
+          endpoint.run(context).flatMap { result =>
             val output = endpoint.outputs.getOrElse(result.key, throw new IllegalArgumentException("Response belongs to a different endpoint"))
             (output.mediaType, result.payload) match
-              case (Some(mediaType), Some(ResponseBody.Text(payload))) => textResponse(output.status, payload, mediaType)
+              case (Some(mediaType), Some(ResponseBody.Text(payload))) => IO.pure(textResponse(output.status, payload, mediaType))
               case (Some(mediaType), Some(ResponseBody.Streaming(bytes))) =>
-                Response[IO](Status.fromInt(output.status).toOption.get).withBodyStream(bytes)
-                  .putHeaders(Header.Raw(CIString("Content-Type"), mediaType), Header.Raw(CIString("Cache-Control"), "no-cache"))
-              case (None, None) => Response[IO](Status.fromInt(output.status).toOption.get)
+                log.streaming.as(Response[IO](Status.fromInt(output.status).toOption.get).withBodyStream(bytes)
+                  .putHeaders(Header.Raw(CIString("Content-Type"), mediaType), Header.Raw(CIString("Cache-Control"), "no-cache")))
+              case (None, None) => IO.pure(Response[IO](Status.fromInt(output.status).toOption.get))
               case _ => throw new IllegalStateException("Response does not match its declaration")
-          }
+          })
     }
 
   private def readBody(request: Request[IO], mediaType: String): IO[Either[Response[IO], Option[Json]]] =
