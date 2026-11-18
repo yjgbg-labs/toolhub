@@ -1,5 +1,8 @@
 # Local Service Migration
 
+Historical runbook for the legacy service split. Current build and deployment
+tasks are documented in the [project README](../README.md).
+
 ## Safety Rules
 
 - Install units first and activate them separately.
@@ -14,7 +17,7 @@
 Merge the validated branch first so `~/.local/bin/groot` contains the new serve commands. The installer refuses an older target binary. A worktree-only deployment must set `GROOT_EXECUTABLE` explicitly and retain that worktree.
 
 ```bash
-groot jobs deploy
+# Install units with the legacy release's deploy task before verification.
 systemd-analyze --user verify ~/.config/systemd/user/groot-{windows,media,usb}.service
 ```
 

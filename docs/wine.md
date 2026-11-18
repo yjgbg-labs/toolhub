@@ -144,15 +144,15 @@ net48 版本直接运行 `Groot.Wine.Helper.exe`。请求与结果使用独立�
 运行依赖 Linux user systemd（部署服务本身也由 user systemd 管理），无需 sudo。
 
 ```sh
-groot-cli jobs --job wine-install
-groot-cli jobs --job wine-build
-groot-cli jobs --job wine-helper-deploy
-groot-cli jobs --job wine-deploy
+mise run wine-install
+mise run wine-build
+mise run wine-helper-deploy
+mise run wine-deploy
 ```
 
 `config.env` 配置 `WINE_HOME`、`WINE_RUNTIME_ROOT`、`WINE_HELPER_ROOT`。Wine 安装面向本机 Ubuntu amd64，解包 apt 软件包至用户目录；.NET/Mono 下载校验官方摘要。
 调用器以内容寻址不可变版本安装，通过符号链接原子切换。net48 x64/x86 使用独立的构建中间目录。
-安装和部署逻辑直接内联在 `jobs.yaml`，Wine 共四个任务，依赖执行顺序为：
+安装和部署逻辑直接内联在 `mise.toml`，Wine 共四个任务，依赖执行顺序为：
 
 ```text
 wine-install → wine-build ┬→ wine-helper-deploy

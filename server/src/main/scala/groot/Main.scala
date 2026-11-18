@@ -2,8 +2,6 @@ package groot
 
 import cats.effect.{Deferred, IO, IOApp, Resource}
 import framework.rpcDsl.*
-import groot.jobs.JobsRoutes
-import groot.usejdk.UseJdkRoutes
 import groot.graaljs.{GraalCommandSdk, GraalJsRoutes, GraalManager}
 import groot.schedule.{Scheduler, ScheduleRoutes}
 import groot.sqlite.{SqliteRoutes, SqliteService}
@@ -14,6 +12,7 @@ import groot.widget.{WidgetRoutes, WidgetService}
 import groot.state.{StateRoutes, StateService}
 import groot.chrome.{ChromeRoutes, ChromeService}
 import groot.wine.{WineRoutes, WineService}
+import groot.notify.{NotifyRoutes, NotifyService}
 import scala.concurrent.duration.*
 
 object Main extends IOApp.Simple:
@@ -26,9 +25,10 @@ object Main extends IOApp.Simple:
     shell <- ShellService.resource()
     chrome <- ChromeService.resource()
     wine <- WineService.resource()
+    notify <- NotifyService.resource()
     graaljs <- GraalManager.resource(commands = commands.get)
     scheduler <- Scheduler.resource(graaljs, startLoop = false)
-  yield (scheduler, sqlite, http, widget, state, shell, chrome, wine, graaljs, commands)).use { (scheduler, sqlite, http, widget, state, shell, chrome, wine, graaljs, commands) =>
+  yield (scheduler, sqlite, http, widget, state, shell, chrome, wine, notify, graaljs, commands)).use { (scheduler, sqlite, http, widget, state, shell, chrome, wine, notify, graaljs, commands) =>
     val app = httpApp {
       server {
         host("0.0.0.0")
@@ -52,8 +52,6 @@ object Main extends IOApp.Simple:
       }
 
       ScheduleRoutes.register(scheduler)
-      JobsRoutes.register()
-      UseJdkRoutes.register()
       GraalJsRoutes.register(graaljs)
       SqliteRoutes.register(sqlite)
       HttpRoutes.register(http)
@@ -63,6 +61,7 @@ object Main extends IOApp.Simple:
       StateRoutes.register(state)
       ChromeRoutes.register(chrome)
       WineRoutes.register(wine)
+      NotifyRoutes.register(notify)
       command[PlainText]("health") {
         handle { IO.pure(PlainText("ok")) }
       }

@@ -555,6 +555,6 @@ Scheduled job names now use `?name=...` instead of a path segment. Consequently,
 CLI calls use `groot-cli schedule log --name example`, and Code Mode/client inputs
 use `{ name: "example" }`. The health endpoint is now `GET /health`.
 
-Run server checks from the repository root with `groot jobs server-test` and
-deploy with `groot jobs server-deploy`. See [the project README](../README.md)
+Run server checks from the repository root with `mise run server-test` and
+deploy with `mise run server-deploy`. See [the project README](../README.md)
 for the independent Native CLI and OpenCode plugin workflows.

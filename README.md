@@ -18,7 +18,7 @@ widget/                 原生桌面悬浮窗客户端
 AGENTS.md               项目开发与交付约定
 skills/                 OpenCode skills，全局目录链接至此
 config.env              JDK、安装路径及服务参数
-jobs.yaml               构建、测试和交付编排
+mise.toml               构建、测试和交付编排
 ```
 
 CLI 与插件各自拥有实现与依赖，没有共享代码或 workspace 包引用。
@@ -31,26 +31,26 @@ CLI 的动态协议实现直接编入 Native 可执行文件；插件打成独�
 
 | 命令 | 操作 |
 | --- | --- |
-| `groot-cli jobs --job server-test` | Scala 服务端测试和服务部署检查 |
-| `groot-cli jobs --job chrome-test` | 真实 headless Chromium 生命周期和页面自动化集成测试 |
-| `groot-cli jobs --job server-deploy` | 服务端测试、JAR 构建、user service 安装及健康检查 |
-| `groot-cli jobs --job cli-deploy` | Native 编译、CLI/安装检查及安装 `groot-cli` |
-| `groot-cli jobs --job pluging-deploy` | 插件依赖安装、类型检查、bundle 构建、测试及安装 OpenCode 插件 |
-| `groot-cli jobs --job widget-test` | 在目标 Mac 编译客户端并运行 Swift 协议测试 |
-| `groot-cli jobs --job widget-build` | 测试后构建、签名 macOS app，并取回校验后的归档 |
-| `groot-cli jobs --job widget-deploy` | 构建后安装 macOS app、配置和登录启动项 |
-| `groot-cli jobs --job widget-windows-test` | 在 Windows 运行 SSE、HTTP 和配置协议检查 |
-| `groot-cli jobs --job widget-windows-build` | 测试后构建 Windows 原生客户端并取回校验后的归档 |
-| `groot-cli jobs --job widget-windows-deploy` | 构建后安装 Windows 客户端、连接配置和交互式登录任务 |
+| `mise run server-test` | Scala 服务端测试和服务部署检查 |
+| `mise run chrome-test` | 真实 headless Chromium 生命周期和页面自动化集成测试 |
+| `mise run server-deploy` | 服务端测试、JAR 构建、user service 安装及健康检查 |
+| `mise run cli-deploy` | Native 编译、CLI/安装检查及安装 `groot-cli` |
+| `mise run pluging-deploy` | 插件依赖安装、类型检查、bundle 构建、测试及安装 OpenCode 插件 |
+| `mise run widget-test` | 在目标 Mac 编译客户端并运行 Swift 协议测试 |
+| `mise run widget-build` | 测试后构建、签名 macOS app，并取回校验后的归档 |
+| `mise run widget-deploy` | 构建后安装 macOS app、配置和登录启动项 |
+| `mise run widget-windows-test` | 在 Windows 运行 SSE、HTTP 和配置协议检查 |
+| `mise run widget-windows-build` | 测试后构建 Windows 原生客户端并取回校验后的归档 |
+| `mise run widget-windows-deploy` | 构建后安装 Windows 客户端、连接配置和交互式登录任务 |
 
 `pluging-deploy` 是任务的实际名称。每个组件独立部署，只处理自身制品。
-server/cli/plugin 需要只构建和验证时，可以执行 `CHECK_ONLY=1 groot-cli jobs --job <部署任务>`；widget 使用 `widget-build`。
-server/cli/plugin 使用已有本地构建产物时，执行 `INSTALL_ONLY=1 groot-cli jobs --job <部署任务>`；
+server/cli/plugin 需要只构建和验证时，可以执行 `CHECK_ONLY=1 mise run <部署任务>`；widget 使用 `widget-build`。
+server/cli/plugin 使用已有本地构建产物时，执行 `INSTALL_ONLY=1 mise run <部署任务>`；
 它跳过组件构建，`server-deploy` 的 `server-test` 依赖仍会执行。
 两个开关同时设置时，只检查本地产物存在且非空，不安装；服务端依赖测试仍会执行。
 
 服务端的负向测试会故意触发 HTTP 500，并捕获、断言预期的请求错误日志。
-测试失败和非预期错误仍会正常输出；部署结果以测试汇总、`[jobs] fail` 和退出码为准。
+测试失败和非预期错误仍会正常输出；部署结果以测试汇总、mise 的任务结果和退出码为准。
 JDK 25 下仍可能出现 `scala.runtime.LazyVals` 的 `Unsafe` 弃用警告：MUnit、Circe 等依赖的旧式 lazy val 字节码仍调用兼容实现，该警告不表示测试或部署失败。
 
 ## 本机交付约定
@@ -84,7 +84,8 @@ Wine helper 的程序集名为 `Groot.Wine.Helper`，使用 `wine-deploy` 协调
 `config.env` 的 `JDK_VERSION` 默认 `temurin-25`，可覆盖为包含发行商的具体版本。
 systemd 使用 mise 的绝对路径启动 Java；部署时先准备并验证 JDK，服务启动时关闭自动安装。
 Native 编译还需要 Clang 和 libcurl 等开发库，
-`cli-deploy` 会在需要时准备用户级工具链缓存。所有流程直接定义在 `jobs.yaml` 中。
+`cli-deploy` 会在需要时准备用户级工具链缓存。所有流程直接定义在 `mise.toml` 中，
+由本机 mise 执行，无需 Groot 服务在线。首次使用先阅读配置并执行 `mise trust ./mise.toml`。
 
 ## 使用
 
@@ -95,7 +96,7 @@ Windows EXE 一次性执行、原生/.NET/COM 库函数调用见 [docs/wine.md](
 groot-cli --help
 groot-cli health
 groot-cli schedule new --name hello --body '{"script":"/home/user/.config/groot/scripts/hello.js","every":"1h"}'
-groot-cli jobs --job build --parallel 2
+mise run -j 2 server-test
 ```
 
 服务端固定监听 `0.0.0.0:18080`，不读取端口环境变量；CLI 和插件默认连接
@@ -139,26 +140,6 @@ mise exec java@temurin-25 -- sh -c 'javac Main.java && java Main'
 mise 自动安装缺失的 JDK，为子进程设置 `JAVA_HOME` 和 `PATH`，继承当前目录及标准输入/输出/错误。
 构建、测试和 systemd 服务均使用同一 `JDK_VERSION` 配置；JDK 选择与 Java 启动不依赖 Groot HTTP 服务。
 
-#### 旧版 use-jdk 接口
-
-```sh
-groot-cli use-jdk --version 25 --command 'java --version'
-groot-cli use-jdk --version 21 --command './gradlew test'
-groot-cli use-jdk --version 25 --command 'javac Main.java && java Main'
-```
-
-`use-jdk` 声明为 `command[Shell]`，仅 `exposeOn(cli)`。`version` 是正整数主版本，
-`command` 是交给 `/bin/sh -c` 执行的命令字符串；用单引号可将 `$JAVA_HOME` 等变量留到子进程展开。
-服务端只生成脚本，CLI 在调用方继承当前目录和标准输入/输出/错误，返回命令退出码。
-
-- 在子进程中设置 `JAVA_HOME` 并将其 `bin` 加到 `PATH` 最前面。
-- 复用 `$GROOT_HOME/jdks/temurin-<version>`；`GROOT_HOME` 默认 `~/.config/groot`，与旧命令缓存兼容。
-- 缓存不存在时按调用方 Linux/macOS 和 CPU 架构选择 Eclipse Temurin 最新 GA JDK，
-  从 Adoptium 元数据取得明确的发布包地址及 SHA-256，校验后解压并发布到缓存。
-- 首次安装需要 `curl`、`jq`、`tar` 和 `sha256sum` 或 `shasum`；macOS 支持 `Contents/Home` 布局。
-  缓存不完整或版本不符时返回错误，下载失败会清理临时目录。
-- `command` 最多 64 KiB UTF-8，支持管道、重定向和多行 shell 内容。命令通过现有 HTTP 服务生成。
-
 ### JavaScript 调用参数
 
 Code Mode 和 GraalJS 使用相同的参数规则，由命令声明自动映射：
@@ -183,6 +164,44 @@ await tools.schedule.config.write(config);
 - 无参数命令可省略输入；省略参数或传 `undefined` 表示未提供输入，显式 `null` 则作为实际值校验。
 - 旧调用需去掉参数位置包装；仅请求体命令还需去掉外层 `body`。返回仍为 `{status, headers, body}`。
   CLI 参数与 HTTP/OpenAPI 契约保持原有格式。
+
+### OpenCode 会话通知
+
+`notify.send({targetSessionId, message})` **仅对 GraalJS 暴露**，不注册 Code Mode 工具、CLI 发送命令或外部 HTTP 发送路由。
+`message` 是模型收到的完整正文；插件直接用它生成 OpenCode synthetic 消息的 `description`。
+展示最多 120 个 Unicode 码点：不超长时原样显示，超长时取前 117 个码点并追加 `...`，不拆开 emoji 的代理对。
+
+```js
+// GraalJS 任务或 schedule 脚本
+const receipt = (await tools.notify.send({
+  targetSessionId: "ses_目标会话ID", // 替换为真实 OpenCode session ID
+  message: "构建已完成。产物位于 /path/to/artifact。"
+})).body;
+console.log(receipt.id, receipt.subscribers);
+```
+
+`notify.subscribe()` 是无参、仅对 CLI 暴露的 SSE 命令，HTTP 为 `GET /notify/subscribe`，广播所有会话的通知：
+
+```sh
+groot-cli notify subscribe
+```
+
+- 每个 SSE `data` 是 JSON：`{kind:"ready",notification:null}`、`{kind:"heartbeat",notification:null}` 或
+  `{kind:"message",notification:{id,targetSessionId,message,createdAt}}`。
+  `ready` 表示订阅已注册；空闲时每 15 秒发心跳。
+- 每条通知广播给全部在线订阅者，接收方按 `targetSessionId` 投递到目标会话。
+  无订阅者返回 `409 notify_offline`，断线期间不缓存、不重放；所有订阅者收到相同通知 ID 和顺序。
+- 每个连接队列最多 64 条；任一队列满时，本次发送整体返回 `429 notify_busy`，不会只发给部分订阅者。
+  `message` 必须非空，UTF-8 上限为 64 KiB。
+- 返回 `{id,subscribers}` 表示已进入在线 SSE 队列，不代表目标会话存在或 OpenCode 已确认投递。
+  订阅断开释放队列，服务重启不保留通知。
+
+OpenCode 插件启动时自动建立一条全局订阅连接，无需逐会话注册，也无需维护会话列表、hooks 或 storage。
+收到通知后调用 `ctx.session.synthetic({sessionID:targetSessionId,text:message,description:preview,delivery:"steer",resume:true})`，其中 `preview` 为上述正文截断预览；
+已有的空闲会话也可直接接收。用稳定的 `msg_notify_<通知ID>` 做 inbox ID，避免插件实例交接时重复投递。
+单条通知投递失败最多尝试 3 次，之后记录错误并继续处理其他通知。
+SSE 断线自动退避重连；连接建立限时 5 秒、45 秒无事件时重连，长连接不受普通 API 的 `timeoutMs` 限制。
+插件卸载会中止流与重试；旧服务未提供订阅端点时，插件保持普通工具注册功能。
 
 ### GraalJS 定时任务与重试
 
@@ -666,33 +685,20 @@ SQL 上限为 1 MiB，超额返回 400；整次调用结果最多 10000 行、51
 和选择所需列控制结果大小。取消调用会中断原生 SQLite 查询，并等待工作线程和连接清理完成。
 数据库锁等待最多 5 秒，busy/locked 返回 503，约束冲突返回 409，普通 SQL 错误返回 400。
 
-### 本地 jobs
+### 本地 mise 任务
 
-在项目目录执行 `groot-cli jobs --job <任务>`；服务端根据隐式传入的 cwd 读取 `jobs.yaml`，`--parallel` 默认 `5`。
-`groot-cli jobs --help` 显示参数说明。
+在项目根目录执行 `mise run <任务>`。任务及依赖直接定义在 `mise.toml`，
+由 mise 在本机运行，不经过 Groot HTTP 服务。项目默认并发数为 5，可用 `mise run -j 2 <任务>` 覆盖。
 
-服务端用 Scala 读取单个 YAML 文件、解析并校验完整依赖图，
-再将目标及其传递依赖编译为 `Shell` 响应。客户端执行生成的 `/bin/sh` 脚本，使用 Linux
-常用工具 `mktemp`、`mkfifo`、`date` 和 `rm`；无需 Bun 或客户端 YAML 解析器。
-配置路径是服务端可访问的 `<cwd>/jobs.yaml`，jobs 不使用请求体。
-
-```yaml
-version: 1
-jobs:
-  - name: install
-    run: echo preparing
-  - name: test
-    needs: [install]
-    run: echo testing
-  - name: build
-    needs: [install, test]
-    run: |
-      echo building
+```sh
+mise tasks ls
+mise tasks validate
+mise run --dry-run server-deploy
+mise run server-test
 ```
 
-- 仅支持一个 `version: 1` 文件；`imports` 和 namespace 不受支持。
-- 执行目标及其传递依赖，共享依赖只执行一次；就绪任务按并发上限运行。
-- 每个 `run` 用 `/bin/sh -e -c` 执行，继承 CLI 的当前目录、环境和标准输入输出。
-- Shell 通过后台进程和 FIFO 完成通知调度；任意任务结束即可释放并发名额。
-- 保留 `[jobs] start/done/fail/skip` 日志。失败跳过所有下游任务，独立分支继续完成；整体成功退出 `0`，失败退出 `1`。
-- 重复名称、无效配置、缺失依赖和循环由服务端返回 HTTP 400，客户端不执行任何任务。
+- `depends` 声明前置任务，共享依赖只执行一次；依赖失败时下游不执行。
+- `run` 继承调用者环境，在项目根目录执行；多行脚本使用 TOML 字面量字符串保留 shell 转义。
+- `config.env` 继续由各任务的 shell 加载，保留环境变量覆盖和现有安装目标。
+- 参数放在任务名前，例如 `mise run --continue-on-error -j 2 server-test ::: pluging-deploy`。
+- 工具版本和 JDK 由 mise 管理；完整工作流程见 [mise skill](skills/mise/SKILL.md)。

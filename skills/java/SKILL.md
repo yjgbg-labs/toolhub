@@ -17,7 +17,7 @@ description: 编译、运行或排查Java与JVM项目时使用
 - 普通命令在 `--` 后直接传参；需要管道或多个命令时使用 `-- sh -c '…'`。
 - shell 字符串外层用单引号，将 `$JAVA_HOME` 留给选定 JDK 后的子进程展开。
 - JDK 管理和启动由本机 mise 完成，不依赖 Groot HTTP 服务。
-- 项目构建和部署仍遵循 `jobs` skill，通过 `groot-cli jobs --job <job>` 编排。
+- 项目构建和部署遵循 `mise` skill，通过 `mise run <task>` 编排。
 
 ## 选择版本
 

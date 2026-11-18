@@ -81,6 +81,8 @@ function objectSchema(properties: Schema, required: string[]): Schema {
 export class Catalog {
   readonly operations: Operation[] = [];
   readonly byId = new Map<string, Operation>();
+  // Streaming endpoints are available to plugin integrations, independently of model tool exposure.
+  readonly streams = new Map<string, Operation>();
   readonly groupDescriptions = new Map<string, string>();
   readonly title: string;
 
@@ -112,11 +114,14 @@ export class Catalog {
           if (!Array.isArray(clients) || clients.some(client => typeof client !== "string")) {
             throw new Error("Expected x-expose-on array of client strings");
           }
-          if (!clients.includes("codemode")) continue;
         }
+        const streaming = Object.entries(op.responses ?? {}).some(([status, response]: [string, any]) =>
+          /^2\d\d$|^2XX$/.test(status) && resolve(doc, response).content?.["text/event-stream"]);
+        const exposed = clients === undefined || clients.includes("codemode");
+        if (!exposed && !streaming) continue;
         const id = op.operationId;
         if (typeof id !== "string" || !operationPattern.test(id)) throw new Error(`Invalid or missing operationId: ${method} ${path}`);
-        if (this.byId.has(id)) throw new Error(`Duplicate operationId: ${id}`);
+        if (this.byId.has(id) || this.streams.has(id)) throw new Error(`Duplicate operationId: ${id}`);
         const parameters = new Map<string, Parameter>();
         for (const declarations of [item.parameters ?? [], op.parameters ?? []]) {
           const local = new Set<string>();
@@ -200,8 +205,11 @@ export class Catalog {
             body: responseBodies.length ? { anyOf: responseBodies } : {},
           }, ["status", "headers", "body"])),
         };
-        this.operations.push(operation);
-        this.byId.set(id, operation);
+        if (streaming) this.streams.set(id, operation);
+        if (exposed) {
+          this.operations.push(operation);
+          this.byId.set(id, operation);
+        }
       }
     }
     this.operations.sort((a, b) => a.id.localeCompare(b.id));

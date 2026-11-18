@@ -88,8 +88,8 @@ WIDGET_BASE_URL=http://100.64.0.3:18080
 在项目根目录执行：
 
 ```sh
-groot-cli jobs --job server-deploy
-groot-cli jobs --job widget-deploy
+mise run server-deploy
+mise run widget-deploy
 ```
 
 源码归档按 SHA-256 定址上传至 Mac 的 `~/Library/Caches/groot-widget/<hash>/`，校验后在 Mac 编译和 ad-hoc 签名。
@@ -117,8 +117,8 @@ Windows 需要已登录的桌面会话、可用的 `shell.execute` 命令及 `wi
 Windows 必须能直接访问 `WIDGET_BASE_URL`；使用 `100.64.0.3` 时应接入同一 Tailscale/Headscale 网络。
 
 ```sh
-groot-cli jobs --job widget-windows-test
-groot-cli jobs --job widget-windows-deploy
+mise run widget-windows-test
+mise run widget-windows-deploy
 ```
 
 任务将源码按 SHA-256 上传到 `%LOCALAPPDATA%\GrootWidget\build\<hash>`，在 Windows 测试和构建，校验并回传

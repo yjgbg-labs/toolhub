@@ -1,6 +1,6 @@
 # Kubernetes 交付
 
-本文是 `jobs` skill 的按需参考，只在项目涉及 Kubernetes 时读取。任务编排和交付方式以 [SKILL.md](./SKILL.md) 为准，制品分发按项目实际需要配置。
+本文是 `mise` skill 的按需参考，只在项目涉及 Kubernetes 时读取。任务编排和交付方式以 [SKILL.md](./SKILL.md) 为准，制品分发按项目实际需要配置。
 
 ## 命令
 
@@ -14,7 +14,7 @@ groot k8s sync ./k8s --project <id> [options]
 - `diff`：执行 server-side `kubectl diff`，并列出 inventory 中将删除的旧资源。
 - `sync`：server-side apply 当前资源，安全删除旧资源，再更新 inventory。
 
-项目正常部署必须通过 `jobs.yaml` 调用这些命令，不直接执行 `kubectl apply`。`kubectl diff` 返回 `1` 表示存在差异，不是错误；大于 `1` 才是执行失败。
+项目正常部署必须通过 `mise.toml` 的任务调用项目实际使用的资源跟踪工具，不直接执行 `kubectl apply`。使用下列 Groot Kubernetes 约定前先确认目标环境提供 `groot k8s`；已有 kapp 项目沿用其 render/diff/deploy 入口。`kubectl diff` 返回 `1` 表示存在差异，不是错误；大于 `1` 才是执行失败。
 
 ## 选项
 

@@ -5,8 +5,8 @@ import { join } from "node:path";
 const directory = await mkdtemp("/tmp/opencode/server-deploy-");
 afterAll(() => rm(directory, { recursive: true, force: true }));
 const root = new URL("../../", import.meta.url).pathname;
-const jobs = Bun.YAML.parse(await Bun.file(join(root, "jobs.yaml")).text()) as { jobs: { name: string; run: string }[] };
-const run = jobs.jobs.find(job => job.name === "server-deploy")!.run;
+const config = Bun.TOML.parse(await Bun.file(join(root, "mise.toml")).text()) as { tasks: Record<string, { run: string }> };
+const run = config.tasks["server-deploy"]!.run;
 
 async function fixture(name: string) {
   const home = join(directory, name);
