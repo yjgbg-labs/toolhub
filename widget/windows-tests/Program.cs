@@ -98,6 +98,35 @@ try
 }
 finally { if (Directory.Exists(positionRoot)) Directory.Delete(positionRoot, true); }
 
+using (var renderer = new DirectWriteRenderer())
+{
+    var renderSettings = new WidgetSettings(440, true, 1, 15, 40);
+    var flagItems = new[]
+    {
+        new WidgetItem("mihomo-auto-node", "R6S-AUTO", "🇯🇵 日本 03", "green", 32, "2026-11-22T00:00:00Z"),
+        new WidgetItem("lamps", "STATUS", null, "red", 40, "2026-11-22T00:00:00Z")
+    };
+    var pixels = renderer.RenderToBytes(440, 88, 96, flagItems, renderSettings, scrollOffset: 0, connected: true, acrylic: false);
+    int flagRedPixels = 0, flagWhitePixels = 0, greenTextPixels = 0;
+    // Inspect only the first row (y = 4..44) where "R6S-AUTO" -> "🇯🇵 日本 03" (green) is rendered.
+    for (var y = 4; y < 44; y++)
+    {
+        for (var x = 200; x < 440; x++)
+        {
+            var offset = (y * 440 + x) * 4;
+            byte b = pixels[offset], g = pixels[offset + 1], r = pixels[offset + 2];
+            if (r > 150 && g < 90 && b < 100) flagRedPixels++;
+            if (r > 200 && g > 200 && b > 200) flagWhitePixels++;
+            if (g > 140 && g > r + 40) greenTextPixels++;
+        }
+    }
+    Check(flagRedPixels >= 8 && flagWhitePixels >= 16, $"flag emoji renders color Japanese flag pixels (red={flagRedPixels}, white={flagWhitePixels})");
+    Check(greenTextPixels >= 20, $"value text renders green CJK/ASCII pixels (green={greenTextPixels})");
+
+    var acrylicPixels = renderer.RenderToBytes(660, 132, 144, flagItems, renderSettings, scrollOffset: 0, connected: false, acrylic: true);
+    Check(acrylicPixels[3] == 102, $"acrylic background preserves tint alpha=102 (actual={acrylicPixels[3]})");
+}
+
 Console.WriteLine($"{passed} checks passed");
 
 sealed class Handler : HttpMessageHandler
