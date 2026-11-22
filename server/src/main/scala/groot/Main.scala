@@ -12,7 +12,7 @@ import groot.widget.{WidgetRoutes, WidgetService}
 import groot.state.{StateRoutes, StateService}
 import groot.chrome.{ChromeRoutes, ChromeService}
 import groot.wine.{WineRoutes, WineService}
-import groot.notify.{NotifyRoutes, NotifyService}
+import groot.notify.{NotifyRoutes, NotifyService, NotifyTriggerManager}
 import groot.mihomo.{MihomoRoutes, MihomoService}
 import scala.concurrent.duration.*
 
@@ -29,8 +29,9 @@ object Main extends IOApp.Simple:
     wine <- WineService.resource()
     notify <- NotifyService.resource()
     graaljs <- GraalManager.resource(commands = commands.get)
+    notifyTriggers <- NotifyTriggerManager.resource(notify, graaljs, startLoop = false)
     scheduler <- Scheduler.resource(graaljs, startLoop = false)
-  yield (scheduler, sqlite, http, widget, state, shell, mihomo, chrome, wine, notify, graaljs, commands)).use { (scheduler, sqlite, http, widget, state, shell, mihomo, chrome, wine, notify, graaljs, commands) =>
+  yield (scheduler, sqlite, http, widget, state, shell, mihomo, chrome, wine, notify, notifyTriggers, graaljs, commands)).use { (scheduler, sqlite, http, widget, state, shell, mihomo, chrome, wine, notify, notifyTriggers, graaljs, commands) =>
     val app = httpApp {
       server {
         host("0.0.0.0")
@@ -64,10 +65,11 @@ object Main extends IOApp.Simple:
       StateRoutes.register(state)
       ChromeRoutes.register(chrome)
       WineRoutes.register(wine)
-      NotifyRoutes.register(notify)
+      NotifyRoutes.register(notify, Some(notifyTriggers))
       command[PlainText]("health") {
         handle { IO.pure(PlainText("ok")) }
       }
     }
-    commands.complete(GraalCommandSdk(app)) *> scheduler.loop.background.use(_ => app.serve)
+    commands.complete(GraalCommandSdk(app)) *>
+      scheduler.loop.background.use(_ => notifyTriggers.loop.background.use(_ => app.serve))
   }

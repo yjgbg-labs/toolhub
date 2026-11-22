@@ -202,13 +202,15 @@ class AgySuite extends munit.FunSuite:
       scala.util.Try(java.nio.file.Files.deleteIfExists(tmpDir))
   }
 
-  test("Executor wraps script with ctx and return capture, strips graaljs trailer, and truncates long output") {
+  test("Executor passes sessionId/cwd on /graaljs/submit, captures return value, and strips graaljs trailer") {
     var submittedBody = ""
+    var submittedQuery = Vector.empty[(String, String)]
     val mockTransport = new HttpTransport:
       def send(request: HttpRequest, onEvent: String => Unit): HttpResponse =
         request.path match
-          case "/graaljs/start" =>
+          case "/graaljs/submit" =>
             submittedBody = request.body.getOrElse("")
+            submittedQuery = request.query
             HttpResponse(200, Vector("Content-Type" -> "application/json"), """{"id":"gjs_test1","state":"running"}""")
           case "/graaljs/logsFollow" =>
             onEvent("hello from script")
@@ -222,9 +224,11 @@ class AgySuite extends munit.FunSuite:
             fail(s"Unexpected path: $other")
 
     val executor = new Executor(mockTransport)
-    val result = executor.run("return 42;", timeout = Some("15s"), context = Some(Catalog.parse("""{"conversationId":"c-1"}""")))
-    assert(submittedBody.contains("""const ctx = Object.freeze({"conversationId":"c-1"});"""), submittedBody)
+    val result = executor.run("return 42;", timeout = Some("15s"), context = Some(Catalog.parse("""{"conversationId":"c-1","cwd":"/work"}""")))
+    assert(!submittedBody.contains("const ctx"), submittedBody)
     assert(submittedBody.contains("return 42;"), submittedBody)
+    assertEquals(submittedQuery.toMap.get("sessionId"), Some("c-1"))
+    assertEquals(submittedQuery.toMap.get("cwd"), Some("/work"))
     assertEquals(result.state, "succeeded")
     assertEquals(result.output, "hello from script")
     assert(!result.isError)
@@ -235,7 +239,7 @@ class AgySuite extends munit.FunSuite:
       def send(request: HttpRequest, onEvent: String => Unit): HttpResponse =
         request.path match
           case "/openapi.json" => HttpResponse(200, Vector("Content-Type" -> "application/json"), sampleOpenApi)
-          case "/graaljs/start" => HttpResponse(200, Vector("Content-Type" -> "application/json"), """{"id":"gjs_mcp1","state":"running"}""")
+          case "/graaljs/submit" => HttpResponse(200, Vector("Content-Type" -> "application/json"), """{"id":"gjs_mcp1","state":"running"}""")
           case "/graaljs/logsFollow" =>
             onEvent("42")
             onEvent("[graaljs] state=succeeded cpu=1.0ms elapsed=2.0ms")
@@ -264,4 +268,22 @@ class AgySuite extends munit.FunSuite:
     val execResp = server.handleToolCall(Json.fromInt(4), Catalog.parse("""{"name":"execute","arguments":{"code":"return 42;"}}"""))
     val execText = execResp.hcursor.downField("result").downField("content").downN(0).get[String]("text").toOption.get
     assertEquals(execText, "42")
+  }
+
+  test("NotifyBridge forwards UUID sessions and ignores OpenCode ses_ sessions") {
+    var delivered = Vector.empty[(String, String)]
+    val noopTransport = new HttpTransport:
+      def send(request: HttpRequest, onEvent: String => Unit): HttpResponse =
+        HttpResponse(200, Vector.empty, "")
+
+    val bridge = new NotifyBridge(
+      transport = noopTransport,
+      deliverFn = (id, msg) => { delivered :+= (id -> msg); Right(()) },
+      sleepFn = _ => ()
+    )
+    bridge.handleEvent("""{"kind":"ready"}""")
+    bridge.handleEvent("""{"kind":"heartbeat"}""")
+    bridge.handleEvent("""{"kind":"message","notification":{"id":"1","targetSessionId":"ses_opencode_1","message":"ignore me","createdAt":"2026-11-22T00:00:00Z"}}""")
+    bridge.handleEvent("""{"kind":"message","notification":{"id":"2","targetSessionId":"0508816e-1fae-4311-93cc-9f49f8eb4dde","message":"wake up!","createdAt":"2026-11-22T00:00:00Z"}}""")
+    assertEquals(delivered, Vector("0508816e-1fae-4311-93cc-9f49f8eb4dde" -> "wake up!"))
   }

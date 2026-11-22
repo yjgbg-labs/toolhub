@@ -36,7 +36,7 @@ class GraalManagerSuite extends CatsEffectSuite:
   private def stub(cleanup: IO[Unit] = IO.unit): IO[StubRunner] = Ref.of[IO, Vector[Invocation]](Vector.empty).map(new StubRunner(_, cleanup))
   private val source = "  const message = '中文🙂';\nconsole.log(message, \"quoted\");\n"
   private def submit(manager: GraalManager, timeout: String = "30s") =
-    manager.start(Source.newBuilder("js", source, "test.js").buildLiteral(), "10s", timeout)
+    manager.submit(Source.newBuilder("js", source, "test.js").buildLiteral(), "10s", timeout)
   private def append(path: Path, text: String): IO[Unit] = IO.blocking { Files.writeString(path, text, StandardOpenOption.APPEND); () }
 
   test("completion waiters are independent and observe terminal state only after context cleanup and log persistence") {
@@ -247,7 +247,7 @@ class GraalManagerSuite extends CatsEffectSuite:
             Request[IO](uri = Uri.unsafeFromString(path).withQueryParams(query.toMap))
           val input = Seq("cpu" -> "1s", "timeout" -> "10s")
           def start(query: Seq[(String, String)] = input, code: String = source) =
-            request("/graaljs/start", query*).withMethod(Method.POST).withEntity(code)
+            request("/graaljs/submit", query*).withMethod(Method.POST).withEntity(code)
           for
             created <- app.httpApp(start())
             json <- created.as[Json]
@@ -262,7 +262,7 @@ class GraalManagerSuite extends CatsEffectSuite:
             _ = assertEquals(missingTimeout.status, Status.BadRequest)
             badCpu <- app.httpApp(start(input.filterNot(_._1 == "cpu") :+ ("cpu" -> "0s")))
             _ = assertEquals(badCpu.status, Status.BadRequest)
-            missingBody <- app.httpApp(request("/graaljs/start", input*).withMethod(Method.POST))
+            missingBody <- app.httpApp(request("/graaljs/submit", input*).withMethod(Method.POST))
             _ = assertEquals(missingBody.status, Status.BadRequest)
             _ <- List("", " \n\t").traverse_ { code =>
               app.httpApp(start(code = code)).map(response => assertEquals(response.status, Status.BadRequest))
@@ -290,10 +290,10 @@ class GraalManagerSuite extends CatsEffectSuite:
             openapi <- app.httpApp(request("/openapi.json")).flatMap(_.as[Json])
           yield
             assertEquals(openapi.hcursor.downField("paths").focus.get.asObject.get.size, 7)
-            val operation = openapi.hcursor.downField("paths").downField("/graaljs/start").downField("post")
+            val operation = openapi.hcursor.downField("paths").downField("/graaljs/submit").downField("post")
             assertEquals(operation.downField("requestBody").get[Boolean]("required"), Right(true))
             assertEquals(operation.downField("requestBody").downField("content").downField("text/plain").downField("schema").get[String]("type"), Right("string"))
-            assertEquals(operation.get[List[Json]]("parameters").toOption.get.map(_.hcursor.get[String]("name").toOption.get), List("cpu", "timeout"))
+            assertEquals(operation.get[List[Json]]("parameters").toOption.get.map(_.hcursor.get[String]("name").toOption.get), List("cpu", "timeout", "sessionId", "cwd"))
         }
       yield ()
     }
