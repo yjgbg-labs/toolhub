@@ -58,7 +58,7 @@ test("normalization collisions fail rather than silently overriding a tool", () 
 });
 
 test("sessionId and cwd parameters are hidden from tool schema and implicitly supplied from ToolContext", async () => {
-  const received: { session: string | null; body: unknown } = { session: null, body: null };
+  const received: { session: string | null; cwd: string | null; body: unknown } = { session: null, cwd: null, body: null };
   const srv = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -66,6 +66,7 @@ test("sessionId and cwd parameters are hidden from tool schema and implicitly su
       const u = new URL(req.url);
       if (u.pathname === "/notify/at") {
         received.session = u.searchParams.get("sessionId");
+        received.cwd = u.searchParams.get("cwd");
         received.body = await req.json();
         return Response.json({ ok: true });
       }
@@ -103,6 +104,7 @@ test("sessionId and cwd parameters are hidden from tool schema and implicitly su
     expect(notifyAt.input).not.toHaveProperty("properties.body");
     await notifyAt.execute({ at: "+5m", message: "ping" }, { sessionID: "ses_auto_42" } as unknown as ToolContext);
     expect(received.session).toBe("ses_auto_42");
+    expect(received.cwd).toBe(process.cwd());
     expect(received.body).toEqual({ at: "+5m", message: "ping" });
   } finally {
     srv.stop(true);

@@ -9,7 +9,7 @@ function effectiveInput(operation: Operation): { schema: Schema; hasImplicit: bo
     return { schema: operation.inputSchema, hasImplicit: false, unwrappedBody: false, needsCwd: false };
   }
   const explicitParams = operation.parameters.filter(p => !implicitNames.has(p.name));
-  const needsCwd = operation.parameters.some(p => p.name === "cwd" && p.required);
+  const needsCwd = operation.parameters.some(p => p.name === "cwd");
   const defs = operation.inputSchema.$defs ? { $defs: operation.inputSchema.$defs } : {};
   if (operation.body && explicitParams.length === 0) {
     const bodyProp = operation.inputSchema.properties?.body ?? operation.body.schema;
