@@ -13,6 +13,7 @@ import groot.state.{StateRoutes, StateService}
 import groot.chrome.{ChromeRoutes, ChromeService}
 import groot.wine.{WineRoutes, WineService}
 import groot.notify.{NotifyRoutes, NotifyService}
+import groot.mihomo.{MihomoRoutes, MihomoService}
 import scala.concurrent.duration.*
 
 object Main extends IOApp.Simple:
@@ -23,12 +24,13 @@ object Main extends IOApp.Simple:
     widget <- WidgetService.resource()
     state <- StateService.resource()
     shell <- ShellService.resource()
+    mihomo <- MihomoService.resource(shell)
     chrome <- ChromeService.resource()
     wine <- WineService.resource()
     notify <- NotifyService.resource()
     graaljs <- GraalManager.resource(commands = commands.get)
     scheduler <- Scheduler.resource(graaljs, startLoop = false)
-  yield (scheduler, sqlite, http, widget, state, shell, chrome, wine, notify, graaljs, commands)).use { (scheduler, sqlite, http, widget, state, shell, chrome, wine, notify, graaljs, commands) =>
+  yield (scheduler, sqlite, http, widget, state, shell, mihomo, chrome, wine, notify, graaljs, commands)).use { (scheduler, sqlite, http, widget, state, shell, mihomo, chrome, wine, notify, graaljs, commands) =>
     val app = httpApp {
       server {
         host("0.0.0.0")
@@ -57,6 +59,7 @@ object Main extends IOApp.Simple:
       HttpRoutes.register(http)
       FsRoutes.register(new FsService)
       ShellRoutes.register(shell)
+      MihomoRoutes.register(mihomo)
       WidgetRoutes.register(widget)
       StateRoutes.register(state)
       ChromeRoutes.register(chrome)
