@@ -9,47 +9,24 @@ description: 查看或切换mihomo代理节点、测延迟、查活动连接时�
 
 ## 核心约定
 
-- 统一使用 `groot_codemode` 的 `tools.mihomo.proxy.*` 或命令行 `groot-cli mihomo proxy`，不要手工拼 `curl` 或在脚本中硬编码 `secret`。
-- 控制端地址与认证凭据由 Groot 服务端自动从路由器 `/etc/mihomo/config.yaml` 解析并缓存，不要让用户提供。
-- 只有 `Selector` 类型的代理组支持手动切换（`use`）；`URLTest` / `Fallback` / `LoadBalance` 组由 mihomo 自动选路，手动切换会返回 409。
-- 节点名包含 emoji 和空格（如 `🇺🇸 美国 09 家宽`），传参时必须原样保留，禁止截断或改写。
-- 永久修改代理组、分流规则或订阅走 `mihomo` skill；管理静态 `hosts:` 解析走 `dns` skill。
+- 统一通过 Groot 服务端的 `mihomo.proxy` 命名空间操作，调用前先按需检索最新签名，不要自行请求路由器控制端口，也不要在脚本中保存认证凭据。
+- 控制端地址与认证信息由服务端自动从 `/etc/mihomo/config.yaml` 解析并缓存，认证失效时自动刷新，无需向用户索取。
+- 仅 `Selector` 类型的代理组允许手动切换节点；对 `URLTest`、`Fallback`、`LoadBalance` 组执行切换会返回 `409`。
+- 节点名称常包含国旗 emoji、空格与特殊竖线，传参时必须与候选列表逐字一致，不得截断或改写。
+- 运行时切换重启或重载配置后可能随策略变化；永久修改代理组、过滤正则、分流规则或订阅请转用 `mihomo` skill，静态域名映射请转用 `dns` skill。
 
-## Code Mode 调用（推荐）
+## 关键参数与默认值
 
-```js
-// 1. 列出所有代理组摘要（名称、类型、当前节点、节点数）
-const groups = (await tools.mihomo.proxy.groups()).body;
+- **延迟探测分组选择**：
+  - `group`（单个组名）：探测该组内全部候选节点（组内超时节点返回 `delayMs: null` 与错误原因，并按延迟升序排列）。
+  - `groups`（组名列表）：并发探测指定多个组各自当前选中的 `now` 节点；省略 `group` 与 `groups` 时并发探测全部代理组的当前节点。
+  - `group` 与 `groups` 互斥，同时传入返回 `400`。
+- **探测目标 `url`**：默认 `http://www.gstatic.com/generate_204`，须为合法的 `http://` 或 `https://` 绝对地址。
+- **单次探测超时 `timeoutMs`**：默认 `5000`（毫秒），有效范围 `100`–`60000`。
+- **活动连接查询**：默认按连接累计上下行总流量降序排列；`limit` 默认 `50`、有效范围 `1`–`500`；可选 `host`（匹配域名、嗅探域名或目标 IP）与 `rule`（匹配规则名及附加参数）均为大小写不敏感子串过滤。
 
-// 2. 查看指定组内的候选节点及最近延迟
-const detail = (await tools.mihomo.proxy.nodes({group: "SELECT"})).body;
+## 操作流程与异常处理
 
-// 3. 切换 Selector 组到指定候选节点（即时生效，不改 config.yaml）
-const switched = (await tools.mihomo.proxy.use({group: "SELECT", node: "🇭🇰 香港 01"})).body;
-
-// 4. 并发测速：传 groups 测指定组当前节点，不传测全部组当前节点，传 group 测单组内全部节点
-const pairDelay = (await tools.mihomo.proxy.delay({groups: ["AUTO", "AI"]})).body;
-const groupDelay = (await tools.mihomo.proxy.delay({group: "HK", timeoutMs: 5000})).body;
-
-// 5. 查看活动连接（按总流量降序，支持按 host / rule 子串过滤与 limit 截断）
-const conns = (await tools.mihomo.proxy.connections({host: "google", limit: 30})).body;
-```
-
-## CLI 常用命令
-
-```bash
-groot-cli mihomo proxy groups
-groot-cli mihomo proxy nodes --group SELECT
-groot-cli mihomo proxy use --group SELECT --node "🇭🇰 香港 01"
-groot-cli mihomo proxy delay
-groot-cli mihomo proxy delay --groups AUTO --groups AI
-groot-cli mihomo proxy delay --group HK
-groot-cli mihomo proxy connections --limit 50
-```
-
-## 工作流与注意事项
-
-- **切换节点**：先查 `groups` 确认目标组为 `Selector`，再查 `nodes` 核对候选节点全名，最后调用 `use` 切换。`use` 仅修改运行时状态，若需永久调整默认策略请用 `mihomo` skill 修改配置。
-- **排查慢速**：调用 `delay({group: "<组名>"})` 对比组内各节点延迟，超时节点会返回 `delayMs: null` 与 `error` 原因，不会中断整批测速。
-- `delay` 默认探测 `http://www.gstatic.com/generate_204`、超时 `5000` 毫秒，可通过 `url` 与 `timeoutMs` 调整。
-- 若返回控制端不可达错误，先用 `tools.mihomo.status()` 检查 `mihomo.service` 是否处于运行状态。
+- **切换节点**：先查询代理组列表确认目标组类型为 `Selector`，再查询该组候选节点核对完整名称，最后提交切换。
+- **排查慢速或断流**：先按目标组探测全部候选节点延迟对比可用性，结合活动连接过滤定位具体域名所命中的规则与链路。
+- 若报控制端不可达或超时（`502`/`504`），先切换至 `mihomo` skill 检查服务状态与日志。

@@ -9,66 +9,31 @@ description: 查看、启停、重启、校验、热重载或回滚路由器上�
 
 ## 核心约定
 
-- 统一使用 `groot_codemode` 的 `tools.mihomo.*` 或命令行 `groot-cli mihomo`，不要直接调用本机 mihomo 或裸跑 SSH 覆盖配置。
-- 服务固定绑定已注册的 `r6s` Shell 环境，默认配置为 `/etc/mihomo/config.yaml`（目录 `/etc/mihomo`）。
-- 修改前先读取状态、日志或配置；修改后再次验证。
-- 不在回复中泄露密码、订阅 URL、token、secret、uuid 或私钥。
-- 简单静态 DNS `hosts:` 条目管理使用 `dns` skill（`tools.mihomo.dns.*`）。
-- 代理组查询、节点切换、延迟测试、查看活动连接使用 `proxy` skill（`tools.mihomo.proxy.*`）。
+- 统一通过 Groot 服务端的 `mihomo` 与 `mihomo.config` 命名空间操作，调用前先按需检索最新签名，不要直接操作本机进程或裸跑远端命令覆盖文件。
+- 固定绑定 `r6s` 环境，远端配置目录为 `/etc/mihomo`，正式配置文件为 `/etc/mihomo/config.yaml`，服务单元为 `mihomo.service`。
+- 修改前先读取当前运行状态、日志或配置；修改完成后再次验证状态与日志。
+- 回复中严禁泄露密码、订阅地址、token、secret、uuid 或私钥。
+- 顶层 `hosts:` 下的简单静态域名解析归属 `dns` skill；代理组查看、切换、测延迟与活动连接查询归属 `proxy` skill。
 
-## Code Mode 调用（推荐）
+## 关键参数与限制
 
-调用前可先用 `search({namespace: "mihomo"})` 确认最新签名：
+- **日志行数 `lines`**：默认 `100`，有效范围 `1`–`5000`。实时日志流仅面向终端场景，只在用户明确要求持续追踪日志时使用。
+- **配置正文大小**：须为非空 UTF-8 文本且不含 NUL 字节，上限 `60 KiB`（超限返回 `413`）。
+- **历史备份保留数**：每次变更生成 `.bak.<UTC时间戳>` 备份，自动保留最近 `20` 份。
 
-```js
-// 状态与日志
-const status = (await tools.mihomo.status()).body;
-const logs = (await tools.mihomo.logs({lines: 100})).body;
+## 配置变更与回滚机制
 
-// 服务启停
-await tools.mihomo.start();
-await tools.mihomo.stop();
-await tools.mihomo.restart();
+写入配置在服务端互斥锁保护下执行：
 
-// 配置读取、预校验、热重载写入与回滚
-const yaml = (await tools.mihomo.config.read()).body;
-const check = (await tools.mihomo.config.validate(nextYaml)).body;
-const writeRes = (await tools.mihomo.config.write(nextYaml)).body;
-const rollbackRes = (await tools.mihomo.config.rollback()).body;
-```
+1. 与线上现有内容逐字节一致时直接跳过写盘与重载（`changed` 为 `false`）。
+2. 先在远端临时目录执行校验；语法或规则错误返回 `400`，线上配置保持原样。
+3. 校验通过后备份原文件并原子替换正式配置。
+4. 若服务当前处于 `active` 且 `external-controller` 地址未变，通过热重载接口即时生效（`reloaded` 为 `true`）；若服务未运行或控制端监听地址变更，则自动启动或重启服务（`restarted` 为 `true`）。
 
-## CLI 常用命令
+回滚操作会选取最新一份备份，校验通过后覆盖正式配置并按相同规则热重载或重启；无可用备份时返回 `404`。仅在用户明确要求，或确认刚提交的配置引发故障时执行回滚。
 
-```bash
-groot-cli mihomo --help
-groot-cli mihomo status
-groot-cli mihomo logs --lines 100
-groot-cli mihomo logsFollow --lines 100
-groot-cli mihomo config read
-groot-cli mihomo config validate --body @./config.yaml
-groot-cli mihomo config write --body @./config.yaml
-groot-cli mihomo config rollback
-groot-cli mihomo start
-groot-cli mihomo stop
-groot-cli mihomo restart
-```
+## 排障与风险提示
 
-`logsFollow` 为仅 CLI 暴露的 SSE 实时流，持续输出日志直到断开，只在用户明确要求实时追踪日志时使用。
-
-## 配置写入与回滚机制
-
-`mihomo.config.write` 在服务端互斥锁保护下自动完成以下流程：
-
-1. 对比远端现有内容，无变化时直接返回 `{changed: false}`，不写盘也不重载。
-2. 上传至远端临时文件并执行 `mihomo -t -d /etc/mihomo` 校验；校验失败返回 400，原配置保持不变。
-3. 备份原配置为 `/etc/mihomo/config.yaml.bak.<UTC时间戳>`（自动保留最近 20 份），原子替换正式配置。
-4. 若 `mihomo.service` 正在运行且控制端地址未变，调用 Mihomo REST `PUT /configs?force=true` 热重载；否则通过 `systemctl start/restart` 生效。
-
-`mihomo.config.rollback` 会恢复最新一份 `.bak.*` 备份，经 `mihomo -t` 校验通过后热重载或重启服务。只有用户明确要求，或刚写入的配置确认异常时才执行。
-
-## 排障顺序与注意事项
-
-1. 调用 `tools.mihomo.status()` 查看 `activeState`、`mainPid` 与 `version`。
-2. 调用 `tools.mihomo.logs({lines: 100})` 检查近期报错。
-3. 必要时调用 `tools.mihomo.config.read()` 检查配置，向用户展示时必须对敏感字段打码。
-4. `stop`、`restart`、`config.write` 和 `config.rollback` 会影响路由器代理流量，执行前说明影响；命令失败先报告原始错误要点。
+1. 先查服务状态（关注 `activeState`、`subState`、`mainPid`、`version`）。
+2. 再查近期日志定位报错上下文，必要时读取配置核对规则或代理组（展示时脱敏）。
+3. 停止、重启、写入配置和回滚都会影响路由器代理流量，执行前须向用户说明影响；调用失败时先报告原始错误核心信息，再决定后续动作。

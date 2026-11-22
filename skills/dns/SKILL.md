@@ -9,36 +9,20 @@ description: 查看、添加、修改或删除mihomo静态DNS hosts解析时使�
 
 ## 核心原则
 
-- 统一使用 `groot_codemode` 的 `tools.mihomo.dns.*` 或命令行 `groot-cli mihomo dns`。
-- 仅操作 `/etc/mihomo/config.yaml` 顶层 `hosts:` 下的静态映射，保留原有注释与排版，不要为此整文件重写配置。
-- `# external-dns-mihomo:start` 至 `# external-dns-mihomo:end` 之间的条目由 `external-dns-mihomo` 自动托管（`managed: true`）；默认禁止覆盖或删除托管条目（返回 409），除非用户明确确认传 `force: true`。
-- 修改完整的 `dns:` 策略、nameserver、fake-ip 或分流规则不属于本 skill，应使用 `mihomo` skill。
+- 统一通过 Groot 服务端的 `mihomo.dns` 命名空间操作，调用前先按需检索最新签名。
+- 仅管理 `/etc/mihomo/config.yaml` 顶层 `hosts:` 块下的静态映射，保持原文件注释与其余段落不变，不要为增删单条解析去整文件改写配置。
+- 位于 `# external-dns-mihomo:start` 与 `# external-dns-mihomo:end` 之间的条目由外部控制器自动同步（返回结果中 `managed` 为 `true`）。
+- 修改 `dns:` 策略、上游 nameserver、fake-ip 过滤或分流规则不属于本 skill，应转用 `mihomo` skill。
 
-## Code Mode 调用（推荐）
+## 关键参数与约束
 
-```js
-// 列出全部静态 hosts 条目（含 managed 标记）
-const hosts = (await tools.mihomo.dns.list()).body;
-
-// 新增或更新静态解析（写在托管块之外，经 mihomo -t 校验后自动 PUT /configs?force=true 热重载）
-const writeRes = (await tools.mihomo.dns.set({host: "nas.yjgbg.lab", value: "10.0.0.50"})).body;
-
-// 删除静态解析
-const delRes = (await tools.mihomo.dns.delete({host: "nas.yjgbg.lab"})).body;
-```
-
-## CLI 常用命令
-
-```bash
-groot-cli mihomo dns --help
-groot-cli mihomo dns list
-groot-cli mihomo dns set --host nas.yjgbg.lab --value 10.0.0.50
-groot-cli mihomo dns delete --host nas.yjgbg.lab
-```
+- **`host`（域名）**：非空白单行字符串，不含空白或控制字符，最长 `253` 字符。
+- **`value`（解析目标）**：支持 IPv4/IPv6 地址、目标别名域名或单行列表形式，非空白单行字符串，最长 `512` 字符。
+- **`force`（强制修改托管项）**：布尔值，默认 `false`。当目标 `host` 处于外部自动托管块内且 `force` 为 `false` 时，新增覆盖或删除均返回 `409` 拒绝执行；手动新增的条目始终插入在托管块之外。
 
 ## 工作流与注意事项
 
-1. 修改或删除前先调用 `tools.mihomo.dns.list()` 查看现有条目及 `managed` 状态。
-2. `set` 为幂等添加或替换：目标值未变化时返回 `{changed: false}`，不会触发备份或热重载。
-3. `set` 和 `delete` 在变更时会先执行远端 `mihomo -t` 校验并创建备份，校验通过后通过 `PUT /configs?force=true` 热重载配置。
-4. 若遇到 `409 mihomo_conflict`，说明目标域名由 `external-dns-mihomo` 托管，应提示用户通过对应的 Kubernetes Ingress/Service 注解修改，不要盲目加 `force: true`（否则下次同步仍会被覆盖）。
+1. 变更前先查询现有列表，确认目标域名是否存在及其 `managed` 标记。
+2. 设置操作具有幂等性：目标值未变化时直接返回 `changed: false`，不产生新备份、不触发重载。
+3. 实际发生新增、修改或删除时，服务端会自动完成配置语法预校验、创建 `.bak.*` 备份（保留最近 `20` 份）并热重载配置；执行写操作前向用户说明将触发配置热重载。
+4. 遇到 `409` 托管冲突时，提示用户通过对应的集群 Ingress/Service 资源调整，除非用户明确知晓后续同步覆盖风险仍要求强制修改，否则不要开启 `force=true`。
