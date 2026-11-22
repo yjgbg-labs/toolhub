@@ -5,7 +5,7 @@ import framework.Client
 import io.circe.Json
 import scala.concurrent.duration.FiniteDuration
 
-final case class ServerSettings(host: String, port: Int, maxBodyBytes: Long, cors: Option[CorsSettings] = None)
+final case class ServerSettings(host: String, port: Int, maxBodyBytes: Long, cors: Option[CorsSettings] = None, accessLog: Boolean = false)
 final case class CorsSettings(
     allowedOrigins: Set[String],
     allowedMethods: Set[String],
@@ -21,14 +21,15 @@ private[framework] final case class ScopeDecl(
     responses: Vector[ResponseSpec],
     middleware: Vector[Handler => Handler],
     tags: Vector[String],
-    exposedOn: Set[Client] = Client.all
+    exposedOn: Set[Client] = Client.all,
+    logSkip: Boolean = false
 )
 
 private[framework] object ScopeDecl:
   def combine(scopes: Vector[ScopeDecl]): ScopeDecl =
     ScopeDecl(scopes.flatMap(_.inputs), scopes.flatMap(_.responses),
       scopes.flatMap(_.middleware), scopes.flatMap(_.tags).distinct,
-      scopes.foldLeft(Client.all)((clients, scope) => clients.intersect(scope.exposedOn)))
+      scopes.foldLeft(Client.all)((clients, scope) => clients.intersect(scope.exposedOn)), scopes.exists(_.logSkip))
 
 private[framework] final case class EndpointDecl(
     method: String,

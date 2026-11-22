@@ -23,7 +23,7 @@ private[framework] object Compiler:
       require(id.nonEmpty, s"Empty operationId: $identity")
       require(scope.exposedOn.nonEmpty, s"No common exposed client: $id")
       val spec = EndpointSpec(endpoint.method, route, id, endpoint.summary, endpoint.description,
-        scope.tags, scope.inputs, scope.responses, responses(endpoint.method, scope), scope.exposedOn)
+        scope.tags, scope.inputs, scope.responses, responses(endpoint.method, scope), scope.exposedOn, scope.logSkip)
       ResolvedEndpoint(spec, endpoint.handler.get, scope.middleware)
     }
     val identities = resolved.map(e => e.spec.method -> e.spec.path.value)

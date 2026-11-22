@@ -38,6 +38,7 @@ object Main extends IOApp.Simple:
       server {
         host("0.0.0.0")
         port(18080)
+        accessLog()
         cors {
           allowOrigins("*")
           allowMethods("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")

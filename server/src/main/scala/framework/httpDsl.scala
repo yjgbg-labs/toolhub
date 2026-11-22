@@ -38,6 +38,14 @@ object httpDsl:
     scope.gate.check()
     scope.maxBodyBytesValue = value
 
+  def accessLog()(using scope: ServerScope): Unit =
+    scope.gate.check()
+    scope.accessLogValue = true
+
+  def logSkip()(using scope: LogScope): Unit =
+    scope.gate.check()
+    scope.logSkipValue = true
+
   def cors(init: CorsScope ?=> Unit)(using scope: ServerScope): Unit =
     scope.gate.check()
     require(scope.corsScope.isEmpty, "Duplicate CORS declaration")
