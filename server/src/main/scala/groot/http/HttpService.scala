@@ -111,7 +111,8 @@ final class HttpService(client: Client[IO], timeout: FiniteDuration = 30.seconds
 object HttpService:
   val maxBytes = 1024 * 1024
 
-  def resource: Resource[IO, HttpService] = EmberClientBuilder.default[IO].withTimeout(30.seconds).build.map(new HttpService(_))
+  def resource: Resource[IO, HttpService] =
+    EmberClientBuilder.default[IO].withTimeout(30.seconds).withMaxResponseHeaderSize(64 * 1024).build.map(new HttpService(_))
 
   private def header(headers: Headers, name: String): Option[String] = headers.headers.find(_.name == CIString(name)).map(_.value)
 
