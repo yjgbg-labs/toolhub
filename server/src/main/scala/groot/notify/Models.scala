@@ -13,6 +13,7 @@ case class NotifyWhenRequest(
     targetSessionId: String,
     code: String,
     every: Option[String] = None,
+    delay: Option[String] = None,
     once: Option[Boolean] = None,
     timeout: Option[String] = None,
     cpu: Option[String] = None,
@@ -27,10 +28,10 @@ case class NotifyAtRequest(
 
 case class NotifyTrigger(
     id: String,
-    kind: String,
     targetSessionId: String,
     code: String,
     every: String,
+    delay: String,
     once: Boolean,
     cpu: String,
     scriptTimeout: String,

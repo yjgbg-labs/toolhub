@@ -203,7 +203,7 @@ class NotifySuite extends CatsEffectSuite:
     }
   }
 
-  test("notify.at schedules a one-shot reminder via notify.when") {
+  test("notify.at schedules a one-shot reminder via delayed notify.when") {
     temporary.use { home =>
       (for
         commands <- Resource.eval(Deferred[IO, GraalCommandSdk])
@@ -215,14 +215,17 @@ class NotifySuite extends CatsEffectSuite:
         reader(service).use { events =>
           for
             _ <- commands.complete(sdk)
+            before <- IO.realTimeInstant
             created <- triggers.at(NotifyAtRequest(
               targetSessionId = agySessionId,
-              at = "+150ms",
+              at = "+180ms",
               message = "时间到了"
             ))
-            _ = assertEquals(created.kind, "at")
             _ = assertEquals(created.once, true)
+            _ = assert(created.delay.endsWith("ms") && created.delay != "0ms")
             event <- events.take.timeout(5.seconds)
+            after <- IO.realTimeInstant
+            _ = assert(java.time.Duration.between(before, after).toMillis >= 140L)
             _ = assertEquals(event.notification.map(_.targetSessionId), Some(agySessionId))
             _ = assertEquals(event.notification.map(_.message), Some("时间到了"))
             done <- awaitUntil(triggers.list().map(_.find(_.id == created.id).get))(_.status == "triggered")

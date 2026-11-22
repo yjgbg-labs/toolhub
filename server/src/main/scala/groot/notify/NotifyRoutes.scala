@@ -38,13 +38,13 @@ object NotifyRoutes:
     triggers.foreach { manager =>
       command[NotifyTrigger]("when") {
         exposeOn(cli, graaljs)
-        description("Evaluate a GraalJS predicate periodically; when code returns a non-empty string, send that string to targetSessionId. Set once=true (default) for one-shot or once=false for repeated notifications.")
-        val input = body[NotifyWhenRequest]("Predicate code returning a non-empty string when triggered, targetSessionId, every interval (default 15s), once flag (default true), and optional timeout")
+        description("Evaluate a GraalJS predicate periodically (after optional initial delay, default 0ms); when code returns a non-empty string, send that string to targetSessionId. Set once=true (default) for one-shot or once=false for repeated notifications.")
+        val input = body[NotifyWhenRequest]("Predicate code returning a non-empty string when triggered, targetSessionId, every interval (default 15s), initial delay (default 0ms), once flag (default true), and optional timeout")
         handle { manager.when(input.value) }
       }
       command[NotifyTrigger]("at") {
         exposeOn(cli, graaljs)
-        description("Schedule a one-shot reminder at an ISO-8601 timestamp or relative duration (e.g. +10m), implemented via notify.when")
+        description("Schedule a one-shot reminder at an ISO-8601 timestamp or relative duration (e.g. +10m), implemented as a delayed notify.when")
         val input = body[NotifyAtRequest]("Target session, at timestamp/relative duration, and reminder message")
         handle { manager.at(input.value) }
       }

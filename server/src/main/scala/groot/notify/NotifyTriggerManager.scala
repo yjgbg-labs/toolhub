@@ -1,6 +1,6 @@
 package groot.notify
 
-import cats.effect.{Deferred, IO, Resource}
+import cats.effect.{IO, Resource}
 import cats.effect.std.{Mutex, Queue, Supervisor}
 import cats.syntax.all.*
 import groot.graaljs.{GraalManager, JavaScript, Validation => GraalValidation}
@@ -12,7 +12,7 @@ import java.time.{Duration => JDuration, Instant, OffsetDateTime, ZonedDateTime}
 import java.util.UUID
 import scala.concurrent.duration.*
 
-/** Event-driven trigger engine for notify.when and notify.at, backed by GraalManager and NotifyService. */
+/** Event-driven trigger engine for notify.when (with notify.at as a thin wrapper), backed by GraalManager and NotifyService. */
 final class NotifyTriggerManager private (
     store: NotifyTriggerStore,
     notifyService: NotifyService,
@@ -31,65 +31,58 @@ final class NotifyTriggerManager private (
     for
       now <- IO.realTimeInstant
       everyText = request.every.map(_.trim).filter(_.nonEmpty).getOrElse(NotifyTriggerManager.defaultEvery)
+      delayText = request.delay.map(_.trim).filter(_.nonEmpty).getOrElse(NotifyTriggerManager.defaultDelay)
       cpuText = request.cpu.map(_.trim).filter(_.nonEmpty).getOrElse(NotifyTriggerManager.defaultCpu)
       scriptTimeoutText = request.scriptTimeout.map(_.trim).filter(_.nonEmpty).getOrElse(NotifyTriggerManager.defaultScriptTimeout)
       timeoutText = request.timeout.map(_.trim).filter(_.nonEmpty)
       once = request.once.getOrElse(true)
-      _ <- IO {
+      delayMs <- IO {
         NotifyService.validateSession(request.targetSessionId)
         if request.code.trim.isEmpty then throw NotifyFailure("invalid_notify", "code must not be blank")
         if request.code.getBytes(UTF_8).length > NotifyTriggerManager.maxCodeBytes then
           throw NotifyFailure("notify_limit", "code exceeds 1 MiB")
-        parseDurationMs("every", everyText)
-        parseDurationMs("cpu", cpuText)
-        parseDurationMs("scriptTimeout", scriptTimeoutText)
-        timeoutText.foreach(parseDurationMs("timeout", _))
+        parsePositiveDurationMs("every", everyText)
+        parsePositiveDurationMs("cpu", cpuText)
+        parsePositiveDurationMs("scriptTimeout", scriptTimeoutText)
+        timeoutText.foreach(parsePositiveDurationMs("timeout", _))
+        NotifyTriggerManager.parseNonNegativeDurationMs("delay", delayText)
       }
-      expiresAt = timeoutText.map(t => now.plusMillis(parseDurationMs("timeout", t)).toString)
+      firstCheckAt = now.plusMillis(delayMs)
+      expiresAt = timeoutText.map(t => now.plusMillis(parsePositiveDurationMs("timeout", t)).toString)
       trigger = NotifyTrigger(
         id = NotifyTriggerManager.triggerId(),
-        kind = "when",
         targetSessionId = request.targetSessionId.trim,
         code = request.code,
         every = everyText,
+        delay = delayText,
         once = once,
         cpu = cpuText,
         scriptTimeout = scriptTimeoutText,
         createdAt = now.toString,
         expiresAt = expiresAt,
-        nextCheckAt = Some(now.toString),
+        nextCheckAt = Some(firstCheckAt.toString),
         status = "active"
       )
       _ <- register(trigger)
     yield trigger
 
-  /** Implemented directly on top of notify.when with a server-defined GraalJS predicate script. */
+  /** Thin wrapper over notify.when: sleeps `delay` until target time, then returns `message` once. */
   def at(request: NotifyAtRequest): IO[NotifyTrigger] =
     for
       now <- IO.realTimeInstant
       targetInstant <- IO(NotifyTriggerManager.parseAtTime(request.at, now))
       _ <- IO {
-        NotifyService.validateSession(request.targetSessionId)
         if request.message.trim.isEmpty then throw NotifyFailure("invalid_notify", "message must not be blank")
         if request.message.getBytes(UTF_8).length > 65536 then
           throw NotifyFailure("notify_limit", "message is limited to 64 KiB UTF-8")
       }
-      script = NotifyTriggerManager.atPredicateScript(targetInstant, request.message)
-      trigger = NotifyTrigger(
-        id = NotifyTriggerManager.triggerId(),
-        kind = "at",
-        targetSessionId = request.targetSessionId.trim,
-        code = script,
-        every = "1s",
-        once = true,
-        cpu = NotifyTriggerManager.defaultCpu,
-        scriptTimeout = NotifyTriggerManager.defaultScriptTimeout,
-        createdAt = now.toString,
-        expiresAt = None,
-        nextCheckAt = Some(targetInstant.toString),
-        status = "active"
-      )
-      _ <- register(trigger)
+      delayMs = math.max(0L, JDuration.between(now, targetInstant).toMillis)
+      trigger <- when(NotifyWhenRequest(
+        targetSessionId = request.targetSessionId,
+        code = s"return ${Json.fromString(request.message).noSpaces};",
+        delay = Some(s"${delayMs}ms"),
+        once = Some(true)
+      ))
     yield trigger
 
   private def register(trigger: NotifyTrigger): IO[Unit] =
@@ -180,7 +173,7 @@ final class NotifyTriggerManager private (
                   store.get(trigger.id).flatMap {
                     case Some(current) if current.status == "active" =>
                       val nextStatus = if current.once then "triggered" else "active"
-                      val nextCheck = if current.once then None else Some(checkedAt.plusMillis(parseDurationMs("every", current.every)).toString)
+                      val nextCheck = if current.once then None else Some(checkedAt.plusMillis(parsePositiveDurationMs("every", current.every)).toString)
                       store.save(current.copy(
                         status = nextStatus,
                         nextCheckAt = nextCheck,
@@ -201,7 +194,7 @@ final class NotifyTriggerManager private (
             serial {
               store.get(trigger.id).flatMap {
                 case Some(current) if current.status == "active" =>
-                  val nextCheck = checkedAt.plusMillis(parseDurationMs("every", current.every)).toString
+                  val nextCheck = checkedAt.plusMillis(parsePositiveDurationMs("every", current.every)).toString
                   store.save(current.copy(
                     nextCheckAt = Some(nextCheck),
                     lastCheckedAt = Some(checkedAt.toString),
@@ -233,7 +226,7 @@ final class NotifyTriggerManager private (
     serial {
       store.get(id).flatMap {
         case Some(current) if current.status == "active" =>
-          val nextCheck = checkedAt.plusMillis(parseDurationMs("every", current.every)).toString
+          val nextCheck = checkedAt.plusMillis(parsePositiveDurationMs("every", current.every)).toString
           store.save(current.copy(
             nextCheckAt = Some(nextCheck),
             lastCheckedAt = Some(checkedAt.toString),
@@ -245,7 +238,7 @@ final class NotifyTriggerManager private (
       }
     }
 
-  private def parseDurationMs(name: String, text: String): Long =
+  private def parsePositiveDurationMs(name: String, text: String): Long =
     try GraalValidation.durationMs(name, text)
     catch case e: Exception => throw NotifyFailure("invalid_notify", e.getMessage)
 
@@ -254,12 +247,26 @@ final class NotifyTriggerManager private (
 
 object NotifyTriggerManager:
   val defaultEvery = "15s"
+  val defaultDelay = "0ms"
   val defaultCpu = "2s"
   val defaultScriptTimeout = "30s"
   val maxCodeBytes: Int = 1024 * 1024
   val maxActiveTriggers = 256
 
+  private val nonNegativeDuration = "^(\\d+)(ms|s|m|h|d)$".r
+  private val durationUnits = Map("ms" -> 1L, "s" -> 1000L, "m" -> 60000L, "h" -> 3600000L, "d" -> 86400000L)
+  private val relativeDuration = "^\\+(\\d+)(ms|s|m|h|d)$".r
+
   def triggerId(): String = s"ntf_${UUID.randomUUID().toString.replace("-", "")}"
+
+  private[notify] def parseNonNegativeDurationMs(name: String, text: String): Long = text match
+    case "0" => 0L
+    case nonNegativeDuration(value, unit) =>
+      val millis = BigInt(value) * durationUnits(unit)
+      if millis < 0 || millis > Long.MaxValue / 1000000L then
+        throw NotifyFailure("invalid_notify", s"$name must be non-negative and fit in a nanosecond duration")
+      millis.toLong
+    case _ => throw NotifyFailure("invalid_notify", s"$name must be 0 or an integer followed by ms, s, m, h or d")
 
   private[notify] def wrapPredicate(code: String, marker: String): String =
     val markerLiteral = Json.fromString(marker).noSpaces
@@ -280,19 +287,12 @@ object NotifyTriggerManager:
         parse(rawJson).toOption.flatMap(_.asString).filter(_.trim.nonEmpty)
       }
 
-  private[notify] def atPredicateScript(target: Instant, message: String): String =
-    val msgLiteral = Json.fromString(message).noSpaces
-    s"if (Date.now() >= ${target.toEpochMilli}) return $msgLiteral; return null;"
-
-  private val relativeDuration = "^\\+(\\d+)(ms|s|m|h|d)$".r
-
   private[notify] def parseAtTime(raw: String, now: Instant): Instant =
     val text = raw.trim
     if text.isEmpty then throw NotifyFailure("invalid_notify", "at must not be blank")
     text match
       case relativeDuration(amount, unit) =>
-        val ms = try GraalValidation.durationMs("at", s"$amount$unit")
-        catch case e: Exception => throw NotifyFailure("invalid_notify", e.getMessage)
+        val ms = parseNonNegativeDurationMs("at", s"$amount$unit")
         now.plusMillis(ms)
       case _ =>
         scala.util.Try(Instant.parse(text))
