@@ -28,7 +28,7 @@ object Executor:
        |$script
        |})();
        |if (__groot_res !== undefined) {
-       |  console.log(typeof __groot_res === "string" ? __groot_res : JSON.stringify(__groot_res, null, 2));
+       |  console.log(typeof __groot_res === "string" ? __groot_res : JSON.stringify(__groot_res));
        |}""".stripMargin
 
   def normalizeDuration(name: String, value: Option[String], defaultValue: String): String =
