@@ -23,12 +23,14 @@ final class GraalCommandSdk private (endpoints: Vector[Endpoint]):
     id
   }
 
+  private val alwaysImplicitOptional = Set("cwd")
+
   def call(id: String, input: Json): IO[Json] = call(id, Some(input), Map.empty)
 
   def call(id: String, input: Option[Json] = None, context: Map[String, String] = Map.empty): IO[Json] = IO.defer {
     val spec = byId.getOrElse(id, throw new IllegalArgumentException(s"Unknown command: $id"))
     val implicitNames = spec.inputs.iterator
-      .filter(i => i.location != InputLocation.Body && context.contains(i.name))
+      .filter(i => i.location != InputLocation.Body && (context.contains(i.name) || alwaysImplicitOptional.contains(i.name)))
       .map(_.name)
       .toSet
     val explicitInputs = spec.inputs.filterNot(i => i.location != InputLocation.Body && implicitNames.contains(i.name))
@@ -42,7 +44,8 @@ final class GraalCommandSdk private (endpoints: Vector[Endpoint]):
       val declared = spec.inputs.filter(_.location == location)
       val group = JsonObject.fromIterable(declared.flatMap { parameter =>
         val valueOpt =
-          if implicitNames.contains(parameter.name) then Some(Json.fromString(context(parameter.name)))
+          if context.contains(parameter.name) then Some(Json.fromString(context(parameter.name)))
+          else if implicitNames.contains(parameter.name) then None
           else args(parameter.name)
         valueOpt.map(parameter.name -> _)
       })
