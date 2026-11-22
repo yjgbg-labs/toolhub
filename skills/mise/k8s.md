@@ -1,104 +1,36 @@
-# Kubernetes 交付
+# Kubernetes 交付参考
 
-本文是 `mise` skill 的按需参考，只在项目涉及 Kubernetes 时读取。任务编排和交付方式以 [SKILL.md](./SKILL.md) 为准，制品分发按项目实际需要配置。
+本文是 `mise` skill 的按需专项参考，仅在项目涉及 Kubernetes 资源管理时读取。任务编排遵循同目录 [SKILL.md](./SKILL.md)。
 
-## 命令
+## 核心动作与部署铁律
 
-```bash
-groot k8s render ./k8s --project <id> [options]
-groot k8s diff ./k8s --project <id> [options]
-groot k8s sync ./k8s --project <id> [options]
-```
+项目部署必须通过 `mise.toml` 中的任务调用项目实际配置的资源跟踪工具（如 Groot 的 Kubernetes 资源同步能力，或既有项目自有的 kapp 流程），严禁绕过 inventory 直接手工向集群应用清单。
 
-- `render`：递归读取 `.yaml` 和 `.yml`，执行 `envsubst`，注入跟踪元数据，不访问集群。
-- `diff`：执行 server-side `kubectl diff`，并列出 inventory 中将删除的旧资源。
-- `sync`：server-side apply 当前资源，安全删除旧资源，再更新 inventory。
+三个标准阶段：
 
-项目正常部署必须通过 `mise.toml` 的任务调用项目实际使用的资源跟踪工具，不直接执行 `kubectl apply`。使用下列 Groot Kubernetes 约定前先确认目标环境提供 `groot k8s`；已有 kapp 项目沿用其 render/diff/deploy 入口。`kubectl diff` 返回 `1` 表示存在差异，不是错误；大于 `1` 才是执行失败。
+- **渲染（render）**：递归读取 `./k8s` 下的 `.yaml` 与 `.yml` 文件，按白名单替换环境变量并注入归属跟踪元数据，纯本地计算、不访问集群。
+- **差异比对（diff）**：执行服务端 dry-run 比对，同时列出 inventory 中将被清理的历史孤儿资源。返回码 `0` 表示无变化，`1` 表示存在预期差异（非报错），大于 `1` 才代表执行失败。
+- **同步（sync）**：按服务端 apply 提交当前资源，安全清理归属当前项目的陈旧资源，最后原子更新集群端 inventory。
 
-## 选项
+## 关键参数与默认值
 
-```text
---project <id>                稳定且唯一的项目标识，必填
---env <name>                  只替换指定环境变量，可重复
---context <name>              diff 和 sync 使用的 Kubernetes context
---inventory-namespace <name>  inventory ConfigMap namespace，默认 default
---kubectl <path>              显式指定 kubectl 或 microk8s
---allow-empty                 允许空渲染并删除全部历史资源
---reveal-secrets              解析 vault 引用或显示 Secret 详细 diff
-```
+- **`project`（必填）**：全局唯一且长期稳定的项目标识（如 `payments-prod`），严禁使用临时 worktree 路径或随机值。
+- **`env`（可重复）**：允许执行变量替换的环境变量名白名单；名单外的 `$NAME` / `${NAME}` 保持原样，白名单内缺失的变量会在访问集群前直接报错终止。
+- **`context`**：目标集群上下文名称，本机集群固定使用 `microk8s`。
+- **`inventory-namespace`**：存放资源清单状态 ConfigMap 的命名空间，默认 `default`。
+- **`kubectl`**：可选显式客户端路径；未指定时优先查找 `kubectl`，不存在时回退至 `microk8s` 内置客户端。
+- **`allow-empty`**：布尔开关，默认关闭；空渲染结果默认报错拒绝，仅在明确下线清空整个项目且已先行完成 diff 核对删除列表后才允许开启。
+- **`reveal-secrets`**：布尔开关，默认关闭；默认在 diff 中脱敏隐藏 Secret 明文。
 
-本地集群使用 `--context microk8s`。未传 `--kubectl` 时优先使用 `kubectl`，找不到时使用 `microk8s kubectl`。
+## 清单、机密与资源跟踪规范
 
-## Manifest 约定
+- **清单规范**：固定存放在项目根目录 `./k8s`，文件名保持清晰排序；所有命名空间级资源必须显式声明 `metadata.namespace`；Deployment 的 Pod 模板须绑定明确的镜像摘要或制品版本号以触发滚动更新；initContainer 拉取远程制品时必须先校验 `SHA-256` 再解压至共享 `emptyDir`；对外暴露的 Service 通过 ExternalDNS 注解声明 `*.yjgbg.lab` 域名；容器须具备探针、资源配额与最小权限安全上下文。
+- **Vault 机密引用**：机密值存入本机 vault，不入 Git 也不放普通环境变量；在 YAML `stringData` 中使用不加引号的完整标量占位符 `${VAULT::<project>/<key>}`（写机密时通过标准输入交互录入，禁止在参数或日志中暴露明文，也禁止将渲染后的 Secret 清单落盘）。
+- **Inventory 与安全回收顺序**：上次成功状态记录在 `ConfigMap/groot-inventory-<project-hash>`（仅存 `apiVersion`、`kind`、`namespace`、`name`，不含机密正文）。同步严格按“读取旧记录 → 提交全部新资源 → 计算差集 → 校验待删对象的 `project-id` 注解 → 仅删除归属匹配的陈旧对象 → 更新 inventory”顺序执行；提交失败绝不删旧资源或改 inventory。删除顺序保证 Custom Resource 先于 CRD、普通资源先于 Namespace，且单机同项目同步受文件锁保护。
 
-- 资源文件固定放在 `./k8s`，按名称排序后应具备可读的创建顺序。
-- namespaced 资源必须显式写 `metadata.namespace`。
-- Deployment 使用明确的镜像或制品版本作为 Pod template 参数，确保版本变化触发滚动更新。
-- 使用 initContainer 下载制品时，采用 Pod 可访问的项目分发地址，校验 SHA-256 后再解压到共享 `emptyDir`。
-- 对外 Service 使用 ExternalDNS annotation 声明 `*.yjgbg.lab` 域名。
-- 容器应配置 readiness、liveness、资源限制和最小权限 security context。
+## 常见错误排查
 
-## 环境变量
-
-默认扫描模板中的 `$NAME` 和 `${NAME}`，缺少变量会在访问集群前失败。通过重复的 `--env` 限制替换白名单：
-
-```bash
-. ./config.env
-groot k8s render ./k8s \
-  --project example-prod \
-  --env ARTIFACT_URL \
-  --env ARTIFACT_SHA256_URL
-```
-
-白名单之外的变量表达式保持原样。不要把渲染后的 Secret YAML 写入日志或文件。
-
-## Vault Secret
-
-Secret 使用本地 vault 引用，不放进 Git 或环境变量：
-
-```yaml
-stringData:
-  token: ${VAULT::example-prod/api-token}
-```
-
-占位符必须是完整且不加引号的 YAML scalar。使用 `groot vault set example-prod/api-token` 设置值，不要把值作为命令行参数传入。`render` 默认保留引用；`diff` 和 `sync` 会解析，且 diff 默认隐藏明文。
-
-## 资源跟踪
-
-命令为资源注入 managed-by、project hash label 和 project-id annotation。`--project` 必须长期稳定，例如 `payments-prod`，不能使用 worktree 路径或随机值。
-
-上次成功资源集合保存在 `ConfigMap/groot-inventory-<project-hash>`。inventory 仅保存 apiVersion、kind、namespace 和 name，不保存 Secret 内容。
-
-`sync` 顺序如下：
-
-1. 读取旧 inventory。
-2. apply 全部当前资源。
-3. 计算旧资源与当前资源的差集。
-4. 读取 stale 资源并核对 project-id annotation。
-5. 只删除归属当前 project 的 stale 资源。
-6. 删除成功后更新 inventory。
-
-apply 失败时不会删除旧资源或更新 inventory。资源 annotation 缺失或不匹配时拒绝删除，避免误删被其他项目接管的对象。
-
-## 首次部署与删除
-
-目标 Namespace 不存在时，`diff` 会跳过其中资源并成功退出；随后用 `sync` 创建 Namespace，后续 `diff` 才能完整比较。
-
-空目录默认报错。只有明确清空项目全部资源时才能使用 `--allow-empty`，并且必须先执行 diff 确认删除列表：
-
-```bash
-groot k8s diff ./empty --project example-prod --context microk8s --allow-empty
-groot k8s sync ./empty --project example-prod --context microk8s --allow-empty
-```
-
-Custom Resource 先于 CRD 删除，Namespace 在普通资源之后删除。同一 project 的本机 sync 有锁保护；遗留锁只能在确认没有同步进程后清理。
-
-## 排障
-
-- `missing environment variables`：补充变量，或用 `--env` 排除不应替换的表达式。
-- `rendered no Kubernetes resources`：检查目录和扩展名，不要直接添加 `--allow-empty`。
-- `inventory ... is not owned`：检查 project ID 冲突，不要覆盖 inventory。
-- `project annotation does not match`：stale 资源已失去当前项目归属，人工确认后处理。
-- `another sync ... appears to be running`：检查同步进程和本地锁。
-- Pod 制品校验失败：比较分发端制品、SHA-256 文件和 Deployment 中配置的版本及地址。
+- **提示缺少环境变量**：补齐 `config.env` 中的导出变量，或收紧 `env` 白名单排除无需替换的容器内运行时表达式。
+- **提示渲染结果为空**：核对 `./k8s` 目录与 `.yaml`/`.yml` 后缀，切勿盲目开启 `allow-empty`。
+- **提示 inventory 或对象归属不匹配**：核查 `project` 标识是否与其他项目冲突，或目标资源已被人工接管，人工确认前禁止强行覆盖。
+- **提示同步锁占用**：先核实是否确有并发同步进程在运行，仅在确认进程已退出后才清理残留锁。
