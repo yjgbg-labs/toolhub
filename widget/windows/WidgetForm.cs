@@ -30,7 +30,6 @@ internal sealed partial class WidgetForm : Form
         StartPosition = FormStartPosition.Manual;
         AutoScaleMode = AutoScaleMode.None;
         BackColor = WidgetCanvas.PanelColor;
-        TopMost = true;
         Size = new Size(440, 48);
         var area = Screen.PrimaryScreen!.WorkingArea;
         Location = new Point(area.Right - Width - 24, area.Top + 24);
@@ -39,7 +38,7 @@ internal sealed partial class WidgetForm : Form
         menu.Items.Add("显示 / 隐藏", null, (_, _) => { if (Visible) Hide(); else Show(); });
         tray = new NotifyIcon { Icon = appIcon, Text = "Groot Widget · 连接中", Visible = true, ContextMenuStrip = menu };
         tray.DoubleClick += (_, _) => { if (Visible) Hide(); else Show(); };
-        Load += (_, _) => { ApplyLayout(); _ = Task.Run(SubscribeLoop); };
+        Load += (_, _) => { ApplyWindowSettings(); ApplyLayout(); _ = Task.Run(SubscribeLoop); };
         Shown += (_, _) => ApplyBackdrop();
         DpiChanged += (_, _) => { if (!dragging) ApplyLayout(); };
         FormClosing += (_, e) =>
@@ -61,10 +60,19 @@ internal sealed partial class WidgetForm : Form
         var area = Screen.FromRectangle(new Rectangle(point, new Size(width, canvas.ContentHeight))).WorkingArea;
         var size = new Size(Math.Min(width, area.Width), Math.Min(canvas.ContentHeight, area.Height - canvas.Scale(16)));
         var location = new Point(Math.Clamp(point.X, area.Left, area.Right - size.Width), Math.Clamp(point.Y, area.Top, area.Bottom - size.Height));
-        TopMost = settings.TopMost;
-        Opacity = settings.Opacity;
         if (Bounds != new Rectangle(location, size)) SetBounds(location.X, location.Y, size.Width, size.Height);
         canvas.Invalidate();
+    }
+
+    private void ApplyWindowSettings()
+    {
+        var topMost = (Native.GetWindowLong(Handle, -20) & Native.TopMostStyle) != 0;
+        // Form.TopMost calls SetWindowPos without NOACTIVATE, dismissing an open tray menu.
+        if (topMost != settings.TopMost && !Native.SetWindowPos(Handle,
+            new IntPtr(settings.TopMost ? -1 : -2), 0, 0, 0, 0,
+            Native.NoMove | Native.NoSize | Native.NoActivate))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        if (Opacity != settings.Opacity) Opacity = settings.Opacity;
     }
 
     private void BeginDrag()
@@ -102,7 +110,15 @@ internal sealed partial class WidgetForm : Form
 
     protected override CreateParams CreateParams
     {
-        get { var p = base.CreateParams; p.ExStyle |= 0x80; p.ExStyle &= ~0x40000; return p; }
+        get
+        {
+            var p = base.CreateParams;
+            p.ExStyle |= 0x80;
+            p.ExStyle &= ~0x40000;
+            // Keep the native style when WinForms recreates the window handle.
+            p.ExStyle = settings.TopMost ? p.ExStyle | Native.TopMostStyle : p.ExStyle & ~Native.TopMostStyle;
+            return p;
+        }
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -135,7 +151,12 @@ internal sealed partial class WidgetForm : Form
 
     private static class Native
     {
+        internal const int TopMostStyle = 0x8;
+        internal const uint NoSize = 0x1, NoMove = 0x2, NoActivate = 0x10;
         [DllImport("user32.dll")] internal static extern bool ReleaseCapture();
         [DllImport("user32.dll")] internal static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] internal static extern int GetWindowLong(IntPtr window, int index);
+        [DllImport("user32.dll", SetLastError = true)]
+        internal static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
     }
 }
