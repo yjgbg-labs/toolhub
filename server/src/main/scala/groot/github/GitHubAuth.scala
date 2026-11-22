@@ -28,16 +28,16 @@ final class GitHubAuth private (
     }
   }
 
-  def login(token: Option[String], scopes: String, clientId: Option[String]): Stream[IO, PlainText] =
+  def login(token: Option[String], scopes: String, clientId: Option[String]): IO[Stream[IO, PlainText]] =
     token.map(_.trim).filter(_.nonEmpty) match
-      case Some(raw) => Stream.eval(verifyAndPersist(raw).map(renderSuccess))
+      case Some(raw) => verifyAndPersist(raw).map(s => Stream.emit(renderSuccess(s)))
       case None =>
         val cid = clientId.map(_.trim).filter(_.nonEmpty).getOrElse(defaultClientId)
         val cleanScope = scopes.split("[,\\s]+").iterator.map(_.trim).filter(_.nonEmpty).mkString(" ")
-        deviceFlowStream(cid, cleanScope)
+        startDeviceFlow(cid, cleanScope)
 
-  private def deviceFlowStream(clientId: String, scope: String): Stream[IO, PlainText] =
-    Stream.eval(client.postOAuthForm("/login/device/code", Vector("client_id" -> clientId, "scope" -> scope))).flatMap { json =>
+  private def startDeviceFlow(clientId: String, scope: String): IO[Stream[IO, PlainText]] =
+    client.postOAuthForm("/login/device/code", Vector("client_id" -> clientId, "scope" -> scope)).flatMap { json =>
       val c = json.hcursor
       val verifyUri = c.get[String]("verification_uri").toOption.filter(_.nonEmpty).getOrElse("https://github.com/login/device")
       val expiresIn = math.max(10, c.get[Int]("expires_in").getOrElse(900))
@@ -51,12 +51,14 @@ final class GitHubAuth private (
           ))
           val finish: Stream[IO, String] = Stream.eval(
             IO.realTimeInstant.flatMap(t0 => pollToken(clientId, dc, interval, t0.plusSeconds(expiresIn.toLong)))
-              .flatMap(verifyAndPersist).map(s => (renderSuccess(s): String))
+              .flatMap(verifyAndPersist)
+              .map(s => (renderSuccess(s): String))
+              .handleError(e => s"✗ ${Option(e.getMessage).getOrElse(e.getClass.getSimpleName)}")
           )
-          (prompt ++ finish).map(PlainText(_))
+          IO.pure((prompt ++ finish).map(PlainText(_)))
         case _ =>
           val desc = c.get[String]("error_description").orElse(c.get[String]("error")).getOrElse(json.noSpaces.take(200))
-          Stream.raiseError[IO](GitHubFailure("github_oauth", s"Failed to start GitHub device flow: $desc"))
+          IO.raiseError(GitHubFailure("github_oauth", s"Failed to start GitHub device flow: $desc"))
     }
 
   private def pollToken(clientId: String, deviceCode: String, interval: FiniteDuration, deadline: Instant): IO[String] =

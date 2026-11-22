@@ -24,7 +24,7 @@ final class GitHubService(val auth: GitHubAuth, val client: GitHubClient):
   private def repoBase(ref: RepoRef): String = s"/repos/${enc(ref.owner)}/${enc(ref.repo)}"
 
   def login(token: Option[String], scopes: String, clientId: Option[String]): IO[SSE[PlainText]] =
-    IO.pure(SSE(auth.login(token, scopes, clientId)))
+    auth.login(token, scopes, clientId).map(SSE(_))
   def logout: IO[LogoutResult] = auth.logout
 
   def whoami: IO[WhoamiResult] = auth.requireToken.flatMap(client.getJson(_, "/user")).flatMap { (hdrs, json) =>
@@ -367,7 +367,7 @@ object GitHubService:
   def resource(home: Path = Store.defaultHome, apiBase: Uri = Uri.unsafeFromString("https://api.github.com"),
       oauthBase: Uri = Uri.unsafeFromString("https://github.com")): Resource[IO, GitHubService] =
     for
-      http <- EmberClientBuilder.default[IO].withTimeout(30.seconds).build
+      http <- EmberClientBuilder.default[IO].withTimeout(30.seconds).withMaxResponseHeaderSize(64 * 1024).build
       ghClient = new GitHubClient(http, apiBase, oauthBase)
       auth <- GitHubAuth.resource(home, ghClient)
     yield new GitHubService(auth, ghClient)

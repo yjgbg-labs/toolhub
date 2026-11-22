@@ -64,7 +64,9 @@ class GitHubSuite extends CatsEffectSuite:
         val mock = HttpApp[IO] { req =>
           (req.method, req.uri.path.renderString) match
             case (Method.POST, "/login/device/code") =>
-              IO.pure(jsonResp(Status.Ok, """{"device_code":"dev_1","user_code":"ABCD-9999","verification_uri":"https://github.com/login/device","expires_in":600,"interval":1}"""))
+              // github.com returns >4 KiB of Content-Security-Policy headers on /login/device/code
+              IO.pure(jsonResp(Status.Ok, """{"device_code":"dev_1","user_code":"ABCD-9999","verification_uri":"https://github.com/login/device","expires_in":600,"interval":1}""",
+                "Content-Security-Policy" -> ("default-src 'none'; " + ("https://example.githubassets.com " * 200))))
             case (Method.POST, "/login/oauth/access_token") =>
               polls.updateAndGet(_ + 1).map(n => jsonResp(Status.Ok, if n == 1 then """{"error":"authorization_pending"}""" else """{"access_token":"gho_dev"}"""))
             case (Method.GET, "/user") if req.headers.get(CIString("Authorization")).exists(_.head.value == "Bearer gho_dev") =>
