@@ -1,0 +1,5 @@
+{
+  "name": "groot",
+  "version": "1.0.0",
+  "description": "Groot Code Mode plugin for Antigravity: OpenAPI TypeScript search, isolated GraalJS execution, session context hooks, and Groot skills"
+}

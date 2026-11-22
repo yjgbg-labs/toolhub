@@ -15,7 +15,7 @@ description: 创建、修改或排查 Groot 定时任务及迁移旧版调度时
 - 脚本使用 `console`、`tools.*`（HTTP 用 `tools.http`，Shell 用 `tools.shell.execute({env, script})`）；JS 环境不能导入 Bun/Node 模块。
 - 调度循环随 `groot-http.service` 启动；不要重启旧 `groot-schedule.service`。
 - 调度由配置变更、任务完成和最近截止时间唤醒；空闲/等待资源时休眠，不轮询文件。
-- 除非用户指定，不创建 cron 或 systemd timer。
+- 除非用户指定 systemd，否则不查看或操作 systemd 定时任务。
 - 配置修改通过 API/CLI 完成，不直接编辑运行中的配置及状态文件。
 
 ## 先检查
@@ -24,7 +24,6 @@ description: 创建、修改或排查 Groot 定时任务及迁移旧版调度时
 groot-cli health
 groot-cli schedule list
 groot-cli schedule config read
-systemctl --user is-active groot-http.service
 ```
 
 默认地址 `http://127.0.0.1:18080`，客户端可通过 `GROOT_BASE_URL` 覆盖。
