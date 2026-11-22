@@ -427,11 +427,12 @@ parent=$(dirname "$AGY_PLUGIN_DIR")
 mkdir -p "$parent"
 stage=$(mktemp -d "$parent/.groot-agy.XXXXXX")
 trap 'rm -rf "$stage"' EXIT HUP INT TERM
-mkdir -p "$stage/bin" "$stage/rules" "$stage/skills"
+mkdir -p "$stage/bin" "$stage/rules" "$stage/skills" "$stage/sidecars/notify"
 install -m 755 agy/dist/groot-agy "$stage/bin/groot-agy"
 install -m 644 agy/plugin/plugin.json "$stage/plugin.json"
 install -m 644 agy/plugin/hooks.json "$stage/hooks.json"
 install -m 644 agy/plugin/rules/AGENTS.md "$stage/rules/AGENTS.md"
+install -m 644 agy/plugin/sidecars/notify/sidecar.json "$stage/sidecars/notify/sidecar.json"
 cp -R skills/. "$stage/skills/"
 cat > "$stage/mcp_config.json" <<EOF
 {

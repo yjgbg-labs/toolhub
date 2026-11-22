@@ -265,3 +265,21 @@ class AgySuite extends munit.FunSuite:
     val execText = execResp.hcursor.downField("result").downField("content").downN(0).get[String]("text").toOption.get
     assertEquals(execText, "42")
   }
+
+  test("NotifyBridge forwards UUID sessions and ignores OpenCode ses_ sessions") {
+    var delivered = Vector.empty[(String, String)]
+    val noopTransport = new HttpTransport:
+      def send(request: HttpRequest, onEvent: String => Unit): HttpResponse =
+        HttpResponse(200, Vector.empty, "")
+
+    val bridge = new NotifyBridge(
+      transport = noopTransport,
+      deliverFn = (id, msg) => { delivered :+= (id -> msg); Right(()) },
+      sleepFn = _ => ()
+    )
+    bridge.handleEvent("""{"kind":"ready"}""")
+    bridge.handleEvent("""{"kind":"heartbeat"}""")
+    bridge.handleEvent("""{"kind":"message","notification":{"id":"1","targetSessionId":"ses_opencode_1","message":"ignore me","createdAt":"2026-11-22T00:00:00Z"}}""")
+    bridge.handleEvent("""{"kind":"message","notification":{"id":"2","targetSessionId":"0508816e-1fae-4311-93cc-9f49f8eb4dde","message":"wake up!","createdAt":"2026-11-22T00:00:00Z"}}""")
+    assertEquals(delivered, Vector("0508816e-1fae-4311-93cc-9f49f8eb4dde" -> "wake up!"))
+  }

@@ -60,9 +60,9 @@ final class NotifyService private (mutex: Mutex[IO], stopped: Deferred[IO, Unit]
   private def close: IO[Unit] = serial(IO { closed = true; listeners = Map.empty } *> stopped.complete(()).void)
 
 object NotifyService:
-  private def validateSession(value: String): Unit =
-    if !value.matches("ses[A-Za-z0-9_-]{1,125}") then
-      throw NotifyFailure("invalid_notify", "Session ID must start with ses and contain at most 128 letters, digits, underscores or hyphens")
+  private[notify] def validateSession(value: String): Unit =
+    if !value.matches("[A-Za-z0-9_.:-]{1,128}") then
+      throw NotifyFailure("invalid_notify", "Session ID must be 1-128 characters of letters, digits, underscores, hyphens, dots or colons")
 
   def resource(capacity: Int = 64, heartbeat: FiniteDuration = 15.seconds): Resource[IO, NotifyService] = for
     _ <- Resource.eval(IO(require(capacity > 0 && heartbeat > Duration.Zero)))

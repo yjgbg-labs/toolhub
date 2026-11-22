@@ -6,13 +6,15 @@ interface Notification { id: string; targetSessionId: string; message: string; c
 
 const descriptionLimit = 120;
 
-function notification(value: unknown): Notification {
+function notification(value: unknown): Notification | null {
   const item = value as Partial<Notification> | null;
   if (!item || typeof item.id !== "string" || !/^[a-f0-9-]{36}$/.test(item.id) ||
-      typeof item.targetSessionId !== "string" || !/^ses[A-Za-z0-9_-]{1,125}$/.test(item.targetSessionId) ||
+      typeof item.targetSessionId !== "string" || item.targetSessionId.length === 0 ||
       typeof item.message !== "string" || typeof item.createdAt !== "string") {
     throw new Error("Invalid notification event");
   }
+  // Ignore notifications targeting non-OpenCode sessions (e.g. Antigravity UUIDs).
+  if (!/^ses[A-Za-z0-9_-]{1,125}$/.test(item.targetSessionId)) return null;
   return item as Notification;
 }
 
@@ -61,7 +63,8 @@ export async function startNotifications(ctx: Context, client: ApiClient): Promi
           if (event?.kind === "heartbeat") continue;
           try {
             if (event?.kind !== "message") throw new Error("Unexpected notification SSE event");
-            await deliver(notification(event.notification), signal);
+            const parsed = notification(event.notification);
+            if (parsed) await deliver(parsed, signal);
           } catch (error) { report(error); }
         }
       } catch (error) {
