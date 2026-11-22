@@ -24,7 +24,6 @@ description: 创建、修改或排查 Groot 定时任务及迁移旧版调度时
 groot-cli health
 groot-cli schedule list
 groot-cli schedule config read
-systemctl --user is-active groot-http.service
 ```
 
 默认地址 `http://127.0.0.1:18080`，客户端可通过 `GROOT_BASE_URL` 覆盖。
