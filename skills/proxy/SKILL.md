@@ -1,6 +1,6 @@
 ---
 name: proxy
-description: 查看或切换mihomo代理节点、测延迟、查连接时使用
+description: 查看或切换mihomo代理节点、测延迟、查活动连接时使用
 ---
 
 # Proxy
@@ -9,44 +9,24 @@ description: 查看或切换mihomo代理节点、测延迟、查连接时使用
 
 ## 核心约定
 
-- 统一使用 `groot mihomo proxy`，不要直接 curl mihomo 的 REST API。
-- API 地址和 secret 由命令自动从路由器 `/etc/mihomo/config.yaml` 读取，不要让用户提供。
-- 默认目标是 `root@10.0.0.1`。
-- 只有 `Selector` 类型的代理组可以手动切换；`URLTest` 组由 mihomo 按延迟自动选节点，切换会被拒绝。
-- 节点名包含 emoji 和空格（如 `🇭🇰 Hong Kong丨04`），使用时必须原样引用，不要改写或截断。
-- 修改配置文件（hosts、规则、订阅）走 `mihomo` 或 `dns` skill，不属于本 skill。
+- 统一通过 Groot 服务端的 `mihomo.proxy` 命名空间操作，调用前先按需检索最新签名，不要自行请求路由器控制端口，也不要在脚本中保存认证凭据。
+- 控制端地址与认证信息由服务端自动从 `/etc/mihomo/config.yaml` 解析并缓存，认证失效时自动刷新，无需向用户索取。
+- 仅 `Selector` 类型的代理组允许手动切换节点；对 `URLTest`、`Fallback`、`LoadBalance` 组执行切换会返回 `409`。
+- 节点名称常包含国旗 emoji、空格与特殊竖线，传参时必须与候选列表逐字一致，不得截断或改写。
+- 运行时切换重启或重载配置后可能随策略变化；永久修改代理组、过滤正则、分流规则或订阅请转用 `mihomo` skill，静态域名映射请转用 `dns` skill。
 
-## 常用命令
+## 关键参数与默认值
 
-```bash
-groot mihomo proxy groups              # 列出代理组、类型、当前节点
-groot mihomo proxy nodes <group>       # 列出组内节点，* 为当前节点
-groot mihomo proxy use <group> <node>  # 切换 Selector 组到指定节点
-groot mihomo proxy delay [group]       # 测延迟：不跟组名测各组当前节点，跟组名测组内全部节点
-groot mihomo proxy connections         # 查看活动连接（HOST/NET/DOWN/UP/CHAIN/RULE）
-```
+- **延迟探测分组选择**：
+  - `group`（单个组名）：探测该组内全部候选节点（组内超时节点返回 `delayMs: null` 与错误原因，并按延迟升序排列）。
+  - `groups`（组名列表）：并发探测指定多个组各自当前选中的 `now` 节点；省略 `group` 与 `groups` 时并发探测全部代理组的当前节点。
+  - `group` 与 `groups` 互斥，同时传入返回 `400`。
+- **探测目标 `url`**：默认 `http://www.gstatic.com/generate_204`，须为合法的 `http://` 或 `https://` 绝对地址。
+- **单次探测超时 `timeoutMs`**：默认 `5000`（毫秒），有效范围 `100`–`60000`。
+- **活动连接查询**：默认按连接累计上下行总流量降序排列；`limit` 默认 `50`、有效范围 `1`–`500`；可选 `host`（匹配域名、嗅探域名或目标 IP）与 `rule`（匹配规则名及附加参数）均为大小写不敏感子串过滤。
 
-指定其他路由器：
+## 操作流程与异常处理
 
-```bash
-groot mihomo proxy --host root@10.0.0.2 groups
-```
-
-## 工作流
-
-切换节点：
-
-1. `groot mihomo proxy groups` 确认组名、类型和当前节点。
-2. `groot mihomo proxy nodes <group>` 查看候选节点。
-3. `groot mihomo proxy use <group> <node>` 切换。
-
-排查慢速：
-
-1. `groot mihomo proxy delay <group>` 比较组内节点延迟，失败节点显示 `fail (...)`。
-2. 如需切换，按上面的流程操作。
-
-## 注意事项
-
-- `use` 是即时生效的运行时切换，不修改配置文件，mihomo 重启后会回到配置默认值；要永久改默认节点选择需走 `mihomo` skill 编辑配置。
-- `delay` 默认用 `http://www.gstatic.com/generate_204`，可用 `--url`、`--timeout` 调整。
-- 命令失败先报告原始错误；API 不通时检查 mihomo 是否在运行（`groot mihomo status`）。
+- **切换节点**：先查询代理组列表确认目标组类型为 `Selector`，再查询该组候选节点核对完整名称，最后提交切换。
+- **排查慢速或断流**：先按目标组探测全部候选节点延迟对比可用性，结合活动连接过滤定位具体域名所命中的规则与链路。
+- 若报控制端不可达或超时（`502`/`504`），先切换至 `mihomo` skill 检查服务状态与日志。

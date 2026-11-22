@@ -1,91 +1,39 @@
 ---
 name: mihomo
-description: 管理OpenWrt上的mihomo服务或配置时使用
+description: 查看、启停、重启、校验、热重载或回滚路由器上的mihomo服务与配置时使用
 ---
 
 # Mihomo
 
-当用户要求查看、启动、停止、重启、编辑、回滚或排查路由器上的 mihomo 时，使用本 skill。
+当用户要求查看、启动、停止、重启、编辑、校验、热重载、回滚或排查路由器上的 mihomo 时，使用本 skill。
 
 ## 核心约定
 
-- 统一使用 `groot mihomo`，不要直接调用本机 mihomo。
-- 默认 SSH 目标为 `root@10.0.0.1`。
-- 默认配置为 `/etc/mihomo/config.yaml`，配置目录为 `/etc/mihomo`。
-- 修改前先读取状态、日志或配置；修改后再次验证。
-- 不在回复中泄露密码、订阅 URL、token、secret、uuid 或私钥。
-- 简单 DNS hosts 解析使用 `dns` skill。
-- 节点切换、延迟测试、查看活动连接使用 `proxy` skill（`groot mihomo proxy`）。
+- 统一通过 Groot 服务端的 `mihomo` 与 `mihomo.config` 命名空间操作，调用前先按需检索最新签名，不要直接操作本机进程或裸跑远端命令覆盖文件。
+- 固定绑定 `r6s` 环境，远端配置目录为 `/etc/mihomo`，正式配置文件为 `/etc/mihomo/config.yaml`，服务单元为 `mihomo.service`。
+- 修改前先读取当前运行状态、日志或配置；修改完成后再次验证状态与日志。
+- 回复中严禁泄露密码、订阅地址、token、secret、uuid 或私钥。
+- 顶层 `hosts:` 下的简单静态域名解析归属 `dns` skill；代理组查看、切换、测延迟与活动连接查询归属 `proxy` skill。
 
-## 常用命令
+## 关键参数与限制
 
-```bash
-groot mihomo --help
-groot mihomo status
-groot mihomo logs --lines 100
-groot mihomo logs -f
-groot mihomo read
-groot mihomo start
-groot mihomo stop
-groot mihomo restart
-groot mihomo rollback
-groot mihomo proxy --help
-```
+- **日志行数 `lines`**：默认 `100`，有效范围 `1`–`5000`。实时日志流仅面向终端场景，只在用户明确要求持续追踪日志时使用。
+- **配置正文大小**：须为非空 UTF-8 文本且不含 NUL 字节，上限 `60 KiB`（超限返回 `413`）。
+- **历史备份保留数**：每次变更生成 `.bak.<UTC时间戳>` 备份，自动保留最近 `20` 份。
 
-指定其他路由器：
+## 配置变更与回滚机制
 
-```bash
-groot mihomo --host root@10.0.0.2 status
-groot mihomo --host root@10.0.0.2 read
-```
+写入配置在服务端互斥锁保护下执行：
 
-使用 `--help` 查看帮助，不要使用无效的 `groot mihomo help`。`logs -f` 会持续运行，只在用户明确要求实时日志时使用。
+1. 与线上现有内容逐字节一致时直接跳过写盘与重载（`changed` 为 `false`）。
+2. 先在远端临时目录执行校验；语法或规则错误返回 `400`，线上配置保持原样。
+3. 校验通过后备份原文件并原子替换正式配置。
+4. 若服务当前处于 `active` 且 `external-controller` 地址未变，通过热重载接口即时生效（`reloaded` 为 `true`）；若服务未运行或控制端监听地址变更，则自动启动或重启服务（`restarted` 为 `true`）。
 
-## 修改配置
+回滚操作会选取最新一份备份，校验通过后覆盖正式配置并按相同规则热重载或重启；无可用备份时返回 `404`。仅在用户明确要求，或确认刚提交的配置引发故障时执行回滚。
 
-优先读取现有配置：
+## 排障与风险提示
 
-```bash
-groot mihomo read
-```
-
-交互编辑：
-
-```bash
-groot mihomo edit
-```
-
-从 stdin 写入完整配置：
-
-```bash
-groot mihomo write < ./config.yaml
-```
-
-`edit` 和 `write` 会执行以下流程：
-
-1. 拉取或读取完整配置。
-2. 对比内容，没有变化时不重启。
-3. 上传到远端临时路径。
-4. 执行 `mihomo -t` 校验。
-5. 备份原配置并覆盖正式文件。
-6. 重启 mihomo。
-
-不要绕过该流程直接 SSH 覆盖远端配置。
-
-## 排障顺序
-
-1. 运行 `groot mihomo status`。
-2. 运行 `groot mihomo logs --lines 100`。
-3. 必要时运行 `groot mihomo read`，输出敏感字段时要打码。
-4. 根据结果决定是否编辑、重启或回滚。
-5. 操作后重新检查状态和日志。
-
-## 回滚与影响
-
-```bash
-groot mihomo rollback
-```
-
-回滚会恢复最新的 `/etc/mihomo/config.yaml.bak.*`，校验后重启服务。只有用户明确要求，或刚修改的配置确认有问题时才执行。
-
-`stop`、`restart`、`write`、`edit` 和 `rollback` 会影响路由器代理服务，执行前说明影响。命令失败时先报告原始错误要点，再决定是否继续操作。
+1. 先查服务状态（关注 `activeState`、`subState`、`mainPid`、`version`）。
+2. 再查近期日志定位报错上下文，必要时读取配置核对规则或代理组（展示时脱敏）。
+3. 停止、重启、写入配置和回滚都会影响路由器代理流量，执行前须向用户说明影响；调用失败时先报告原始错误核心信息，再决定后续动作。
