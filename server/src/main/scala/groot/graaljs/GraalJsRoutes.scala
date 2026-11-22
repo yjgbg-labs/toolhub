@@ -19,12 +19,19 @@ object GraalJsRoutes:
       case error: GraalStopping => stopping(ErrorBody("stopping", error.getMessage))
     }
 
-    command[GraalTask]("start") {
-      description("Enqueue JavaScript source from the UTF-8 text body; reserve 4 MiB from the 64 MiB budget before execution")
+    command[GraalTask]("submit") {
+      description("Submit JavaScript source from the UTF-8 text body; queued until a 4 MiB slot from the 64 MiB budget is available")
       val source = body.text("JavaScript source code, sent directly as text/plain") { minLength(1) }
       val cpu = param[String]("cpu", "Cumulative guest CPU time limit, e.g. 500ms or 2s") { minLength(1) }
       val timeout = param[String]("timeout", "Wall-clock execution timeout, excluding queue time, e.g. 30s") { minLength(1) }
-      handle { IO(JavaScript.source(source.value)).flatMap(manager.start(_, cpu.value, timeout.value)) }
+      val sessionId = param[Option[String]]("sessionId", "Optional caller session ID; implicitly supplied to SDK commands declaring sessionId")
+      val cwd = param[Option[String]]("cwd", "Optional caller working directory; implicitly supplied to SDK commands declaring cwd")
+      handle {
+        val ctx = List("sessionId" -> sessionId.value, "cwd" -> cwd.value).collect {
+          case (k, Some(v)) if v.trim.nonEmpty => k -> v.trim
+        }.toMap
+        IO(JavaScript.source(source.value)).flatMap(manager.submit(_, cpu.value, timeout.value, ctx))
+      }
     }
 
     command[List[GraalTask]]("list") {

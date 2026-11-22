@@ -29,7 +29,7 @@ class ShellSuite extends CatsEffectSuite:
             missing <- sdk.call("shell.execute", JsonModel[ShellRequest].encoder(ShellRequest("missing", "exit 0")))
             _ = assertEquals(missing.hcursor.get[Int]("status"), Right(404))
             _ <- GraalManager.resource(home.resolve("tasks"), IO.pure(sdk)).use { manager => for
-              task <- manager.start(JavaScript.source("""
+              task <- manager.submit(JavaScript.source("""
                 const r = (await tools.shell.execute({env:'custom',script:"printf 'named'; exit 7"})).body;
                 if (r.stdout !== 'named' || r.exitCode !== 7) throw Error(JSON.stringify(r));
                 await tools.shell.env.delete({name:'local'});

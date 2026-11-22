@@ -22,6 +22,7 @@ final class GraalManager private (
   private var running = Map.empty[String, Running]
   private var submitted = Map.empty[String, FiniteDuration]
   private var sources = Map.empty[String, Source]
+  private var contexts = Map.empty[String, Map[String, String]]
   private var completions = Map.empty[String, Deferred[IO, Either[Throwable, GraalTask]]]
   private var accepting = true
 
@@ -35,10 +36,10 @@ final class GraalManager private (
       )(start => (now - start).toNanos.toDouble / 1000000d))
     }
 
-  def start(source: Source, cpu: String, timeout: String): IO[GraalTask] =
-    IO(GraalManager.taskId()).flatMap(id => submit(id, source, cpu, timeout))
+  def submit(source: Source, cpu: String, timeout: String, context: Map[String, String] = Map.empty): IO[GraalTask] =
+    IO(GraalManager.taskId()).flatMap(id => submitTask(id, source, cpu, timeout, context))
 
-  private def submit(id: String, source: Source, cpu: String, timeout: String): IO[GraalTask] =
+  private def submitTask(id: String, source: Source, cpu: String, timeout: String, context: Map[String, String]): IO[GraalTask] =
     for
       limits <- IO((Validation.durationMs("cpu", cpu), Validation.durationMs("timeout", timeout)))
       _ <- IO.raiseUnless(source.getLanguage == "js" && source.hasCharacters)(InvalidGraalTask("Source must contain JavaScript characters"))
@@ -56,7 +57,7 @@ final class GraalManager private (
           _ <- store.createLog(id)
           _ <- store.insert(task, text)
           completed <- Deferred[IO, Either[Throwable, GraalTask]]
-          _ <- IO { submitted += id -> clock; completions += id -> completed; sources += id -> source }
+          _ <- IO { submitted += id -> clock; completions += id -> completed; sources += id -> source; contexts += id -> context }
           _ <- dispatch
           current <- store.get(id).flatMap(elapsed)
         yield current
@@ -82,8 +83,9 @@ final class GraalManager private (
         task = queued.copy(state = "running", startedAt = Some(now.toString))
         _ <- store.save(task)
         source <- IO.fromOption(sources.get(task.id))(new IllegalStateException(s"Missing admission snapshot for ${task.id}"))
+        taskContext = contexts.getOrElse(task.id, Map.empty)
         startClock <- IO.monotonic
-        started <- runner.start(task, source, store.logPath(task.id)).attempt
+        started <- runner.start(task, source, store.logPath(task.id), taskContext).attempt
         _ <- started match
           case Left(error) =>
             complete(task, RunResult("failed", None, 0d, Some(TaskError("startup_error", error.toString.take(8192))))) *>
@@ -132,7 +134,7 @@ final class GraalManager private (
         error = Some(TaskError("log_error", error.toString.take(8192)))), _ => finished)
       _ <- store.save(persisted)
       _ <- completions.get(task.id).traverse_(_.complete(Right(persisted)).void)
-      _ <- IO { completions -= task.id; sources -= task.id }
+      _ <- IO { completions -= task.id; sources -= task.id; contexts -= task.id }
     yield ()
 
   def cancel(id: String): IO[GraalTask] = serial {

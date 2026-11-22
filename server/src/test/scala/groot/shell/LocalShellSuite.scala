@@ -110,14 +110,14 @@ class LocalShellSuite extends CatsEffectSuite:
   test("real GraalJS SDK returns results and cancels subprocesses on task timeout and explicit cancellation") {
     registered.use { (_, sdk) => temporary.use { home => GraalManager.resource(home.resolve("tasks"), IO.pure(sdk)).use { manager =>
       for
-        ok <- manager.start(JavaScript.source("const r=(await tools.shell.execute({env:'local',script:\"printf 'sdk'; exit 9\"})).body; if(r.exitCode!==9||r.stdout!=='sdk')throw Error(JSON.stringify(r)); console.log(r.stdout);"), "1s", "10s")
+        ok <- manager.submit(JavaScript.source("const r=(await tools.shell.execute({env:'local',script:\"printf 'sdk'; exit 9\"})).body; if(r.exitCode!==9||r.stdout!=='sdk')throw Error(JSON.stringify(r)); console.log(r.stdout);"), "1s", "10s")
         done <- manager.await(ok.id)
         _ = assertEquals(done.state, "succeeded", done.error.toString)
         _ <- List(false, true).traverse_ { cancel =>
           val path = home.resolve(if cancel then "sdk-cancel" else "sdk-timeout")
           val source = "await tools.shell.execute({env:'local',script:" + Json.fromString(blocking(path)).noSpaces + "});"
           for
-            task <- manager.start(JavaScript.source(source), "1s", if cancel then "10s" else "500ms")
+            task <- manager.submit(JavaScript.source(source), "1s", if cancel then "10s" else "500ms")
             ids <- pids(path)
             _ <- if cancel then manager.cancel(task.id).void else IO.unit
             finished <- manager.await(task.id)

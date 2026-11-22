@@ -1,0 +1,23 @@
+{
+  "groot-codemode": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "./bin/groot-agy hook session-start",
+        "timeout": 5
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "call_mcp_tool|.*groot.*execute.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./bin/groot-agy hook pre-tool-use",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

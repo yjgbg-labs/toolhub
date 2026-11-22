@@ -35,6 +35,8 @@ CLI 的动态协议实现直接编入 Native 可执行文件；插件打成独�
 | `mise run chrome-test` | 真实 headless Chromium 生命周期和页面自动化集成测试 |
 | `mise run server-deploy` | 服务端测试、JAR 构建、user service 安装及健康检查 |
 | `mise run cli-deploy` | Native 编译、CLI/安装检查及安装 `groot-cli` |
+| `mise run agy-test` | Antigravity 插件 Scala 单元测试 |
+| `mise run agy-deploy` | Native 编译、端到端测试及安装 Antigravity `groot` 插件与内置 skills |
 | `mise run pluging-deploy` | 插件依赖安装、类型检查、bundle 构建、测试及安装 OpenCode 插件 |
 | `mise run widget-test` | 在目标 Mac 编译客户端并运行 Swift 协议测试 |
 | `mise run widget-build` | 测试后构建、签名 macOS app，并取回校验后的归档 |
@@ -69,6 +71,7 @@ server/cli/plugin 在本机完成构建与安装，交付方式为构建、测�
 
 - `SERVER_INSTALL_ROOT`：`~/.local/share/groot-http`；`SERVER_SERVICE`：`groot-http.service`
 - `CLI_BIN_DIR`：`~/.local/bin`，命令入口为其中的 `groot-cli` 普通可执行文件。
+- `AGY_PLUGIN_DIR`：`~/.gemini/config/plugins/groot`，Antigravity 插件包（含 Scala Native `bin/groot-agy`、`mcp_config.json`、`hooks.json`、`rules/AGENTS.md` 与 `skills/`）。
 - `OPENCODE_PLUGIN_DIR`：`~/.config/opencode/plugins`，插件入口为其中的 `groot.ts` 独立 bundle。
 - `GROOT_HOME`：`~/.config/groot`，保存调度、任务、状态、SQLite 和 Widget 数据。
 
@@ -255,7 +258,7 @@ SSE 断线自动退避重连；连接建立限时 5 秒、45 秒无事件时重�
   语法错误由隔离 Context 执行时报告；修复文件后下次尝试自动使用新版。
 - 不创建文件 watcher 或轮询定时器；旧内容按 LRU 容量淘汰，关闭 scheduler 时释放缓存引用。
   建议通过原子替换更新脚本，避免并发就地写入时读取到中间内容。
-  HTTP/CLI 的 `graaljs start` 由文本适配层构建原生 Source，继续支持一次性内联 JavaScript。
+  HTTP/CLI 的 `graaljs submit` 由文本适配层构建原生 Source，继续支持一次性内联 JavaScript。
 
 调度采用事件驱动：启动时恢复状态，创建/修改/删除/reset/资源配额变更和任务完成时唤醒调度，
 平时仅等待最近一次执行或重试的截止时间。队列等待资源释放事件；没有可到期任务时无限等待，
@@ -445,7 +448,7 @@ GraalJS 直接按服务端声明构建工具树。仅暴露给 GraalJS 的命令
 ### GraalJS 脚本任务
 
 ```sh
-groot-cli graaljs start --body 'console.log("hello")' --cpu 2s --timeout 30s
+groot-cli graaljs submit --body 'console.log("hello")' --cpu 2s --timeout 30s
 groot-cli graaljs list
 groot-cli graaljs status --id gjs_xxx
 groot-cli graaljs logs --id gjs_xxx
@@ -454,9 +457,9 @@ groot-cli graaljs cancel --id gjs_xxx
 groot-cli graaljs notifyOnFinish --id gjs_xxx
 ```
 
-`start` 必须指定 `cpu` 和 `timeout`，支持正整数加 `ms/s/m/h/d`。`cpu` 是 GraalVM
+`submit` 必须指定 `cpu` 和 `timeout`，支持正整数加 `ms/s/m/h/d`（另支持可选的隐式上下文参数 `sessionId`、`cwd`：传入后，当前任务内 SDK 调用同名参数的命令时将自动注入并从 JS 入参中隐去）。`cpu` 是 GraalVM
 累计 guest CPU 时间限额；`timeout` 是开始执行后的墙钟超时，包含 Context 初始化、不包含排队。
-`--body` 直接传入 JavaScript 源码，通过 `POST /graaljs/start?cpu=2s&timeout=30s` 的
+`--body` 直接传入 JavaScript 源码，通过 `POST /graaljs/submit?cpu=2s&timeout=30s` 的
 `text/plain` UTF-8 请求体发送，提交后保留源码快照。返回 JSON 包含任务 ID、状态、时间限制和日志路径。
 源码必须非空白，换行、引号和 Unicode 原样保留；错误定位使用 `<任务 ID>.graal.js`。
 
@@ -508,7 +511,7 @@ UTF-8 字符跨写入块也能正确处理；断开日志连接只停止订阅�
 参数定义沿用 `/openapi.json`；GraalJS 内不提供 `search()`。
 
 ```sh
-groot-cli graaljs start --cpu 2s --timeout 30s --body '
+groot-cli graaljs submit --cpu 2s --timeout 30s --body '
   const [health, jobs] = await Promise.all([
     tools.health(),
     tools.schedule.list()
@@ -516,7 +519,7 @@ groot-cli graaljs start --cpu 2s --timeout 30s --body '
   console.log(health.body);
   console.log(JSON.stringify(jobs.body));
    // 带参数：await tools.schedule.log({name: "example", lines: 20})
-   // 原始文本请求体：await tools.graaljs.start({cpu: "1s", timeout: "5s", body: "console.log(42)"})
+   // 原始文本请求体：await tools.graaljs.submit({cpu: "1s", timeout: "5s", body: "console.log(42)"})
 '
 ```
 

@@ -123,8 +123,13 @@ object Validation:
       }
     }
 
+  def nextRun(everyMs: Long, firstRunAt: Option[Instant], state: JobState): Option[Instant] =
+    state.nextRetryAt.map(Instant.parse)
+      .orElse(state.lastRunAt.map(value => Instant.parse(value).plusMillis(everyMs)))
+      .orElse(firstRunAt)
+
   def nextRun(job: ScheduleJob, state: JobState): Option[Instant] =
-    state.nextRetryAt.map(Instant.parse).orElse(state.lastRunAt.map(value => Instant.parse(value).plusMillis(durationMs(job.every))))
+    nextRun(durationMs(job.every), None, state)
 
   /** afterAttempt=1 schedules the first retry; cap before conversion to avoid exponential overflow. */
   def retryDelayMs(policy: RetryPolicy, afterAttempt: Int): Long =

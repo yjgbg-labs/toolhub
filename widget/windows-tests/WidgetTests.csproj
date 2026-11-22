@@ -4,11 +4,14 @@
     <TargetFramework>net6.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../windows/WidgetState.cs" Link="WidgetState.cs" />
     <Compile Include="../windows/SseParser.cs" Link="SseParser.cs" />
     <Compile Include="../windows/WidgetClient.cs" Link="WidgetClient.cs" />
     <Compile Include="../windows/WindowPosition.cs" Link="WindowPosition.cs" />
+    <Compile Include="../windows/DirectWriteRenderer.cs" Link="DirectWriteRenderer.cs" />
+    <EmbeddedResource Include="../windows/Assets/Twemoji.Mozilla.ttf" LogicalName="GrootWidget.Twemoji" />
   </ItemGroup>
 </Project>

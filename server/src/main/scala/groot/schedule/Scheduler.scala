@@ -7,17 +7,46 @@ import framework.model.JsonModel
 import groot.graaljs.{GraalManager, GraalTask, MissingGraalTask, TaskError}
 import java.nio.file.Path
 import java.time.Instant
+import org.graalvm.polyglot.Source
 import scala.concurrent.duration.*
 
+private[groot] final case class ScheduledItem(
+    everyMs: Long,
+    cpu: String,
+    timeout: String,
+    retry: RetryPolicy,
+    resource: Map[String, Double] = Map.empty,
+    enabled: Boolean = true,
+    firstRunAt: Option[Instant] = None,
+    expiresAt: Option[Instant] = None,
+    context: Map[String, String] = Map.empty,
+    scriptPath: Option[String] = None,
+    definitionHash: String
+)
+
+private[groot] trait ScheduleBackend:
+  def snapshot: IO[(Map[String, Double], Map[String, ScheduledItem])]
+  def state(name: String): IO[JobState]
+  def writeState(name: String, state: JobState): IO[Unit]
+  def removeState(name: String): IO[Unit]
+  def appendLog(name: String, text: String): IO[Unit]
+  def loadSource(name: String, item: ScheduledItem): IO[Source]
+  /** Optional post-run hook when the guest succeeds; returning Some(err) marks the attempt failed and eligible for retry. */
+  def onSucceeded(name: String, item: ScheduledItem, task: GraalTask, output: String, finishedAt: Instant): IO[Option[TaskError]] =
+    IO.pure(None)
+  /** Called when an item's expiresAt has passed before launch. */
+  def onExpired(name: String, now: Instant): IO[Unit] =
+    IO.unit
+
 final class Scheduler private (
-    store: Store,
+    backend: ScheduleBackend,
+    cronStore: Option[Store],
     graaljs: GraalManager,
     mutex: Mutex[IO],
     supervisor: Supervisor[IO],
-    changed: Queue[IO, Unit],
-    sources: ScriptSources
+    changed: Queue[IO, Unit]
 ):
-  private case class Running(job: ScheduleJob, state: JobState, done: Deferred[IO, Unit], record: Boolean = true)
+  private case class Running(item: ScheduledItem, state: JobState, done: Deferred[IO, Unit], record: Boolean = true)
   private var running = Map.empty[String, Running]
   private var queued = Vector.empty[String]
   private var accepting = true
@@ -28,17 +57,28 @@ final class Scheduler private (
   private def failureDelay(failures: Int): FiniteDuration = math.min(30L, 1L << math.min(5, failures)).seconds
 
   private def serial[A](operation: => IO[A]): IO[A] = mutex.lock.surround(IO.uncancelable(_ => IO.defer(operation)))
+
+  private def requireStore: Store =
+    cronStore.getOrElse(throw new UnsupportedOperationException("Scheduler instance is not backed by a static file Store"))
+
   private def requireJob(config: ScheduleConfig, name: String): IO[ScheduleJob] =
     IO.fromOption(config.jobs.get(name))(MissingJob(name))
 
-  private def definitionHash(job: ScheduleJob): String =
-    val json = JsonModel[ScheduleJob].encoder(job).printWith(io.circe.Printer.noSpaces.copy(sortKeys = true))
-    java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
-      .digest(json.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+  /** Execute a backend state mutation atomically under the scheduler lock, optionally invalidating item IDs, then wake the loop. */
+  private[groot] def mutate[A](invalidateIds: Iterable[String] = Nil)(operation: => IO[A]): IO[A] =
+    serial {
+      for
+        result <- operation
+        _ <- invalidateIds.toList.traverse_(invalidate)
+      yield result
+    }.guarantee(wake)
 
-  def config: IO[ScheduleConfig] = serial(store.config)
+  private[groot] def runningIds: IO[Set[String]] = serial(IO(running.keySet))
+
+  def config: IO[ScheduleConfig] = serial(requireStore.config)
 
   def writeConfig(value: ScheduleConfig): IO[ScheduleConfig] = serial {
+    val store = requireStore
     for
       previous <- store.config
       _ <- store.writeConfig(value)
@@ -48,13 +88,14 @@ final class Scheduler private (
     yield value
   }.guarantee(wake)
 
-  private def invalidate(name: String): IO[Unit] = store.removeState(name) *> IO {
+  private def invalidate(name: String): IO[Unit] = backend.removeState(name) *> IO {
     running.get(name).foreach(value => running = running.updated(name, value.copy(record = false)))
     queued = queued.filterNot(_ == name)
     recoveryAfter -= name
   }
 
   def put(name: String, job: ScheduleJob): IO[ScheduleJob] = serial {
+    val store = requireStore
     for
       config <- store.config
       _ <- store.writeConfig(config.copy(jobs = config.jobs.updated(name, job)))
@@ -63,6 +104,7 @@ final class Scheduler private (
   }.guarantee(wake)
 
   def delete(name: String): IO[Unit] = serial {
+    val store = requireStore
     for
       config <- store.config
       _ <- store.writeConfig(config.copy(jobs = config.jobs - name))
@@ -71,6 +113,7 @@ final class Scheduler private (
   }.guarantee(wake)
 
   def reset(name: String): IO[JobState] = serial {
+    val store = requireStore
     for
       config <- store.config
       _ <- requireJob(config, name)
@@ -79,6 +122,7 @@ final class Scheduler private (
   }.guarantee(wake)
 
   def log(name: String, lines: Int): IO[String] = serial {
+    val store = requireStore
     for
       config <- store.config
       _ <- requireJob(config, name)
@@ -90,6 +134,7 @@ final class Scheduler private (
   }
 
   def list: IO[List[ScheduleEntry]] = serial {
+    val store = requireStore
     for
       config <- store.config
       now <- IO.realTimeInstant
@@ -115,17 +160,17 @@ final class Scheduler private (
   }
 
   private def fits(total: Map[String, Double], next: Map[String, Double]): Boolean =
-    val used = running.values.toList.flatMap(_.job.resource).groupMapReduce(_._1)(_._2)(_ + _)
+    val used = running.values.toList.flatMap(_.item.resource).groupMapReduce(_._1)(_._2)(_ + _)
     (used.keySet ++ next.keySet).forall(key => used.getOrElse(key, 0d) + next.getOrElse(key, 0d) <= total.getOrElse(key, 0d))
 
-  private def appendLog(name: String, text: String): IO[Unit] = store.appendLog(name, text)
+  private def appendLog(name: String, text: String): IO[Unit] = backend.appendLog(name, text)
     .handleErrorWith(error => IO(scribe.error(s"Cannot append schedule log $name", error)))
 
   /** Only called with the scheduler mutex held; waiting for the guest never holds that mutex. */
-  private def observe(name: String, job: ScheduleJob, state: JobState, result: IO[Option[GraalTask]], fallback: TaskError, record: Boolean = true): IO[Unit] =
+  private def observe(name: String, item: ScheduledItem, state: JobState, result: IO[Option[GraalTask]], fallback: TaskError, record: Boolean = true): IO[Unit] =
     for
       done <- Deferred[IO, Unit]
-      active = Running(job, state, done, record)
+      active = Running(item, state, done, record)
       _ <- IO { running += name -> active; queued = queued.filterNot(_ == name) }
       _ <- supervisor.supervise {
         result.flatMap(task => finish(name, active, task, fallback))
@@ -151,75 +196,90 @@ final class Scheduler private (
   private def finish(name: String, active: Running, task: Option[GraalTask], fallback: TaskError): IO[Unit] = serial {
     for
       now <- IO.realTimeInstant
-      outcome = task.fold(if fallback.code == "interrupted" || fallback.code == "missing_task" then "interrupted" else "failed")(_.state)
-      error = task.fold(Some(fallback))(_.error)
+      rawOutcome = task.fold(if fallback.code == "interrupted" || fallback.code == "missing_task" then "interrupted" else "failed")(_.state)
+      rawError = task.fold(Some(fallback))(_.error)
       finishedAt = task.flatMap(_.finishedAt).getOrElse(now.toString)
-      retryAt = Option.when(outcome != "succeeded" && active.state.attempt <= active.job.retry.maxRetries)(
-        Instant.parse(finishedAt).plusMillis(Validation.retryDelayMs(active.job.retry, active.state.attempt)).toString)
       output <- task.traverse(value => graaljs.logs(value.id).map(_.toString)).handleError(_ => None)
+      isRecorded = running.get(name).exists(_.record)
+      hookError <- if isRecorded && rawOutcome == "succeeded" && task.nonEmpty then
+        backend.onSucceeded(name, active.item, task.get, output.getOrElse(""), Instant.parse(finishedAt))
+      else IO.pure(None)
+      outcome = if hookError.nonEmpty then "failed" else rawOutcome
+      error = hookError.orElse(rawError)
+      retryAt = Option.when(outcome != "succeeded" && active.state.attempt <= active.item.retry.maxRetries)(
+        Instant.parse(finishedAt).plusMillis(Validation.retryDelayMs(active.item.retry, active.state.attempt)).toString)
       _ <- appendLog(name, output.getOrElse("") + s"[$now] task=${active.state.lastTaskId.getOrElse("unsubmitted")} attempt=${active.state.attempt} state=$outcome" +
         error.fold("")(value => s" error=${value.code}: ${value.message}") + "\n")
-      _ <- IO.whenA(running.get(name).exists(_.record)) {
-        store.writeState(name, active.state.copy(lastExitCode = Some(if outcome == "succeeded" then 0 else if outcome == "cancelled" || outcome == "interrupted" then 143 else 1),
+      _ <- IO.whenA(isRecorded) {
+        backend.writeState(name, active.state.copy(lastExitCode = Some(if outcome == "succeeded" then 0 else if outcome == "cancelled" || outcome == "interrupted" then 143 else 1),
           lastTaskId = task.map(_.id), lastTaskState = Some(outcome), lastFinishedAt = Some(finishedAt), lastError = error,
           nextRetryAt = retryAt, inFlight = false)) *>
-          retryAt.traverse_(at => appendLog(name, s"[$now] retry ${active.state.attempt}/${active.job.retry.maxRetries} at $at\n"))
+          retryAt.traverse_(at => appendLog(name, s"[$now] retry ${active.state.attempt}/${active.item.retry.maxRetries} at $at\n"))
       }
       _ <- IO { running -= name; recoveryAfter -= name }
     yield ()
   }
 
-  private def recover(config: ScheduleConfig, now: Instant): IO[Unit] = config.jobs.toList.traverse_ { (name, job) =>
+  private def recover(items: Map[String, ScheduledItem], now: Instant): IO[Unit] = items.toList.traverse_ { (name, item) =>
     if running.contains(name) then IO.unit
-    else store.state(name).flatMap { state =>
+    else backend.state(name).flatMap { state =>
       // Config and state are separate atomic files. Detect a crash between config replacement and invalidation.
-      val stale = state.definitionHash.exists(_ != definitionHash(job))
+      val stale = state.definitionHash.exists(_ != item.definitionHash)
       IO.whenA(stale)(invalidate(name)) *>
-        IO.whenA(state.inFlight && (stale || recoveryAfter.get(name).forall(!_._1.isAfter(now))))(observe(name, job, state, result(state),
+        IO.whenA(state.inFlight && (stale || recoveryAfter.get(name).forall(!_._1.isAfter(now))))(observe(name, item, state, result(state),
           TaskError("interrupted", "Server stopped before GraalJS admission completed"), record = !stale))
     }
   }
 
-  private def start(name: String, job: ScheduleJob, now: Instant): IO[Unit] =
+  private def submitItem(name: String, item: ScheduledItem, now: Instant): IO[Unit] =
     for
-      previous <- store.state(name)
-      submitted <- sources.snapshot(Path.of(job.script)).flatMap(source => graaljs.start(source, job.cpu, job.timeout)).attempt
+      previous <- backend.state(name)
+      submitted <- backend.loadSource(name, item).flatMap(source => graaljs.submit(source, item.cpu, item.timeout, item.context)).attempt
       task = submitted.toOption
       state = JobState(lastRunAt = Some(now.toString), lastTaskId = task.map(_.id), lastTaskState = task.map(_.state),
-        attempt = if previous.nextRetryAt.nonEmpty then previous.attempt + 1 else 1, inFlight = true, definitionHash = Some(definitionHash(job)))
+        attempt = if previous.nextRetryAt.nonEmpty then previous.attempt + 1 else 1, inFlight = true, definitionHash = Some(item.definitionHash))
       fallback = submitted.fold(error => TaskError(if error.isInstanceOf[ScriptReadError] then "source_error" else "submission_error", error.toString.take(8192)),
         _ => TaskError("missing_task", "GraalJS task disappeared"))
       _ <- appendLog(name, s"\n[$now] start task=${state.lastTaskId.getOrElse("unsubmitted")} attempt=${state.attempt}\n")
       // Admission returns the ID. Keep live ownership even if persisting it fails; process-loss recovery
       // intentionally accepts the window between admission and this state write.
-      _ <- store.writeState(name, state).guarantee(observe(name, job, state, result(state), fallback))
+      _ <- backend.writeState(name, state).guarantee(observe(name, item, state, result(state), fallback))
     yield ()
 
   /** One scheduling decision, called only at startup, after an event, or when the earliest deadline expires. */
   private[schedule] def dispatch: IO[Option[Instant]] = serial {
     for
-      config <- store.config
+      snap <- backend.snapshot
+      (resources, rawItems) = snap
       now <- IO.realTimeInstant
-      _ <- IO.whenA(accepting) {
-        recover(config, now) *> IO.defer { config.jobs.toList.sortBy(_._1).traverse_ { case (name, job) =>
-          if !job.enabled || running.contains(name) || queued.contains(name) then IO.unit
-          else store.state(name).flatMap { state =>
-            IO.whenA(!state.inFlight && Validation.nextRun(job, state).forall(!_.isAfter(now)))(IO { queued :+= name })
+      items <- if !accepting then IO.pure(rawItems) else
+        recover(rawItems, now) *> rawItems.toList.sortBy(_._1).foldLeftM(rawItems) { case (acc, (name, item)) =>
+          if !item.enabled || running.contains(name) || queued.contains(name) then IO.pure(acc)
+          else if item.expiresAt.exists(!now.isBefore(_)) then
+            backend.onExpired(name, now) *> invalidate(name) *> IO.pure(acc - name)
+          else backend.state(name).flatMap { state =>
+            IO.whenA(!state.inFlight && Validation.nextRun(item.everyMs, item.firstRunAt, state).forall(!_.isAfter(now)))(IO { queued :+= name }).as(acc)
           }
-        } } *> IO.defer { queued.toList.traverse_ { name => IO.defer {
-          config.jobs.get(name) match
+        }
+      _ <- IO.whenA(accepting) {
+        queued.toList.traverse_ { name => IO.defer {
+          items.get(name) match
             case None => IO { queued = queued.filterNot(_ == name) }
-            case Some(job) if !job.enabled => IO { queued = queued.filterNot(_ == name) }
-            case Some(job) if !fits(config.resources, job.resource) => IO.unit
-            case Some(job) => start(name, job, now)
-        } } }
+            case Some(item) if !item.enabled => IO { queued = queued.filterNot(_ == name) }
+            case Some(item) if !fits(resources, item.resource) => IO.unit
+            case Some(item) => submitItem(name, item, now)
+        } }
       }
-      deadlines <- config.jobs.toList.traverse { (name, job) =>
+      deadlines <- items.toList.traverse { (name, item) =>
         // A resource-blocked job waits for completion/config events, never for an already-expired timer.
-        if !job.enabled || running.contains(name) || queued.contains(name) then IO.pure(None)
-        else store.state(name).map(state => if state.inFlight then None else Validation.nextRun(job, state))
+        if !item.enabled then IO.pure(None)
+        else if running.contains(name) || queued.contains(name) then IO.pure(item.expiresAt)
+        else backend.state(name).map { state =>
+          if state.inFlight then None
+          else List(Validation.nextRun(item.everyMs, item.firstRunAt, state), item.expiresAt).flatten.minOption
+        }
       }
-      recoveries = recoveryAfter.toList.collect { case (name, (at, _)) if config.jobs.contains(name) && !running.contains(name) => at }
+      recoveries = recoveryAfter.toList.collect { case (name, (at, _)) if items.contains(name) && !running.contains(name) => at }
     yield (deadlines.flatten ++ recoveries).minOption
   }
 
@@ -254,6 +314,35 @@ final class Scheduler private (
   }
 
 object Scheduler:
+  private[schedule] def jobHash(job: ScheduleJob): String =
+    val json = JsonModel[ScheduleJob].encoder(job).printWith(io.circe.Printer.noSpaces.copy(sortKeys = true))
+    java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+      .digest(json.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+
+  private final class CronBackend(store: Store, sources: ScriptSources) extends ScheduleBackend:
+    def snapshot: IO[(Map[String, Double], Map[String, ScheduledItem])] =
+      store.config.map { cfg =>
+        val items = cfg.jobs.map { (name, job) =>
+          name -> ScheduledItem(
+            everyMs = Validation.durationMs(job.every),
+            cpu = job.cpu,
+            timeout = job.timeout,
+            retry = job.retry,
+            resource = job.resource,
+            enabled = job.enabled,
+            scriptPath = Some(job.script),
+            definitionHash = jobHash(job)
+          )
+        }
+        cfg.resources -> items
+      }
+    def state(name: String): IO[JobState] = store.state(name)
+    def writeState(name: String, state: JobState): IO[Unit] = store.writeState(name, state)
+    def removeState(name: String): IO[Unit] = store.removeState(name)
+    def appendLog(name: String, text: String): IO[Unit] = store.appendLog(name, text)
+    def loadSource(name: String, item: ScheduledItem): IO[Source] =
+      IO.fromOption(item.scriptPath)(MissingJob(name)).flatMap(path => sources.snapshot(Path.of(path)))
+
   def resource(graaljs: GraalManager, home: Path = Store.defaultHome, startLoop: Boolean = true): Resource[IO, Scheduler] =
     managed(graaljs, new Store(home), startLoop)
 
@@ -261,11 +350,21 @@ object Scheduler:
     for
       _ <- store.ownership
       _ <- Resource.eval(store.initialize)
+      sources <- ScriptSources.resource()
+      scheduler <- build(graaljs, new CronBackend(store, sources), Some(store), startLoop)
+    yield scheduler
+
+  private[groot] def withBackend(graaljs: GraalManager, backend: ScheduleBackend, startLoop: Boolean = true): Resource[IO, Scheduler] =
+    build(graaljs, backend, None, startLoop)
+
+  private def build(graaljs: GraalManager, backend: ScheduleBackend, cronStore: Option[Store], startLoop: Boolean): Resource[IO, Scheduler] =
+    for
       mutex <- Resource.eval(Mutex[IO])
       supervisor <- Supervisor[IO](await = true)
       changed <- Resource.eval(Queue.bounded[IO, Unit](1))
-      sources <- ScriptSources.resource()
-      scheduler = new Scheduler(store, graaljs, mutex, supervisor, changed, sources)
-      _ <- Resource.make(scheduler.serial((store.config, IO.realTimeInstant).tupled.flatMap(scheduler.recover)))(_ => scheduler.shutdown)
+      scheduler = new Scheduler(backend, cronStore, graaljs, mutex, supervisor, changed)
+      _ <- Resource.make(scheduler.serial((backend.snapshot, IO.realTimeInstant).tupled.flatMap {
+        case ((_, items), now) => scheduler.recover(items, now)
+      }))(_ => scheduler.shutdown)
       _ <- if startLoop then scheduler.loop.background.void else Resource.unit[IO]
     yield scheduler

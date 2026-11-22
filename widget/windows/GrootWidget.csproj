@@ -5,11 +5,13 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets/opencode-site.ico</ApplicationIcon>
     <Version>2.0.0</Version>
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="Assets/opencode-site.ico" LogicalName="GrootWidget.Icon" />
+    <EmbeddedResource Include="Assets/Twemoji.Mozilla.ttf" LogicalName="GrootWidget.Twemoji" />
   </ItemGroup>
 </Project>

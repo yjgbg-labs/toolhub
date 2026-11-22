@@ -1,67 +1,35 @@
 ---
 name: widget
-description: 修改或排查 Groot Windows 原生悬浮窗时使用
+description: 修改或排查Groot桌面原生悬浮窗及状态项时使用
 ---
 
 # Groot 悬浮窗
 
-用户提到“悬浮窗”或 `groot widget`，并要求修改内容、布局、状态或安装行为时使用。普通网页和其他 Windows 窗口不适用。
+当用户提到“悬浮窗”或 `widget`，并要求增删改面板监控项、调整窗口参数、修改客户端绘制逻辑或排查显示问题时使用本 skill。普通网页和其他桌面应用窗口不适用。
 
-## 代码位置
+## 运行时接口与关键参数
 
-- 命令入口：`lib/widget/index.ts`
-- Redis 存储：`lib/widget/store.ts`、`lib/widget/redis.ts`
-- 原生窗口：`lib/widget/windows-host/Program.cs`
-- 原生绘制：`lib/widget/windows-host/WidgetCanvas.cs`
-- Redis 轮询：`lib/widget/windows-host/RedisWidgetClient.cs`
-- 状态模型：`lib/widget/windows-host/WidgetState.cs`
-- Windows 安装：`lib/widget/install.ts`、`lib/widget/install-windows.ps1`
+日常读写监控项与窗口配置统一通过 Groot 服务端的 `widget` 与 `widget.config` 命名空间完成（调用前按需检索签名）：
 
-## 架构约定
+- **监控项字段**：`key`（长度为 `1`–`128` 字符的唯一标识）、`label`（左侧标题）、`value`（右侧单行纯文本，省略或空白时渲染红黄绿三色信号灯）、`color`（取值为 `red`、`yellow` 或 `green`）、`order`（排序整数，越小越靠前）。
+- **窗口配置字段**：位置坐标 `x` 与 `y`（相对主屏幕左上角的逻辑点坐标）、窗口宽度 `width`、置顶布尔开关 `topMost`、不透明度 `opacity`、字号 `fontSize` 与行高 `rowHeight`。
+- **实时同步机制**：服务端持久化保存状态与窗口配置，桌面客户端通过 SSE 订阅快照（首次连接立即推送完整快照，变更时实时推送，空闲时每 `15` 秒发送一次同步快照，断线自动重连）。
 
-- Redis 是 Widget 状态与设置的唯一真源，不保存本地 `widget.json` 或 Windows `settings.json`。
-- `groot widget set/delete` 分别使用 `HSET/HDEL` 修改 `groot:widget:items` 的独立字段。
-- `groot widget show` 将按面板顺序以表格输出 Redis 中的全部 item，供程序化读取。
-- `groot widget config` 读写 Redis String `groot:widget:settings`。
-- Windows 原生程序每 2 秒读取 Redis，断线后自动重建连接，不依赖 Linux HTTP 服务。
-- Linux 使用 `groot` ACL 用户；Windows 使用受限的 `widget` 用户，只能读状态并回写设置。
-- `value` 统一为文本；省略 value 时显示红黄绿三灯。
+## 源码位置与视觉约束
 
-## 核心规则
+- **服务端实现**：`server/src/main/scala/groot/widget/`（路由、校验、SQLite 存储与快照广播）。
+- **桌面客户端**：`widget/windows/`（C# / DirectWrite 渲染、无边框置顶窗体、托盘与 SSE 同步）、`widget/macos/`（Swift / AppKit 客户端）及各自测试目录。
+- **视觉与交互底线**：
+  - 延续深色背景、等宽/对齐键值行与紧凑排版的视觉风格，未经要求不擅自做全面重设计。
+  - Windows 端所有像素尺寸统一在画布层按 `DeviceDpi` 换算，彩色国旗与 emoji 通过 DirectWrite 渲染。
+  - 保留无边框、置顶、系统托盘、鼠标拖拽写回坐标、圆角与按条目数量自动伸缩高度的行为。
+  - 修改状态或配置数据结构时，必须同步更新服务端 Scala 模型、桌面端模型及双端协议测试。
 
-- 延续深色、等宽字体、紧凑键值行的视觉语言，不擅自全面重设计。
-- DPI 尺寸统一在 `WidgetCanvas` 中按 `DeviceDpi` 换算。
-- TTL 过期后文本变灰，灯全部熄灭。
-- 保留无边框、置顶、托盘、拖动、圆角和自动高度行为。
-- 修改状态结构时同步检查 TypeScript 和 C# 模型及测试。
-- 遵守仓库 `AGENTS.md`，源码只在新分支 worktree 中修改。
+## 修改与验收流程
 
-## 修改流程
-
-1. 读取本次涉及的 TypeScript、C# 和测试，确认现状。
-2. 使用 `apply_patch` 修改，每次补丁不超过 200 行。
-3. 执行统一验证：
-
-```bash
-mise run widget-windows-build
-```
-
-4. C# 改动合并后重新安装原生程序：
-
-```bash
-mise run widget-windows-deploy
-```
-
-5. 通过实际 Windows 截图检查 DPI、行高、文字基线、灯尺寸和自动高度。
-
-## 验证
-
-```bash
-groot widget config read
-groot-cli shell execute --body '{"env":"windows","script":"Get-Process GrootWidget -ErrorAction Stop | Select-Object Name,Id,SessionId,Responding | ConvertTo-Json"}'
-```
-
-- 必须确认 Redis Hash 中存在最新状态，设置 String 可正常读取。
-- Windows 进程必须位于交互会话并响应正常。
-- 修改后执行一次 `set`，确认窗口无需重启即可更新。
-- 重启 Windows 程序，确认能恢复 Redis 中最后状态和窗口设置。
+1. 严格遵守仓库 worktree 分支流程，先阅读涉及的服务端与客户端源码及现有测试。
+2. 完成小步修改后，通过项目 `mise.toml` 中对应的构建与测试任务（如 Windows 端的测试、构建与部署任务，或 macOS 端对应任务）执行自动化验证与安装。
+3. **运行态核验**：
+   - 读取窗口配置与监控项列表确认服务端数据正常。
+   - 在 Windows 环境中核查 `GrootWidget` 进程处于交互式用户会话（如 `SessionId` 大于 `0`）且 `Responding` 为 `true`。
+   - 写入一次测试状态更新，确认悬浮窗无需重启即可实时刷新；重启客户端进程后确认能完整恢复最后状态与窗口位置。

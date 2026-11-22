@@ -5,93 +5,30 @@ description: 创建、修改、构建、打包或部署项目及管理工具版�
 
 # 项目任务与工具版本
 
-一次性项目流程由 `mise.toml` 编排；周期任务使用 `schedule` skill，JDK 细节使用 `java` skill。
+管理项目一次性构建、测试、打包、部署任务及工具链版本时使用本 skill；周期性后台调度归属 `schedule` skill，JDK 细节归属 `java` skill。
 
 ## 核心约定
 
-- 项目根目录提供 `mise.toml`，正常构建、测试和部署统一执行 `mise run <task>`。
-- 任务在配置所在项目根目录执行，`depends` 声明真实依赖；保留已有任务名称和安装目标。
-- 每个 `run` 是一个 shell 脚本；Unix 默认失败即停止，不为并行任务添加虚假依赖。
-- 普通依赖失败时下游不执行；`mise run --continue-on-error <task>` 可继续独立分支。
-- `config.env` 可继续保存实际使用的部署参数；含 shell 展开或默认值的文件由脚本 `. ./config.env` 加载。
-- 需要向子进程导出配置时使用 `set -a; . ./config.env; set +a`。
-- 项目可用 `[tools]` 固定工具版本；已有 Bun、uv 环境继续遵守各自的包管理约定。
-- JDK 通过 `mise exec java@temurin-<version> -- <command>` 选择；已有 Java 配置时可用 `mise exec -- <command>`。
-- CLI 可执行文件安装到 `~/.local/bin`；本机部署直接安装本机构建产物到目标目录。
-- 跨机器分发沿用项目实际机制，使用明确版本并校验 SHA-256。
-- Kubernetes YAML 固定放在 `./k8s`，部署保留项目已有资源跟踪，禁止用 `kubectl apply` 绕过它。
+- **统一编排入口**：项目根目录使用 `mise.toml` 声明任务与工具版本，正常构建、测试和部署均通过 `mise` 任务入口执行；保留项目既有任务命名与安装目标。
+- **依赖图语义**：在任务定义中用 `depends` 声明真实前置依赖（无依赖的分支可并行执行，共享前置任务只跑一次，默认任一前置失败则下游终止）；不人为添加虚假顺序依赖，确需严格串行时再构成依赖链。
+- **配置与脚本加载**：部署参数可集中存放在项目根目录 `config.env`；多行任务脚本使用 TOML 多行字面量字符串（避免引号、反斜杠与 heredoc 被提前转义），需向子进程导出配置变量时在脚本内开启自动导出后加载 `config.env`。
+- **工作目录与并发控制**：任务默认在 `mise.toml` 所在项目根目录运行，仅在确需调用方目录时显式配置 `dir`；可通过并发度参数（如 `jobs`）限制同时运行的任务数。
+- **包管理与交付边界**：已有 Bun、uv 环境继续遵循各自包管理器规范；本机 CLI 产物默认安装至 `~/.local/bin`；跨机器分发必须固定明确版本号并校验 `SHA-256`；严禁将 token、密码、私钥或 Secret 明文写入配置、脚本或构建制品。
+- **Kubernetes 约定**：涉及集群资源渲染、差异比对、同步或资源清单跟踪时，必须先读取同目录下的 [k8s.md](./k8s.md)；Kubernetes 清单固定放在项目根目录 `./k8s`，严禁绕过项目资源跟踪工具直接向集群手工提交清单。
 
-## 任务定义
+## 标准工作流程
 
-```toml
-[tasks.install]
-run = "bun install --frozen-lockfile"
+1. 阅读项目的 `mise.toml`、`config.env` 及被引用的构建脚本，理清任务依赖图与产物安装位置。
+2. 确认本机 `mise` 可用（默认安装路径 `~/.local/bin/mise`）；若配置文件尚未授权信任，先完整审阅配置内容确认无恶意脚本后，仅对该 `mise.toml` 路径单独信任（禁止全局无条件信任）。
+3. 先对任务配置做合法性校验并查看任务列表，再以干跑模式（dry-run）核对目标任务的执行链路（干跑阶段绝不实际触发上传制品、重启服务或改动集群）。
+4. 执行满足当前用户目标的最小必要任务；仅在定位故障时临时单步排查内部步骤，修复后必须重新通过对应的 `mise` 任务完整验收。
+5. 部署类任务完成后，逐项核验目标可执行文件、systemd 服务状态或 HTTP 健康检查端点。
 
-[tasks.test]
-depends = ["install"]
-run = "bun test"
+## 常驻服务与排障要点
 
-[tasks.build]
-depends = ["test"]
-run = "bun run build"
-
-[tasks.deploy]
-depends = ["build"]
-run = "./scripts/deploy.sh"
-
-[tasks.status]
-run = "./scripts/status.sh"
-```
-
-多行 shell 使用 TOML 字面量字符串，保留引号、反斜杠和 heredoc：
-
-```toml
-[tasks.package]
-depends = ["build"]
-run = '''
-set -eu
-. ./config.env
-bun scripts/package.ts "$ARTIFACT_VERSION"
-'''
-```
-
-`depends` 中的任务可并行执行，共享依赖只执行一次。需要严格顺序时建立依赖链。
-`mise run -j 2 build` 限制并发；mise 参数放在任务名前，任务名后的参数会传给任务。
-任务默认从项目根目录运行，只有确实需要调用者目录时才设置 `dir = "{{cwd}}"`。
-
-## 工作流程
-
-1. 读取 `mise.toml`、`config.env` 和相关脚本，确认任务图及安装目标。
-2. 先检查 `command -v mise` 和 `mise --version`。
-3. 阅读配置后按需执行 `mise trust ./mise.toml`，不盲目全局信任。
-4. 执行 `mise tasks validate` 校验配置，`mise tasks ls` 列出入口。
-5. 使用 `mise run --dry-run <task>` 检查依赖图，再执行用户目标对应的最小任务。
-6. 部署后验证命令入口、服务状态或 HTTP 健康端点。
-
-只有排障时才直接执行任务内部命令；修复后仍需通过对应 mise 任务验证。
-检查任务图时使用 dry-run，不运行会上传制品、重启服务或改动集群的部署任务。
-
-## 安装与服务
-
-mise 尚未安装时按 <https://mise.jdx.dev/installing-mise.html> 安装独立二进制到
-`~/.local/bin/mise`；用 `mise self-update` 更新。
-
-JDK 安装示例：`mise install java@temurin-25`。
-systemd 使用 mise 的绝对路径和显式工具版本，部署时预装并验证 JDK，
-服务设置 `Environment=MISE_EXEC_AUTO_INSTALL=false`，不在启动时下载工具。
-
-## Kubernetes
-
-涉及 Kubernetes 资源、render、diff、deploy 或 inventory 时，先读取 [k8s.md](./k8s.md)。
-在 `mise.toml` 中调用项目实际使用的部署工具，部署前执行 diff，保持资源归属和删除语义。
-
-## 排障
-
-- 找不到任务：确认项目根目录、配置文件名、任务名称和信任状态。
-- 缺失依赖或循环：运行 `mise tasks validate`，修正 `depends`。
-- 构建或安装失败：从首个失败任务排查，检查产物、目标目录和权限。
-- shell 行为异常：检查 TOML 字符串转义、heredoc 和 `config.env` 的加载方式。
-- Java 版本错误：用 `mise exec java@<version> -- java --version` 验证，并检查项目 Toolchain。
-- 远程制品校验失败：核对项目配置中的版本、下载地址和校验文件。
-
-不要把 token、密码、私钥或 Secret 明文写入配置、脚本或制品。
+- **systemd 集成**：服务单元文件须引用 `mise` 绝对路径与显式工具版本，在部署阶段提前装好并验证所需工具，且在服务环境中固定设置 `MISE_EXEC_AUTO_INSTALL=false`，杜绝服务启动时联网安装。
+- **常见故障定位**：
+  - 提示找不到任务或拒绝加载：核对当前项目根目录、`mise.toml` 文件名、任务名拼写及配置信任状态。
+  - 依赖缺失或成环：执行配置校验修正 `depends` 关系。
+  - 脚本转义异常：检查 TOML 单引号字面量字符串边界与 `config.env` 加载位置。
+  - 制品校验不通过：比对 `config.env` 中的目标版本、分发地址与对应的 `SHA-256` 校验值。

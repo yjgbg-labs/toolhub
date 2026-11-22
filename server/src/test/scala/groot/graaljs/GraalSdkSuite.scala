@@ -13,9 +13,9 @@ object GraalSdkSuite:
 class GraalSdkSuite extends CatsEffectSuite:
   import GraalSdkSuite.*
 
-  private def run(manager: GraalManager, source: String, cpu: String = "5s", timeout: String = "10s"): IO[(GraalTask, String)] =
+  private def run(manager: GraalManager, source: String, cpu: String = "5s", timeout: String = "10s", context: Map[String, String] = Map.empty): IO[(GraalTask, String)] =
     for
-      submitted <- manager.start(JavaScript.source(source), cpu, timeout)
+      submitted <- manager.submit(JavaScript.source(source), cpu, timeout, context)
       task <- awaitUntil(manager.status(submitted.id))(_.terminal)
       log <- manager.logs(task.id)
     yield (task, log.toString)
@@ -260,9 +260,9 @@ class GraalSdkSuite extends CatsEffectSuite:
         }
         _ <- GraalManager.managed(home.resolve("data"), GraalRunner.resource(IO.pure(GraalCommandSdk(app))), Limits.taskBytes).use { manager =>
           (for
-            first <- manager.start(JavaScript.source("await tools.wait();"), "5s", "10s")
+            first <- manager.submit(JavaScript.source("await tools.wait();"), "5s", "10s")
             _ <- started.get.timeout(5.seconds)
-            second <- manager.start(JavaScript.source("console.log('next');"), "5s", "10s")
+            second <- manager.submit(JavaScript.source("console.log('next');"), "5s", "10s")
             _ <- manager.cancel(first.id)
             _ <- finalizing.get.timeout(5.seconds)
             waiting <- manager.status(second.id)
@@ -339,7 +339,7 @@ class GraalSdkSuite extends CatsEffectSuite:
             command[PlainText]("health") { handle { IO.pure(PlainText("ok")) } }
           }
           commands.complete(GraalCommandSdk(app)) *> run(manager, """
-            const child = await tools.graaljs.start({cpu: "1s", timeout: "5s", body: 'console.log((await tools.health()).body)'});
+            const child = await tools.graaljs.submit({cpu: "1s", timeout: "5s", body: 'console.log((await tools.health()).body)'});
             const logs = await tools.graaljs.logsFollow({id: child.body.id});
             const status = await tools.graaljs.status({id: child.body.id});
             if (status.body.state !== "succeeded" || !logs.body.includes("data: ok")) throw Error(JSON.stringify(status));
@@ -350,6 +350,51 @@ class GraalSdkSuite extends CatsEffectSuite:
             assertEquals(task.state, "succeeded", log)
             assert(log.contains("nested task succeeded") && log.contains("501 preserved"), log)
           }
+        }
+      yield ()
+    }
+  }
+
+  test("graaljs.submit context implicitly supplies and hides sessionId/cwd, while omitting context keeps them explicit") {
+    temporary.use { home =>
+      for
+        commands <- Deferred[IO, GraalCommandSdk]
+        _ <- GraalManager.resource(home.resolve("data"), commands.get).use { manager =>
+          val app = httpApp {
+            GraalJsRoutes.register(manager)
+            command[PlainText]("echoCtx") {
+              val sessionId = param[String]("sessionId", "Session")
+              val cwd = param[Option[String]]("cwd", "Cwd")
+              val bodyText = body[Payload]("Payload")
+              handle { IO.pure(PlainText(s"${sessionId.value}|${cwd.value.getOrElse("-")}|${bodyText.value.text}")) }
+            }
+          }
+          for
+            _ <- commands.complete(GraalCommandSdk(app))
+            implicitRun <- run(
+              manager,
+              """
+                const direct = await tools.echoCtx({ text: "hello", values: [1] });
+                const child = await tools.graaljs.submit({ cpu: "1s", timeout: "5s", body: 'console.log((await tools.echoCtx({ text: "nested", values: [] })).body)' });
+                const childLogs = await tools.graaljs.logsFollow({ id: child.body.id });
+                console.log("direct=" + direct.body);
+                console.log("child=" + childLogs.body);
+              """,
+              context = Map("sessionId" -> "ses_ctx_1", "cwd" -> "/work/dir")
+            )
+            _ = assertEquals(implicitRun._1.state, "succeeded", implicitRun._2)
+            _ = assert(implicitRun._2.contains("direct=ses_ctx_1|/work/dir|hello"), implicitRun._2)
+            _ = assert(implicitRun._2.contains("data: ses_ctx_1|/work/dir|nested"), implicitRun._2)
+            explicitRun <- run(
+              manager,
+              """
+                const res = await tools.echoCtx({ sessionId: "ses_explicit", body: { text: "manual", values: [] } });
+                console.log("explicit=" + res.body);
+              """
+            )
+            _ = assertEquals(explicitRun._1.state, "succeeded", explicitRun._2)
+            _ = assert(explicitRun._2.contains("explicit=ses_explicit|-|manual"), explicitRun._2)
+          yield ()
         }
       yield ()
     }
