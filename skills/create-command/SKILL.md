@@ -1,68 +1,32 @@
 ---
 name: create-command
-description: 新增 groot 子命令或调整子命令骨架时使用
+description: 新增groot子命令或调整子命令骨架时使用
 ---
 
 # 创建 groot 子命令
 
-当用户要求新增 groot 子命令时使用本 skill。只做命令骨架与接线，不实现具体业务逻辑。
+当用户要求在旧版 TypeScript CLI 框架中新增子命令或调整命令模块骨架时使用本 skill。只处理命令骨架、模块组织与接线约定。
 
 ## 核心约定
 
-- 命令名 = 目录名：`lib/<name>/index.ts`，`<name>` 用小写字母、数字、连字符。
-- 框架（bin/main.ts）会自动发现并 import 所有模块，**不需要**注册、改框架代码或新建 metadata 文件。
-- 每次 `groot` 调用都会 import 全部模块：模块顶层**禁止副作用**（不许连网络、起进程、读硬件），逻辑全部放进 run 函数。
-- 模块运行在框架进程内：**禁止 `process.exit()`**，用 `return <退出码>` 结束。
-- meta 只放 `description`（一行英文，出现在 `groot --help` 里）；命令名由目录决定，meta 里没有 name 字段。
+- **目录即命令名**：模块入口固定为 `lib/<name>/index.ts`，`<name>` 仅使用小写字母、数字和连字符。
+- **自动发现**：主入口会自动扫描并加载全部模块，无需手工注册路由或新增独立元数据文件。
+- **模块顶层零副作用**：每次运行都会导入所有子命令模块，模块顶层严禁发起网络连接、拉起子进程或读写外部硬件，所有执行逻辑必须封装在运行函数内部。
+- **进程内返回退出码**：命令运行在宿主进程内，严禁直接调用进程退出函数，统一通过返回整数退出码结束（成功返回 `0`，失败返回非零值如 `1`）。
+- **元数据字段**：描述对象仅保留单行英文 `description` 字段用于顶层帮助展示，不声明 `name` 字段。
 
-## 操作步骤
+## 可用框架能力与结构扩展
 
-1. 按仓库 AGENTS.md 的 worktree 流程开分支（`feat/<name>`），不直接在原目录改。
-2. 创建 `lib/<name>/index.ts`，套用骨架（见下）。
-3. 有解析类纯函数时，在 `tests/<name>/` 下加测试（bun:test），参考 `tests/display/index.test.ts`。
-4. 验证：
-   ```bash
-   bun test
-   ./bin/main.ts --help          # 应列出新命令及 description
-   ./bin/main.ts <name> --help   # 应打印命令自己的用法
-   ```
-5. 提交后合入 master。`~/.local/bin/groot` 软链指向 master 的 bin/main.ts，合并即生效。
+- **参数上下文**：通过上下文读取位置参数列表、键值标志、布尔取反标志、重复标志、`--` 之后的透传参数及原始参数数组；未传子命令或传入 `-h` / `--help` 时输出用法并返回 `0`。
+- **公共辅助**：标志读取、正整数参数校验（`getPositiveIntFlag`）、布尔标志判断与表格格式化统一从 `lib/_share` 导入，不在模块内重复造轮子。
+- **外部进程与输出**：非交互式子进程通过上下文执行器调用；交互式终端程序继承标准输入输出流并等待退出码。正常结果写标准输出，报错信息写标准错误并返回非零码。
+- **分层拆分**：单文件职责膨胀时，在 `lib/<name>/` 内按协议、控制、展示、基础设施拆分子目录，入口 `index.ts` 仅保留子命令分发；纯函数单元测试统一放在仓库根目录 `tests/<name>/` 下并镜像源码层级。
 
-## 骨架
+## 操作流程与排障
 
-```ts
-import { defineCmd, getFlag, type GrootContext } from "../_share";
-
-export default defineCmd(
-  { description: "One-line summary shown in groot --help" },
-  async function run(ctx: GrootContext): Promise<number> {
-    const [subcommand, ...rest] = ctx.argv.raw;
-
-    if (!subcommand || subcommand === "--help" || subcommand === "-h") {
-      console.log("Usage: groot <name> <subcommand> [args...] [flags...]");
-      return 0;
-    }
-
-    // if (subcommand === "xxx") { ...; return 0; }
-
-    console.error(`groot <name>: unknown subcommand "${subcommand}"`);
-    return 1;
-  },
-);
-```
-
-## 可用设施
-
-- `ctx.argv`：`args`（位置参数）、`flags`（`--key value`/`--no-key`/重复 flag）、`afterDoubleDash`、`raw`。
-- `ctx.exec(cmd, args)`：执行外部命令返回 stdout，非零退出会抛错；交互式命令用 bun 的 `spawn` 并 `stdio: "inherit"`。
-- `_share` 辅助：`getFlag`、`hasFlag`、`getPositiveIntFlag`、`formatTable`，统一从这里 import，不在模块内重复定义。
-- 正常输出用 `console.log`，错误用 `console.error` 并返回非零。
-
-## 结构扩展
-
-单文件膨胀时在 `lib/<name>/` 内按职责拆子目录（参考 `lib/dlna/` 的 `protocol/`、`playback/`、`display/`、`infra/` 分层），index.ts 只做分发。测试统一放仓库根 `tests/<name>/`，镜像源码目录结构，import 用相对路径指回 `../../lib/...`。
-
-## 失败处理
-
-- `--help` 列表里没有新命令：检查 index.ts 是否有 default export、文件是否直接放在 `lib/<name>/` 下。
-- 报 `failed to load`：模块顶层有执行代码或 import 失败，把逻辑移进 run 函数。
+1. 遵循仓库 worktree 流程创建独立特性分支，禁止直接在主目录修改源码。
+2. 按上述约定编写 `lib/<name>/index.ts` 及对应的 `tests/<name>/` 单元测试。
+3. 通过项目的测试任务与帮助参数检查确认新命令正常出现在顶层帮助且子命令帮助输出正确。
+4. 常见问题排查：
+   - 顶层帮助未列出新命令：检查 `lib/<name>/index.ts` 路径层级是否正确、是否导出了默认定义。
+   - 加载时报模块加载失败：检查模块顶层是否混入了立即执行的副作用逻辑或无效导入路径。
