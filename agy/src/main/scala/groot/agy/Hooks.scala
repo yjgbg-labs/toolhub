@@ -9,7 +9,7 @@ object Hooks:
         val sb = new StringBuilder
         sb.append("<groot_codemode>\n")
         sb.append(s"Groot server connected ($baseUrl, ${catalog.operations.size} GraalJS operations).\n")
-        sb.append("Use MCP server `groot_codemode`: call `search(namespace, keyword)` to inspect TypeScript signatures, then `execute(graalScript, timeout)` to run JS against `tools.*`.\n\n")
+        sb.append("Use MCP server `groot_codemode`: call `search(namespace, keyword)` to inspect TypeScript signatures, then `execute(code, timeout)` to run JS against `tools.*`.\n\n")
         sb.append("Available namespaces (`tools.<namespace>.*`):\n")
         catalog.topLevelSummaries.foreach { summary =>
           val subHint =
@@ -59,9 +59,9 @@ object Hooks:
 
         val scriptOpt =
           if toolName == "call_mcp_tool" && isGrootServer && argsObj("ToolName").flatMap(_.asString).contains("execute") then
-            argsObj("Arguments").flatMap(_.asObject).flatMap(_("graalScript")).flatMap(_.asString)
+            argsObj("Arguments").flatMap(_.asObject).flatMap(_("code")).flatMap(_.asString)
           else if toolName != "call_mcp_tool" && toolName.toLowerCase.contains("groot") && toolName.toLowerCase.contains("execute") then
-            argsObj("graalScript").flatMap(_.asString)
+            argsObj("code").flatMap(_.asString)
           else
             None
 

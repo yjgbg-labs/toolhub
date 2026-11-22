@@ -57,7 +57,7 @@ final class Executor(transport: HttpTransport, defaultCpu: String = Executor.def
       context: Option[Json] = None,
       onTaskStarted: String => Unit = _ => ()
   ): ExecutionResult =
-    require(script.trim.nonEmpty, "graalScript must not be blank")
+    require(script.trim.nonEmpty, "code must not be blank")
     val effectiveTimeout = Executor.normalizeDuration("timeout", timeout, Executor.defaultTimeout)
     val effectiveCpu = Executor.normalizeDuration("cpu", cpu, defaultCpu)
     val wrapped = Executor.wrapScript(script, context)

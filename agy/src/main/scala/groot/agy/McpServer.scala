@@ -40,7 +40,7 @@ final class McpServer(loader: CatalogLoader, executor: Executor):
       "inputSchema" -> Json.obj(
         "type" -> Json.fromString("object"),
         "properties" -> Json.obj(
-          "graalScript" -> Json.obj(
+          "code" -> Json.obj(
             "type" -> Json.fromString("string"),
             "description" -> Json.fromString("JavaScript async body to run inside Groot Server's isolated GraalJS context")
           ),
@@ -49,7 +49,7 @@ final class McpServer(loader: CatalogLoader, executor: Executor):
             "description" -> Json.fromString("Optional wall-clock timeout such as '30s' or '2m' (defaults to '30s')")
           )
         ),
-        "required" -> Json.arr(Json.fromString("graalScript")),
+        "required" -> Json.arr(Json.fromString("code")),
         "additionalProperties" -> Json.False
       )
     )
@@ -144,8 +144,8 @@ final class McpServer(loader: CatalogLoader, executor: Executor):
           jsonRpcResult(id, toolSuccess(text))
 
         case "execute" =>
-          val script = args("graalScript").flatMap(_.asString)
-            .getOrElse(throw new IllegalArgumentException("Missing required string argument: graalScript"))
+          val script = args("code").flatMap(_.asString)
+            .getOrElse(throw new IllegalArgumentException("Missing required string argument: code"))
           val timeout = args("timeout").flatMap(_.asString)
           val context = ContextStore.take(script)
           val result = executor.run(

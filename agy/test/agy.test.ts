@@ -100,7 +100,7 @@ describe("groot-agy native binary", () => {
         args: {
           ServerName: "groot_codemode",
           ToolName: "execute",
-          Arguments: { graalScript: script },
+          Arguments: { code: script },
         },
       },
     });
@@ -148,7 +148,7 @@ describe("groot-agy native binary", () => {
     send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
     const list = await nextMessage();
     expect(list.result.tools.map((t: any) => t.name)).toEqual(["search", "execute"]);
-    expect(Object.keys(list.result.tools[1].inputSchema.properties)).toEqual(["graalScript", "timeout"]);
+    expect(Object.keys(list.result.tools[1].inputSchema.properties)).toEqual(["code", "timeout"]);
 
     send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "search", arguments: { namespace: "fs" } } });
     const search = await nextMessage();
@@ -160,7 +160,7 @@ describe("groot-agy native binary", () => {
       method: "tools/call",
       params: {
         name: "execute",
-        arguments: { graalScript: script, timeout: "10s" },
+        arguments: { code: script, timeout: "10s" },
       },
     });
     const exec = await nextMessage();

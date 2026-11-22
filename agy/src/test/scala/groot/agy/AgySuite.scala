@@ -178,7 +178,7 @@ class AgySuite extends munit.FunSuite:
            |    "args": {
            |      "ServerName": "groot_codemode",
            |      "ToolName": "execute",
-           |      "Arguments": { "graalScript": "$script" }
+           |      "Arguments": { "code": "$script" }
            |    }
            |  }
            |}""".stripMargin
@@ -261,7 +261,7 @@ class AgySuite extends munit.FunSuite:
     val searchText = searchResp.hcursor.downField("result").downField("content").downN(0).get[String]("text").toOption.get
     assert(searchText.contains("tools.fs.read"), searchText)
 
-    val execResp = server.handleToolCall(Json.fromInt(4), Catalog.parse("""{"name":"execute","arguments":{"graalScript":"return 42;"}}"""))
+    val execResp = server.handleToolCall(Json.fromInt(4), Catalog.parse("""{"name":"execute","arguments":{"code":"return 42;"}}"""))
     val execText = execResp.hcursor.downField("result").downField("content").downN(0).get[String]("text").toOption.get
     assertEquals(execText, "42")
   }

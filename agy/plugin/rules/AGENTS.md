@@ -6,7 +6,7 @@ Groot capabilities are discovered dynamically from live `/openapi.json` (summari
    - Arguments: `{"namespace"?: string, "keyword"?: string}`
    - Pass `namespace` and/or `keyword` to inspect matching signatures, or `{}` to view the compact full index.
 2. **`execute`**: Run an isolated GraalJS async script on Groot Server with `tools.*` and `ctx` bound.
-   - Arguments: `{"graalScript": string, "timeout"?: string}` (default timeout `"30s"`, e.g. `"10s"`, `"2m"`)
+   - Arguments: `{"code": string, "timeout"?: string}` (default timeout `"30s"`, e.g. `"10s"`, `"2m"`)
 
 ## Usage Guidelines
 
