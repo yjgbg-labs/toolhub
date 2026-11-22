@@ -35,6 +35,8 @@ CLI 的动态协议实现直接编入 Native 可执行文件；插件打成独�
 | `mise run chrome-test` | 真实 headless Chromium 生命周期和页面自动化集成测试 |
 | `mise run server-deploy` | 服务端测试、JAR 构建、user service 安装及健康检查 |
 | `mise run cli-deploy` | Native 编译、CLI/安装检查及安装 `groot-cli` |
+| `mise run agy-test` | Antigravity 插件 Scala 单元测试 |
+| `mise run agy-deploy` | Native 编译、端到端测试及安装 Antigravity `groot` 插件与内置 skills |
 | `mise run pluging-deploy` | 插件依赖安装、类型检查、bundle 构建、测试及安装 OpenCode 插件 |
 | `mise run widget-test` | 在目标 Mac 编译客户端并运行 Swift 协议测试 |
 | `mise run widget-build` | 测试后构建、签名 macOS app，并取回校验后的归档 |
@@ -69,6 +71,7 @@ server/cli/plugin 在本机完成构建与安装，交付方式为构建、测�
 
 - `SERVER_INSTALL_ROOT`：`~/.local/share/groot-http`；`SERVER_SERVICE`：`groot-http.service`
 - `CLI_BIN_DIR`：`~/.local/bin`，命令入口为其中的 `groot-cli` 普通可执行文件。
+- `AGY_PLUGIN_DIR`：`~/.gemini/config/plugins/groot`，Antigravity 插件包（含 Scala Native `bin/groot-agy`、`mcp_config.json`、`hooks.json`、`rules/AGENTS.md` 与 `skills/`）。
 - `OPENCODE_PLUGIN_DIR`：`~/.config/opencode/plugins`，插件入口为其中的 `groot.ts` 独立 bundle。
 - `GROOT_HOME`：`~/.config/groot`，保存调度、任务、状态、SQLite 和 Widget 数据。
 
