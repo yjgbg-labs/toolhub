@@ -33,8 +33,8 @@ object Hooks:
       )
     )
 
-  /** Inject per-call session context (`conversationId`, `cwd`, `workspacePaths`) into `groot` `execute` tool calls. */
-  def preToolUse(inputText: String): Json =
+  /** Record per-call session context (`conversationId`, `cwd`, `workspacePaths`) in the sideband store without rewriting tool arguments. */
+  def preToolUse(inputText: String, ctxDir: java.nio.file.Path = ContextStore.defaultDir): Json =
     val allowOnly = Json.obj("decision" -> Json.fromString("allow"))
     val parsed = for
       text <- Option(inputText).map(_.trim).filter(_.nonEmpty)
@@ -42,49 +42,29 @@ object Hooks:
       toolCall <- Catalog.field(payload, "toolCall").flatMap(_.asObject)
     yield (payload, toolCall)
 
-    parsed match
-      case None => allowOnly
-      case Some((payload, toolCall)) =>
-        val toolName = toolCall("name").flatMap(_.asString).getOrElse("")
-        val argsObj = toolCall("args").flatMap(_.asObject).getOrElse(JsonObject.empty)
+    parsed.foreach { (payload, toolCall) =>
+      val toolName = toolCall("name").flatMap(_.asString).getOrElse("")
+      val argsObj = toolCall("args").flatMap(_.asObject).getOrElse(JsonObject.empty)
 
-        val ctxFields = Vector(
-          "conversationId" -> Catalog.field(payload, "conversationId"),
-          "cwd" -> Catalog.field(payload, "cwd"),
-          "workspacePaths" -> Catalog.field(payload, "workspacePaths")
-        ).collect { case (k, Some(v)) if !v.isNull => k -> v }
+      val ctxFields = Vector(
+        "conversationId" -> Catalog.field(payload, "conversationId"),
+        "cwd" -> Catalog.field(payload, "cwd"),
+        "workspacePaths" -> Catalog.field(payload, "workspacePaths")
+      ).collect { case (k, Some(v)) if !v.isNull => k -> v }
 
-        if ctxFields.isEmpty then allowOnly
-        else
-          val ctxJson = Json.fromJsonObject(JsonObject.fromIterable(ctxFields))
-          val serverName = argsObj("ServerName").flatMap(_.asString).getOrElse("")
-          val isGrootServer = serverName == "groot" || serverName == "groot_groot" || serverName.startsWith("groot_")
+      if ctxFields.nonEmpty then
+        val ctxJson = Json.fromJsonObject(JsonObject.fromIterable(ctxFields))
+        val serverName = argsObj("ServerName").flatMap(_.asString).getOrElse("")
+        val isGrootServer = serverName == "groot" || serverName == "groot_groot" || serverName.startsWith("groot_")
 
-          val isLazyGrootExecute =
-            toolName == "call_mcp_tool" &&
-              isGrootServer &&
-              argsObj("ToolName").flatMap(_.asString).contains("execute")
-
-          val isEagerGrootExecute =
-            toolName != "call_mcp_tool" &&
-              toolName.toLowerCase.contains("groot") &&
-              toolName.toLowerCase.contains("execute")
-
-          if isLazyGrootExecute then
-            val innerArgs = argsObj("Arguments").flatMap(_.asObject).getOrElse(JsonObject.empty)
-            val merged = innerArgs.add("_ctx", ctxJson)
-            Json.obj(
-              "decision" -> Json.fromString("allow"),
-              "overwrite" -> Json.obj(
-                "Arguments" -> Json.fromJsonObject(merged)
-              )
-            )
-          else if isEagerGrootExecute then
-            Json.obj(
-              "decision" -> Json.fromString("allow"),
-              "overwrite" -> Json.obj(
-                "_ctx" -> ctxJson
-              )
-            )
+        val scriptOpt =
+          if toolName == "call_mcp_tool" && isGrootServer && argsObj("ToolName").flatMap(_.asString).contains("execute") then
+            argsObj("Arguments").flatMap(_.asObject).flatMap(_("graalScript")).flatMap(_.asString)
+          else if toolName != "call_mcp_tool" && toolName.toLowerCase.contains("groot") && toolName.toLowerCase.contains("execute") then
+            argsObj("graalScript").flatMap(_.asString)
           else
-            allowOnly
+            None
+
+        scriptOpt.foreach(ContextStore.put(_, ctxJson, ctxDir))
+    }
+    allowOnly

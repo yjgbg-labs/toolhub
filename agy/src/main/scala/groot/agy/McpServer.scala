@@ -47,10 +47,6 @@ final class McpServer(loader: CatalogLoader, executor: Executor):
           "timeout" -> Json.obj(
             "type" -> Json.fromString("string"),
             "description" -> Json.fromString("Optional wall-clock timeout such as '30s' or '2m' (defaults to '30s')")
-          ),
-          "_ctx" -> Json.obj(
-            "type" -> Json.fromString("object"),
-            "description" -> Json.fromString("Internal session context injected automatically by the PreToolUse hook")
           )
         ),
         "required" -> Json.arr(Json.fromString("graalScript")),
@@ -151,7 +147,7 @@ final class McpServer(loader: CatalogLoader, executor: Executor):
           val script = args("graalScript").flatMap(_.asString)
             .getOrElse(throw new IllegalArgumentException("Missing required string argument: graalScript"))
           val timeout = args("timeout").flatMap(_.asString)
-          val context = args("_ctx").filter(_.isObject)
+          val context = ContextStore.take(script)
           val result = executor.run(
             script = script,
             timeout = timeout,

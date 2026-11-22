@@ -163,36 +163,43 @@ class AgySuite extends munit.FunSuite:
     assert(offlineMsg.contains("unreachable"), offlineMsg)
   }
 
-  test("Hooks.preToolUse injects _ctx for lazy and eager groot execute calls and ignores others") {
-    val lazyPayload =
-      """{
-        |  "conversationId": "conv-123",
-        |  "cwd": "/home/yjgbg/project",
-        |  "workspacePaths": ["/home/yjgbg/project"],
-        |  "toolCall": {
-        |    "id": "call-1",
-        |    "name": "call_mcp_tool",
-        |    "args": {
-        |      "ServerName": "groot_codemode",
-        |      "ToolName": "execute",
-        |      "Arguments": { "graalScript": "return ctx.conversationId;" }
-        |    }
-        |  }
-        |}""".stripMargin
-    val res = Hooks.preToolUse(lazyPayload)
-    assertEquals(res.hcursor.get[String]("decision").toOption, Some("allow"))
-    assertEquals(res.hcursor.downField("overwrite").downField("Arguments").downField("_ctx").get[String]("conversationId").toOption, Some("conv-123"))
-    assertEquals(res.hcursor.downField("overwrite").downField("Arguments").get[String]("graalScript").toOption, Some("return ctx.conversationId;"))
+  test("Hooks.preToolUse stores session context in sideband ContextStore without overwriting arguments") {
+    val tmpDir = java.nio.file.Files.createTempDirectory("groot-agy-ctx-test")
+    try
+      val script = "return ctx.conversationId;"
+      val lazyPayload =
+        s"""{
+           |  "conversationId": "conv-123",
+           |  "cwd": "/home/yjgbg/project",
+           |  "workspacePaths": ["/home/yjgbg/project"],
+           |  "toolCall": {
+           |    "id": "call-1",
+           |    "name": "call_mcp_tool",
+           |    "args": {
+           |      "ServerName": "groot_codemode",
+           |      "ToolName": "execute",
+           |      "Arguments": { "graalScript": "$script" }
+           |    }
+           |  }
+           |}""".stripMargin
+      val res = Hooks.preToolUse(lazyPayload, tmpDir)
+      assertEquals(res, Json.obj("decision" -> Json.fromString("allow")))
+      val stored = ContextStore.take(script, tmpDir)
+      assertEquals(stored.flatMap(_.hcursor.get[String]("conversationId").toOption), Some("conv-123"))
+      assertEquals(stored.flatMap(_.hcursor.get[String]("cwd").toOption), Some("/home/yjgbg/project"))
+      assertEquals(ContextStore.take(script, tmpDir), None)
 
-    val otherPayload =
-      """{
-        |  "conversationId": "conv-123",
-        |  "toolCall": {
-        |    "name": "call_mcp_tool",
-        |    "args": { "ServerName": "groot_groot", "ToolName": "search", "Arguments": {} }
-        |  }
-        |}""".stripMargin
-    assertEquals(Hooks.preToolUse(otherPayload), Json.obj("decision" -> Json.fromString("allow")))
+      val otherPayload =
+        """{
+          |  "conversationId": "conv-123",
+          |  "toolCall": {
+          |    "name": "call_mcp_tool",
+          |    "args": { "ServerName": "groot_codemode", "ToolName": "search", "Arguments": {} }
+          |  }
+          |}""".stripMargin
+      assertEquals(Hooks.preToolUse(otherPayload, tmpDir), Json.obj("decision" -> Json.fromString("allow")))
+    finally
+      scala.util.Try(java.nio.file.Files.deleteIfExists(tmpDir))
   }
 
   test("Executor wraps script with ctx and return capture, strips graaljs trailer, and truncates long output") {

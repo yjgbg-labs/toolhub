@@ -87,9 +87,11 @@ describe("groot-agy native binary", () => {
     expect(msg).toContain("tools.health");
   });
 
-  test("hook pre-tool-use overwrites Arguments._ctx for groot execute", async () => {
+  test("hook pre-tool-use records sideband context without overwriting args and mcp execute consumes it", async () => {
+    const ctxDir = `/tmp/groot-agy-e2e-ctx-${Date.now()}`;
+    const script = "return ctx.conversationId;";
     const payload = JSON.stringify({
-      conversationId: "ses_abc",
+      conversationId: "ses_sideband_99",
       cwd: "/tmp/work",
       workspacePaths: ["/tmp/work"],
       toolCall: {
@@ -98,26 +100,23 @@ describe("groot-agy native binary", () => {
         args: {
           ServerName: "groot_codemode",
           ToolName: "execute",
-          Arguments: { graalScript: "return ctx.conversationId;" },
+          Arguments: { graalScript: script },
         },
       },
     });
-    const proc = Bun.spawn([binary, "hook", "pre-tool-use"], {
+    const hookProc = Bun.spawn([binary, "hook", "pre-tool-use"], {
+      env: { ...process.env, GROOT_AGY_CTX_DIR: ctxDir },
       stdin: new Response(payload),
       stdout: "pipe",
       stderr: "pipe",
     });
-    const out = await new Response(proc.stdout).text();
-    expect(await proc.exited).toBe(0);
-    const json = JSON.parse(out);
-    expect(json.decision).toBe("allow");
-    expect(json.overwrite.Arguments._ctx.conversationId).toBe("ses_abc");
-    expect(json.overwrite.Arguments._ctx.cwd).toBe("/tmp/work");
-  });
+    const hookOut = await new Response(hookProc.stdout).text();
+    expect(await hookProc.exited).toBe(0);
+    const hookJson = JSON.parse(hookOut);
+    expect(hookJson).toEqual({ decision: "allow" });
 
-  test("mcp stdio handles initialize, tools/list, search and execute", async () => {
     const proc = Bun.spawn([binary, "mcp"], {
-      env: { ...process.env, GROOT_BASE_URL: baseUrl },
+      env: { ...process.env, GROOT_BASE_URL: baseUrl, GROOT_AGY_CTX_DIR: ctxDir },
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -149,6 +148,7 @@ describe("groot-agy native binary", () => {
     send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
     const list = await nextMessage();
     expect(list.result.tools.map((t: any) => t.name)).toEqual(["search", "execute"]);
+    expect(Object.keys(list.result.tools[1].inputSchema.properties)).toEqual(["graalScript", "timeout"]);
 
     send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "search", arguments: { namespace: "fs" } } });
     const search = await nextMessage();
@@ -160,17 +160,13 @@ describe("groot-agy native binary", () => {
       method: "tools/call",
       params: {
         name: "execute",
-        arguments: {
-          graalScript: "return ctx.conversationId;",
-          timeout: "10s",
-          _ctx: { conversationId: "ses_live_99", cwd: "/tmp" },
-        },
+        arguments: { graalScript: script, timeout: "10s" },
       },
     });
     const exec = await nextMessage();
     expect(exec.result.isError).toBeUndefined();
     expect(exec.result.content[0].text).toBe("ok-from-e2e");
-    expect(lastSubmittedScript).toContain('"conversationId":"ses_live_99"');
+    expect(lastSubmittedScript).toContain('"conversationId":"ses_sideband_99"');
 
     proc.stdin.end();
     expect(await proc.exited).toBe(0);

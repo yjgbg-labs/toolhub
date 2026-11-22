@@ -11,7 +11,7 @@ Groot capabilities are discovered dynamically from live `/openapi.json` (summari
 ## Usage Guidelines
 
 - **Search before calling unfamiliar commands**: Always inspect exact TypeScript signatures with `search` before guessing parameter names or `{body}` wrapping.
-- **Batch related operations in one `execute` script**: Use top-level `await`, `Promise.all`, loops, and filtering inside a single GraalJS script to minimize round trips and keep context concise.
+- **Batch related operations in one `execute` script**: Use top-level `await`, loops, and filtering inside a single GraalJS script to minimize round trips and keep context concise. When running multiple concurrent `tools.*` calls, prefer `Promise.allSettled` over `Promise.all` so individual call failures do not abort and discard the remaining results.
 - **Keep `execute` output compact (< 8 KB)**: AGY automatically spills MCP tool outputs exceeding ~10 KB to a file, forcing an extra `read_file` round trip. Always filter, aggregate, project only needed fields, and summarize logs inside the GraalJS script before returning or logging instead of dumping raw logs or full objects.
 - **Output**: Both `console.log(...)` and top-level `return value` are captured and returned.
 - **SDK Contract**:
