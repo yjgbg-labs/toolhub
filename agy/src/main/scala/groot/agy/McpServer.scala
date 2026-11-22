@@ -34,7 +34,7 @@ final class McpServer(loader: CatalogLoader, executor: Executor):
     Json.obj(
       "name" -> Json.fromString("execute"),
       "description" -> Json.fromString(
-        "Execute a GraalJS script on Groot Server with `tools.*` bound to all GraalJS-exposed commands and `ctx` bound to the active session context (`conversationId`, `cwd`, `workspacePaths`). " +
+        "Execute a GraalJS script on Groot Server with `tools.*` bound to all GraalJS-exposed commands (`sessionId` and `cwd` are supplied implicitly by the runtime). " +
           "Supports top-level `await`, `return` (automatically printed), and `console.log`."
       ),
       "inputSchema" -> Json.obj(

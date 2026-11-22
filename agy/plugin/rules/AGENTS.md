@@ -5,7 +5,7 @@ Groot capabilities are discovered dynamically from live `/openapi.json` (summari
 1. **`search`**: Discover Groot GraalJS SDK TypeScript signatures from live `/openapi.json`.
    - Arguments: `{"namespace"?: string, "keyword"?: string}`
    - Pass `namespace` and/or `keyword` to inspect matching signatures, or `{}` to view the compact full index.
-2. **`execute`**: Run an isolated GraalJS async script on Groot Server with `tools.*` and `ctx` bound.
+2. **`execute`**: Run an isolated GraalJS async script on Groot Server with `tools.*` bound.
    - Arguments: `{"code": string, "timeout"?: string}` (default timeout `"30s"`, e.g. `"10s"`, `"2m"`)
 
 ## Usage Guidelines
@@ -17,5 +17,5 @@ Groot capabilities are discovered dynamically from live `/openapi.json` (summari
 - **SDK Contract**:
   - Every `tools.<ns>.<cmd>(...)` returns `Promise<{ status, headers, body }>` and rejects with `ApiError` on non-2xx responses.
   - Body-only commands take the payload directly; commands with path/query/header parameters plus a body pass `{ ...params, body }`.
-- **Session Context (`ctx`)**: `ctx` is automatically injected per call with `{ conversationId, cwd, workspacePaths }`.
+- **Implicit Context (`sessionId`, `cwd`)**: The active conversation's `sessionId` and `cwd` are automatically bound on the runtime and hidden from `tools.*` signatures — never pass them manually.
 - **Sandbox Limits**: Isolated GraalJS context (4 MiB JS heap, no Node/Bun modules). Use the discovered `tools.*` commands for external I/O.

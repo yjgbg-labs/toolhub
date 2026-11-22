@@ -50,7 +50,7 @@ class GraalRuntimeSuite extends CatsEffectSuite:
   test("real isolate logs and CPU metrics, CPU and wall limits, cancellation, errors and heap limits leave the shared engine usable") {
     temporary.use { home => GraalManager.resource(home.resolve("data")).use { manager =>
       def run(code: String, cpu: String = "5s", timeout: String = "10s") =
-        manager.start(JavaScript.source(code), cpu, timeout)
+        manager.submit(JavaScript.source(code), cpu, timeout)
           .flatMap(task => awaitUntil(manager.status(task.id))(_.terminal))
       for
         success <- run("console.log('你好🙂');\nconsole.error('stderr'); print('print');")
@@ -72,7 +72,7 @@ class GraalRuntimeSuite extends CatsEffectSuite:
         _ = assertEquals(scriptError.error.map(_.code), Some("script_error"))
         host <- run("Java.type('java.lang.System').exit(0)")
         _ = assertEquals(host.state, "failed")
-        long <- manager.start(JavaScript.source("console.log('ready'); while(true) {}"), "30s", "30s")
+        long <- manager.submit(JavaScript.source("console.log('ready'); while(true) {}"), "30s", "30s")
         _ <- awaitUntil(manager.logs(long.id))(_.contains("ready"))
         _ <- manager.cancel(long.id)
         cancelled <- awaitUntil(manager.status(long.id))(_.terminal)
@@ -96,7 +96,7 @@ class GraalRuntimeSuite extends CatsEffectSuite:
       for
         id <- GraalManager.resource(data).use { manager =>
           for
-            task <- manager.start(JavaScript.source("console.log('ready'); while(true) {}"), "30s", "30s")
+            task <- manager.submit(JavaScript.source("console.log('ready'); while(true) {}"), "30s", "30s")
             _ <- awaitUntil(manager.logs(task.id))(_.contains("ready"))
           yield task.id
         }
@@ -113,19 +113,19 @@ class GraalRuntimeSuite extends CatsEffectSuite:
     }.timeout(10.seconds)
   }
 
-  test("start accepts native synchronous and Promise Sources and reuses them across isolated Contexts") {
+  test("submit accepts native synchronous and Promise Sources and reuses them across isolated Contexts") {
     temporary.use { home => GraalManager.resource(home.resolve("data")).use { manager =>
       val source = Source.newBuilder("js",
         "globalThis.count = (globalThis.count || 0) + 1; console.log('count', globalThis.count); 42;", "native.js").cached(true).buildLiteral()
       (1 to 3).toList.parTraverse_ { _ =>
         for
-          task <- manager.start(source, "1s", "30s")
+          task <- manager.submit(source, "1s", "30s")
           result <- manager.await(task.id)
           log <- manager.logs(task.id)
         yield
           assertEquals(result.state, "succeeded", result.error.toString)
           assert(log.contains("count 1"), log.toString)
-      } *> manager.start(Source.newBuilder("js", "Promise.resolve().then(() => console.log('settled'))", "promise.js").buildLiteral(), "1s", "30s")
+      } *> manager.submit(Source.newBuilder("js", "Promise.resolve().then(() => console.log('settled'))", "promise.js").buildLiteral(), "1s", "30s")
         .flatMap(task => manager.await(task.id).flatMap { result =>
           assertEquals(result.state, "succeeded", result.error.toString)
           manager.logs(task.id).map(log => assert(log.contains("settled"), log.toString))

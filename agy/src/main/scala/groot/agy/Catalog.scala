@@ -65,6 +65,7 @@ final class Catalog(val document: Json):
   private val operationPattern = "[A-Za-z][A-Za-z0-9_-]*(\\.[A-Za-z][A-Za-z0-9_-]*)*"
   private val methods = Set("get", "post", "put", "patch", "delete", "head", "options")
   private val locations = Set("path", "query", "header", "cookie")
+  private val implicitParams = Set("sessionId", "cwd")
 
   private def exposedToGraalJs(declaration: Json): Boolean = field(declaration, "x-expose-on").forall { value =>
     val clients = value.asArray.getOrElse(throw new IllegalArgumentException("Expected x-expose-on array"))
@@ -136,7 +137,7 @@ final class Catalog(val document: Json):
         method = method.toUpperCase,
         path = path,
         description = if desc.nonEmpty then desc else s"${method.toUpperCase} $path",
-        parameters = merged.values.toVector,
+        parameters = merged.values.toVector.filterNot(p => implicitParams.contains(p.name)),
         body = body,
         responseSchemas = responses
       )

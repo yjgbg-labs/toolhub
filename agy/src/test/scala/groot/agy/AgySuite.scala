@@ -202,13 +202,15 @@ class AgySuite extends munit.FunSuite:
       scala.util.Try(java.nio.file.Files.deleteIfExists(tmpDir))
   }
 
-  test("Executor wraps script with ctx and return capture, strips graaljs trailer, and truncates long output") {
+  test("Executor passes sessionId/cwd on /graaljs/submit, captures return value, and strips graaljs trailer") {
     var submittedBody = ""
+    var submittedQuery = Vector.empty[(String, String)]
     val mockTransport = new HttpTransport:
       def send(request: HttpRequest, onEvent: String => Unit): HttpResponse =
         request.path match
-          case "/graaljs/start" =>
+          case "/graaljs/submit" =>
             submittedBody = request.body.getOrElse("")
+            submittedQuery = request.query
             HttpResponse(200, Vector("Content-Type" -> "application/json"), """{"id":"gjs_test1","state":"running"}""")
           case "/graaljs/logsFollow" =>
             onEvent("hello from script")
@@ -222,9 +224,11 @@ class AgySuite extends munit.FunSuite:
             fail(s"Unexpected path: $other")
 
     val executor = new Executor(mockTransport)
-    val result = executor.run("return 42;", timeout = Some("15s"), context = Some(Catalog.parse("""{"conversationId":"c-1"}""")))
-    assert(submittedBody.contains("""const ctx = Object.freeze({"conversationId":"c-1"});"""), submittedBody)
+    val result = executor.run("return 42;", timeout = Some("15s"), context = Some(Catalog.parse("""{"conversationId":"c-1","cwd":"/work"}""")))
+    assert(!submittedBody.contains("const ctx"), submittedBody)
     assert(submittedBody.contains("return 42;"), submittedBody)
+    assertEquals(submittedQuery.toMap.get("sessionId"), Some("c-1"))
+    assertEquals(submittedQuery.toMap.get("cwd"), Some("/work"))
     assertEquals(result.state, "succeeded")
     assertEquals(result.output, "hello from script")
     assert(!result.isError)
@@ -235,7 +239,7 @@ class AgySuite extends munit.FunSuite:
       def send(request: HttpRequest, onEvent: String => Unit): HttpResponse =
         request.path match
           case "/openapi.json" => HttpResponse(200, Vector("Content-Type" -> "application/json"), sampleOpenApi)
-          case "/graaljs/start" => HttpResponse(200, Vector("Content-Type" -> "application/json"), """{"id":"gjs_mcp1","state":"running"}""")
+          case "/graaljs/submit" => HttpResponse(200, Vector("Content-Type" -> "application/json"), """{"id":"gjs_mcp1","state":"running"}""")
           case "/graaljs/logsFollow" =>
             onEvent("42")
             onEvent("[graaljs] state=succeeded cpu=1.0ms elapsed=2.0ms")

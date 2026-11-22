@@ -21,10 +21,8 @@ object Executor:
   val maxOutputChars = 65536
   private val durationPattern = "^\\d+(ms|s|m|h|d)$".r
 
-  def wrapScript(script: String, context: Option[Json]): String =
-    val ctxLiteral = context.filter(_.isObject).map(_.noSpaces).getOrElse("{}")
-    s"""const ctx = Object.freeze($ctxLiteral);
-       |const __groot_res = await (async () => {
+  def wrapScript(script: String): String =
+    s"""const __groot_res = await (async () => {
        |$script
        |})();
        |if (__groot_res !== undefined) {
@@ -60,17 +58,22 @@ final class Executor(transport: HttpTransport, defaultCpu: String = Executor.def
     require(script.trim.nonEmpty, "code must not be blank")
     val effectiveTimeout = Executor.normalizeDuration("timeout", timeout, Executor.defaultTimeout)
     val effectiveCpu = Executor.normalizeDuration("cpu", cpu, defaultCpu)
-    val wrapped = Executor.wrapScript(script, context)
+    val wrapped = Executor.wrapScript(script)
+    val sessionId = context.flatMap(Catalog.field(_, "conversationId")).flatMap(_.asString).map(_.trim).filter(_.nonEmpty)
+    val cwd = context.flatMap(Catalog.field(_, "cwd")).flatMap(_.asString).map(_.trim).filter(_.nonEmpty)
+    val submitQuery = Vector("cpu" -> effectiveCpu, "timeout" -> effectiveTimeout) ++
+      sessionId.map("sessionId" -> _) ++
+      cwd.map("cwd" -> _)
 
     val startResp = transport.send(HttpRequest(
       method = "POST",
-      path = "/graaljs/start",
-      query = Vector("cpu" -> effectiveCpu, "timeout" -> effectiveTimeout),
+      path = "/graaljs/submit",
+      query = submitQuery,
       headers = Vector("Content-Type" -> "text/plain", "Accept" -> "application/json"),
       body = Some(wrapped)
     ))
     if !startResp.isSuccess then
-      throw new RuntimeException(s"graaljs.start failed (HTTP ${startResp.status}): ${startResp.body}")
+      throw new RuntimeException(s"graaljs.submit failed (HTTP ${startResp.status}): ${startResp.body}")
 
     val startedTask = Catalog.parse(startResp.body)
     val taskId = Catalog.text(startedTask, "id")

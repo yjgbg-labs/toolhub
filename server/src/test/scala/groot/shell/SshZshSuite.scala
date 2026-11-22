@@ -65,7 +65,7 @@ class SshZshSuite extends CatsEffectSuite:
           payload <- IO.blocking(Files.readString(home.resolve("received")))
           _ = assertEquals(payload, source + "\n")
           _ <- GraalManager.resource(home.resolve("tasks"), IO.pure(sdk)).use { manager => for
-            task <- manager.start(JavaScript.source("const r=(await tools.shell.execute({env:'mac',script:'pwd'})).body;if(r.exitCode!==7||r.stdout!=='中文🙂\\n'||r.stderr!=='stderr\\n')throw Error(JSON.stringify(r));"), "1s", "10s")
+            task <- manager.submit(JavaScript.source("const r=(await tools.shell.execute({env:'mac',script:'pwd'})).body;if(r.exitCode!==7||r.stdout!=='中文🙂\\n'||r.stderr!=='stderr\\n')throw Error(JSON.stringify(r));"), "1s", "10s")
             done <- manager.await(task.id)
             _ = assertEquals(done.state, "succeeded", done.error.toString)
           yield () }

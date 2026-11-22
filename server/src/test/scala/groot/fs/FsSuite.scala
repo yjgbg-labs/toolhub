@@ -384,7 +384,7 @@ class FsSuite extends CatsEffectSuite:
       GraalManager.resource(home.resolve("tasks"), IO.pure(GraalCommandSdk(app))).use { manager =>
         val root = Json.fromString(home.resolve("workflow").toString).noSpaces
         for
-          task <- manager.start(groot.graaljs.JavaScript.source(s"""
+          task <- manager.submit(groot.graaljs.JavaScript.source(s"""
             if (typeof fs !== "undefined" || typeof http !== "undefined") throw Error("unexpected business global");
             const root = $root;
             await tools.fs.mkdir({path: root});

@@ -26,7 +26,7 @@ object NotifyRoutes:
     }
     command[NotifyReceipt]("send") {
       exposeOn(cli)
-      description("Broadcast message and targetSessionId to all online subscribers (CLI/internal bridge use only; not exposed to GraalJS)")
+      description("Broadcast message and targetSessionId to all online subscribers (CLI/internal bridge use only; not exposed to Code Mode or GraalJS)")
       val input = body[NotifyRequest]("Target session and full message")
       handle { service.send(input.value) }
     }
@@ -37,25 +37,24 @@ object NotifyRoutes:
     }
     triggers.foreach { manager =>
       command[NotifyTrigger]("when") {
-        exposeOn(cli, graaljs)
-        description("Evaluate a GraalJS predicate periodically (after optional initial delay, default 0ms); when code returns a non-empty string, send that string to targetSessionId. Set once=true (default) for one-shot or once=false for repeated notifications.")
-        val input = body[NotifyWhenRequest]("Predicate code returning a non-empty string when triggered, targetSessionId, every interval (default 15s), initial delay (default 0ms), once flag (default true), and optional timeout")
-        handle { manager.when(input.value) }
+        description("Evaluate a GraalJS predicate periodically (after optional initial delay, default 0ms); when code returns a non-empty string, send that string to the caller session. Set once=true (default) for one-shot or once=false for repeated notifications.")
+        val sessionId = param[String]("sessionId", "Target session ID (implicitly supplied by session-bound clients)") { minLength(1) }
+        val cwd = param[Option[String]]("cwd", "Optional working directory inherited by predicate executions")
+        val input = body[NotifyWhenRequest]("Predicate code returning a non-empty string when triggered, every interval (default 15s), initial delay (default 0ms), once flag (default true), and optional timeout")
+        handle { manager.when(sessionId.value, cwd.value, input.value) }
       }
       command[NotifyTrigger]("at") {
-        exposeOn(cli, graaljs)
         description("Schedule a one-shot reminder at an ISO-8601 timestamp or relative duration (e.g. +10m), implemented as a delayed notify.when")
-        val input = body[NotifyAtRequest]("Target session, at timestamp/relative duration, and reminder message")
-        handle { manager.at(input.value) }
+        val sessionId = param[String]("sessionId", "Target session ID (implicitly supplied by session-bound clients)") { minLength(1) }
+        val input = body[NotifyAtRequest]("Target timestamp/relative duration and reminder message")
+        handle { manager.at(sessionId.value, input.value) }
       }
       command[List[NotifyTrigger]]("list") {
-        exposeOn(cli, graaljs)
         description("List notify.when / notify.at triggers")
         val activeOnly = param[Option[Boolean]]("activeOnly", "Only return currently active triggers")
         handle { manager.list(activeOnly.value.getOrElse(false)) }
       }
       command[NotifyTrigger]("cancel") {
-        exposeOn(cli, graaljs)
         description("Cancel an active notify.when / notify.at trigger by ID")
         val id = param[String]("id", "Trigger ID (ntf_...)") { minLength(1) }
         handle { manager.cancel(id.value) }

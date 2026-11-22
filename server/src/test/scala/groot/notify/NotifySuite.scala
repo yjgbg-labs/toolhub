@@ -10,7 +10,6 @@ import io.circe.Json
 import munit.CatsEffectSuite
 import org.http4s.{Method, Request, Status, Uri}
 import org.http4s.circe.*
-import java.time.Instant
 import scala.concurrent.duration.*
 
 class NotifySuite extends CatsEffectSuite:
@@ -97,7 +96,7 @@ class NotifySuite extends CatsEffectSuite:
     yield ()
   }
 
-  test("notify.send is CLI-only (hidden from GraalJS); notify.when/at/list/cancel are exposed on CLI and GraalJS") {
+  test("notify.send is CLI-only; notify.when/at/list/cancel are exposed to CLI, Code Mode, and GraalJS") {
     temporary.use { home =>
       (for
         commands <- Resource.eval(Deferred[IO, GraalCommandSdk])
@@ -111,8 +110,8 @@ class NotifySuite extends CatsEffectSuite:
         assert(!sdk.commands.contains("notify.send"))
         assertEquals(app.endpoints.find(_.operationId == "notify.send").get.exposedOn, Set(cli))
         assertEquals(app.endpoints.find(_.operationId == "notify.subscribe").get.exposedOn, Set(cli))
-        assertEquals(app.endpoints.find(_.operationId == "notify.when").get.exposedOn, Set(cli, graaljs))
-        assertEquals(app.endpoints.find(_.operationId == "notify.at").get.exposedOn, Set(cli, graaljs))
+        assertEquals(app.endpoints.find(_.operationId == "notify.when").get.exposedOn, Set(cli, codemode, graaljs))
+        assertEquals(app.endpoints.find(_.operationId == "notify.at").get.exposedOn, Set(cli, codemode, graaljs))
         for
           _ <- commands.complete(sdk)
           offline <- app.httpApp(Request[IO](Method.POST, Uri.unsafeFromString("/notify/send"))
@@ -143,7 +142,7 @@ class NotifySuite extends CatsEffectSuite:
     }
   }
 
-  test("notify.when with once=true fires once when code returns a non-empty string") {
+  test("notify.when in GraalJS implicitly binds sessionId, inherits it in second-order triggers, and fires once when code returns a string") {
     temporary.use { home =>
       (for
         commands <- Resource.eval(Deferred[IO, GraalCommandSdk])
@@ -155,24 +154,36 @@ class NotifySuite extends CatsEffectSuite:
         reader(service).use { events =>
           for
             _ <- commands.complete(sdk)
-            created <- triggers.when(NotifyWhenRequest(
-              targetSessionId = agySessionId,
-              code = """return "条件已成立：任务完成";""",
-              every = Some("50ms"),
-              once = Some(true)
-            ))
-            event <- events.take.timeout(5.seconds)
-            _ = assertEquals(event.notification.map(_.targetSessionId), Some(agySessionId))
-            _ = assertEquals(event.notification.map(_.message), Some("条件已成立：任务完成"))
-            finalTrigger <- awaitUntil(triggers.list().map(_.find(_.id == created.id).get))(_.status == "triggered")
-            _ = assertEquals(finalTrigger.triggerCount, 1)
+            // Submit a session-bound GraalJS task that calls tools.notify.when WITHOUT passing sessionId,
+            // and inside that trigger chains a tools.notify.at WITHOUT passing sessionId!
+            setupTask <- graal.submit(
+              JavaScript.source(
+                """await tools.notify.when({
+                  |  every: "50ms",
+                  |  once: true,
+                  |  code: 'await tools.notify.at({ at: "+50ms", message: "二阶继承提醒" }); return "一阶条件成立";'
+                  |});""".stripMargin
+              ),
+              cpu = "2s",
+              timeout = "10s",
+              context = Map("sessionId" -> agySessionId, "cwd" -> "/tmp")
+            )
+            finishedSetup <- graal.await(setupTask.id)
+            _ = assertEquals(finishedSetup.state, "succeeded", finishedSetup.error.toString)
+            firstEvent <- events.take.timeout(5.seconds)
+            secondEvent <- events.take.timeout(5.seconds)
+            messages = Set(firstEvent, secondEvent).flatMap(_.notification.map(n => n.targetSessionId -> n.message))
+            _ = assertEquals(messages, Set(agySessionId -> "一阶条件成立", agySessionId -> "二阶继承提醒"))
+            allDone <- awaitUntil(triggers.list())(_.size == 2)
+            _ <- awaitUntil(triggers.list())(_.forall(_.status == "triggered"))
+            _ = assertEquals(allDone.size, 2)
           yield ()
         }
       }
     }
   }
 
-  test("notify.when with once=false fires repeatedly until cancelled") {
+  test("notify.when with once=false fires repeatedly on the shared Scheduler until cancelled") {
     temporary.use { home =>
       (for
         commands <- Resource.eval(Deferred[IO, GraalCommandSdk])
@@ -184,12 +195,15 @@ class NotifySuite extends CatsEffectSuite:
         reader(service).use { events =>
           for
             _ <- commands.complete(sdk)
-            created <- triggers.when(NotifyWhenRequest(
-              targetSessionId = agySessionId,
-              code = """return "持续提醒";""",
-              every = Some("80ms"),
-              once = Some(false)
-            ))
+            created <- triggers.when(
+              sessionId = agySessionId,
+              cwd = None,
+              request = NotifyWhenRequest(
+                code = """return "持续提醒";""",
+                every = Some("80ms"),
+                once = Some(false)
+              )
+            )
             first <- events.take.timeout(5.seconds)
             second <- events.take.timeout(5.seconds)
             _ = assertEquals(first.notification.map(_.message), Some("持续提醒"))
@@ -216,11 +230,13 @@ class NotifySuite extends CatsEffectSuite:
           for
             _ <- commands.complete(sdk)
             before <- IO.realTimeInstant
-            created <- triggers.at(NotifyAtRequest(
-              targetSessionId = agySessionId,
-              at = "+180ms",
-              message = "时间到了"
-            ))
+            created <- triggers.at(
+              sessionId = agySessionId,
+              request = NotifyAtRequest(
+                at = "+180ms",
+                message = "时间到了"
+              )
+            )
             _ = assertEquals(created.once, true)
             _ = assert(created.delay.endsWith("ms") && created.delay != "0ms")
             event <- events.take.timeout(5.seconds)

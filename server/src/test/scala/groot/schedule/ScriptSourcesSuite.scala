@@ -158,8 +158,8 @@ class ScriptSourcesSuite extends CatsEffectSuite:
         for
           _ <- write(path, "old")
           old <- source(sources, path, "old")
-          first <- manager.start(old, "1s", "30s")
-          queued <- manager.start(old, "1s", "30s")
+          first <- manager.submit(old, "1s", "30s")
+          queued <- manager.submit(old, "1s", "30s")
           _ = assertEquals(queued.state, "queued")
           _ <- write(path, "new")
           updated <- source(sources, path, "new")
@@ -181,7 +181,7 @@ class ScriptSourcesSuite extends CatsEffectSuite:
           }
           _ <- control.finish(queued.id)
           _ <- manager.await(queued.id)
-          next <- manager.start(updated, "1s", "30s")
+          next <- manager.submit(updated, "1s", "30s")
           calls <- control.calls.get
           _ = assert(calls.last.snapshot eq updated)
           _ <- control.finish(next.id)

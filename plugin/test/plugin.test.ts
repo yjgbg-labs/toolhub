@@ -56,3 +56,55 @@ test("normalization collisions fail rather than silently overriding a tool", () 
   const client = new ApiClient(new Catalog(doc), { baseUrl: api.baseUrl });
   expect(() => operationTools(client)).toThrow("Code Mode name collision");
 });
+
+test("sessionId and cwd parameters are hidden from tool schema and implicitly supplied from ToolContext", async () => {
+  const received: { session: string | null; body: unknown } = { session: null, body: null };
+  const srv = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(req) {
+      const u = new URL(req.url);
+      if (u.pathname === "/notify/at") {
+        received.session = u.searchParams.get("sessionId");
+        received.body = await req.json();
+        return Response.json({ ok: true });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+  try {
+    const doc = document() as any;
+    doc.paths["/notify/at"] = {
+      post: {
+        operationId: "notify.at",
+        parameters: [
+          { name: "sessionId", in: "query", required: true, schema: { type: "string" } },
+          { name: "cwd", in: "query", required: false, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["at", "message"],
+                properties: { at: { type: "string" }, message: { type: "string" } },
+              },
+            },
+          },
+        },
+        responses: { "200": { description: "ok", content: { "application/json": { schema: { type: "object" } } } } },
+      },
+    };
+    const client = new ApiClient(new Catalog(doc), { baseUrl: srv.url.toString().replace(/\/$/, "") });
+    const notifyAt = operationTools(client).find(t => t.options?.namespace === "notify" && t.name === "at")!;
+    expect(notifyAt.input).toHaveProperty("required", ["at", "message"]);
+    expect(notifyAt.input).not.toHaveProperty("properties.sessionId");
+    expect(notifyAt.input).not.toHaveProperty("properties.body");
+    await notifyAt.execute({ at: "+5m", message: "ping" }, { sessionID: "ses_auto_42" } as unknown as ToolContext);
+    expect(received.session).toBe("ses_auto_42");
+    expect(received.body).toEqual({ at: "+5m", message: "ping" });
+  } finally {
+    srv.stop(true);
+  }
+});

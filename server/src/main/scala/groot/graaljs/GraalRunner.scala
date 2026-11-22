@@ -24,6 +24,8 @@ private[graaljs] trait GraalExecution:
 
 private[graaljs] trait GraalRunner:
   def start(task: GraalTask, source: Source, log: Path): IO[GraalExecution]
+  def start(task: GraalTask, source: Source, log: Path, context: Map[String, String]): IO[GraalExecution] =
+    start(task, source, log)
 
 private[graaljs] object GraalRunner:
   val cancelled = TaskError("cancelled", "Cancelled by user")
@@ -66,11 +68,14 @@ private[graaljs] object GraalRunner:
       if !cpu.isCurrentThreadCpuTimeSupported then None
       else Option(cpu.getCurrentThreadCpuTime).filter(_ >= 0)
 
-    def start(task: GraalTask, source: Source, log: Path): IO[GraalExecution] = commands.flatMap { sdk => IO {
+    def start(task: GraalTask, source: Source, log: Path): IO[GraalExecution] =
+      start(task, source, log, Map.empty)
+
+    override def start(task: GraalTask, source: Source, log: Path, taskContext: Map[String, String]): IO[GraalExecution] = commands.flatMap { sdk => IO {
       val context = new AtomicReference[Context]()
       val stop = new AtomicReference[TaskError]()
       val completed = new CompletableFuture[RunResult]()
-      val session = new GraalSdkSession(sdk, dispatcher)
+      val session = new GraalSdkSession(sdk, dispatcher, taskContext)
       val execution = new GraalExecution:
         // Cancelling an observer never cancels the worker or its completion signal.
         def result: IO[RunResult] = IO.async_ { callback =>

@@ -1,35 +1,30 @@
 package groot.notify
 
 import cats.effect.{IO, Resource}
-import cats.effect.std.{Mutex, Queue, Supervisor}
 import cats.syntax.all.*
-import groot.graaljs.{GraalManager, JavaScript, Validation => GraalValidation}
+import groot.graaljs.{GraalManager, GraalTask, JavaScript, TaskError, Validation => GraalValidation}
+import groot.schedule.{JobState, RetryPolicy, ScheduleBackend, ScheduledItem, Scheduler, Validation => ScheduleValidation}
 import io.circe.Json
 import io.circe.parser.parse
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Path
+import java.security.MessageDigest
 import java.time.{Duration => JDuration, Instant, OffsetDateTime, ZonedDateTime}
-import java.util.UUID
-import scala.concurrent.duration.*
+import java.util.{HexFormat, UUID}
+import org.graalvm.polyglot.Source
 
-/** Event-driven trigger engine for notify.when (with notify.at as a thin wrapper), backed by GraalManager and NotifyService. */
+/** Session trigger manager backed directly by a dedicated `groot.schedule.Scheduler` instance. */
 final class NotifyTriggerManager private (
     store: NotifyTriggerStore,
-    notifyService: NotifyService,
-    graaljs: GraalManager,
-    mutex: Mutex[IO],
-    supervisor: Supervisor[IO],
-    changed: Queue[IO, Unit]
+    val scheduler: Scheduler
 ):
-  private var inFlight = Set.empty[String]
-  private var accepting = true
+  def loop: IO[Unit] = scheduler.loop
 
-  private def wake: IO[Unit] = changed.tryOffer(()).void
-  private def serial[A](action: => IO[A]): IO[A] = mutex.lock.surround(IO.uncancelable(_ => IO.defer(action)))
-
-  def when(request: NotifyWhenRequest): IO[NotifyTrigger] =
+  def when(sessionId: String, cwd: Option[String], request: NotifyWhenRequest): IO[NotifyTrigger] =
     for
       now <- IO.realTimeInstant
+      cleanSession = sessionId.trim
+      cleanCwd = cwd.map(_.trim).filter(_.nonEmpty)
       everyText = request.every.map(_.trim).filter(_.nonEmpty).getOrElse(NotifyTriggerManager.defaultEvery)
       delayText = request.delay.map(_.trim).filter(_.nonEmpty).getOrElse(NotifyTriggerManager.defaultDelay)
       cpuText = request.cpu.map(_.trim).filter(_.nonEmpty).getOrElse(NotifyTriggerManager.defaultCpu)
@@ -37,7 +32,7 @@ final class NotifyTriggerManager private (
       timeoutText = request.timeout.map(_.trim).filter(_.nonEmpty)
       once = request.once.getOrElse(true)
       delayMs <- IO {
-        NotifyService.validateSession(request.targetSessionId)
+        NotifyService.validateSession(cleanSession)
         if request.code.trim.isEmpty then throw NotifyFailure("invalid_notify", "code must not be blank")
         if request.code.getBytes(UTF_8).length > NotifyTriggerManager.maxCodeBytes then
           throw NotifyFailure("notify_limit", "code exceeds 1 MiB")
@@ -47,11 +42,12 @@ final class NotifyTriggerManager private (
         timeoutText.foreach(parsePositiveDurationMs("timeout", _))
         NotifyTriggerManager.parseNonNegativeDurationMs("delay", delayText)
       }
-      firstCheckAt = now.plusMillis(delayMs)
+      firstRunAt = Option.when(delayMs > 0L)(now.plusMillis(delayMs).toString)
       expiresAt = timeoutText.map(t => now.plusMillis(parsePositiveDurationMs("timeout", t)).toString)
-      trigger = NotifyTrigger(
+      stored = StoredTrigger(
         id = NotifyTriggerManager.triggerId(),
-        targetSessionId = request.targetSessionId.trim,
+        sessionId = cleanSession,
+        cwd = cleanCwd,
         code = request.code,
         every = everyText,
         delay = delayText,
@@ -59,15 +55,23 @@ final class NotifyTriggerManager private (
         cpu = cpuText,
         scriptTimeout = scriptTimeoutText,
         createdAt = now.toString,
+        firstRunAt = firstRunAt,
         expiresAt = expiresAt,
-        nextCheckAt = Some(firstCheckAt.toString),
         status = "active"
       )
-      _ <- register(trigger)
-    yield trigger
+      _ <- scheduler.mutate() {
+        for
+          active <- store.active
+          _ <- IO.raiseWhen(active.size >= NotifyTriggerManager.maxActiveTriggers)(
+            NotifyFailure("notify_busy", s"Too many active notify triggers (limit ${NotifyTriggerManager.maxActiveTriggers})")
+          )
+          _ <- store.insert(stored)
+        yield ()
+      }
+    yield NotifyTriggerManager.toPublic(stored, running = false, now = now)
 
   /** Thin wrapper over notify.when: sleeps `delay` until target time, then returns `message` once. */
-  def at(request: NotifyAtRequest): IO[NotifyTrigger] =
+  def at(sessionId: String, request: NotifyAtRequest): IO[NotifyTrigger] =
     for
       now <- IO.realTimeInstant
       targetInstant <- IO(NotifyTriggerManager.parseAtTime(request.at, now))
@@ -77,179 +81,48 @@ final class NotifyTriggerManager private (
           throw NotifyFailure("notify_limit", "message is limited to 64 KiB UTF-8")
       }
       delayMs = math.max(0L, JDuration.between(now, targetInstant).toMillis)
-      trigger <- when(NotifyWhenRequest(
-        targetSessionId = request.targetSessionId,
-        code = s"return ${Json.fromString(request.message).noSpaces};",
-        delay = Some(s"${delayMs}ms"),
-        once = Some(true)
-      ))
+      trigger <- when(
+        sessionId = sessionId,
+        cwd = None,
+        request = NotifyWhenRequest(
+          code = s"return ${Json.fromString(request.message).noSpaces};",
+          delay = Some(s"${delayMs}ms"),
+          once = Some(true)
+        )
+      )
     yield trigger
 
-  private def register(trigger: NotifyTrigger): IO[Unit] =
-    serial {
-      for
-        _ <- IO.raiseUnless(accepting)(NotifyFailure("notify_closed", "Notification trigger service is shutting down"))
-        active <- store.active
-        _ <- IO.raiseWhen(active.size >= NotifyTriggerManager.maxActiveTriggers)(
-          NotifyFailure("notify_busy", s"Too many active notify triggers (limit ${NotifyTriggerManager.maxActiveTriggers})")
-        )
-        _ <- store.insert(trigger)
-      yield ()
-    }.guarantee(wake)
-
   def list(activeOnly: Boolean = false): IO[List[NotifyTrigger]] =
-    if activeOnly then store.active else store.listAll()
+    for
+      now <- IO.realTimeInstant
+      runningIds <- scheduler.runningIds
+      entries <- if activeOnly then store.active else store.listAll()
+    yield entries.map(t => NotifyTriggerManager.toPublic(t, running = runningIds.contains(t.id), now = now))
 
   def cancel(id: String): IO[NotifyTrigger] =
-    serial {
-      store.get(id).flatMap {
-        case None => IO.raiseError(NotifyFailure("notify_not_found", s"No notify trigger named $id"))
-        case Some(existing) if existing.status != "active" => IO.pure(existing)
-        case Some(existing) =>
-          val updated = existing.copy(status = "cancelled", nextCheckAt = None)
-          store.save(updated).as(updated)
+    for
+      now <- IO.realTimeInstant
+      updated <- scheduler.mutate(List(id)) {
+        store.get(id).flatMap {
+          case None => IO.raiseError(NotifyFailure("notify_not_found", s"No notify trigger named $id"))
+          case Some(existing) if existing.status != "active" => IO.pure(existing)
+          case Some(existing) =>
+            store.update(id)(_.copy(status = "cancelled")).flatMap(IO.fromOption(_)(NotifyFailure("notify_not_found", s"No notify trigger named $id")))
+        }
       }
-    }.guarantee(wake)
-
-  def loop: IO[Unit] =
-    def step: IO[Unit] =
-      tick.flatMap {
-        case None => IO.unit
-        case Some(None) => changed.take *> step
-        case Some(Some(delay)) =>
-          IO.race(changed.take, IO.sleep(delay)).void *> step
-      }
-    step
-
-  /** Returns None when shutting down; Some(None) when idle; Some(Some(delay)) for next due trigger. */
-  private def tick: IO[Option[Option[FiniteDuration]]] =
-    serial {
-      if !accepting then IO.pure(None)
-      else
-        for
-          now <- IO.realTimeInstant
-          active <- store.active
-          nextWait <- active.foldLeftM(Option.empty[FiniteDuration]) { (soonest, trigger) =>
-            val expired = trigger.expiresAt.exists(e => !now.isBefore(Instant.parse(e)))
-            if expired && !inFlight.contains(trigger.id) then
-              store.save(trigger.copy(status = "expired", nextCheckAt = None)).as(soonest)
-            else if inFlight.contains(trigger.id) then
-              IO.pure(soonest)
-            else
-              val dueAt = trigger.nextCheckAt.map(Instant.parse).getOrElse(now)
-              if !now.isBefore(dueAt) then
-                launch(trigger).as(soonest)
-              else
-                val waitMs = math.max(1L, JDuration.between(now, dueAt).toMillis)
-                val wait = waitMs.millis
-                IO.pure(Some(soonest.fold(wait)(_.min(wait))))
-          }
-        yield Some(nextWait)
-    }
-
-  private def launch(trigger: NotifyTrigger): IO[Unit] =
-    IO { inFlight += trigger.id } *>
-      supervisor.supervise(evaluate(trigger).guarantee(serial(IO { inFlight -= trigger.id }) *> wake)).void
-
-  private def evaluate(trigger: NotifyTrigger): IO[Unit] =
-    val marker = s"__GROOT_NOTIFY_RESULT_${UUID.randomUUID().toString.replace("-", "")}__:"
-    val wrapped = NotifyTriggerManager.wrapPredicate(trigger.code, marker)
-    val run: IO[Unit] =
-      for
-        source <- IO(JavaScript.source(wrapped, name = s"${trigger.id}.js", cached = false))
-        task <- graaljs.start(source, trigger.cpu, trigger.scriptTimeout)
-        completed <- graaljs.await(task.id)
-        checkedAt <- IO.realTimeInstant
-        outcome <- if completed.state == "succeeded" then
-          graaljs.logs(task.id).map(raw => Right(NotifyTriggerManager.extractMessage(raw.toString, marker)))
-        else
-          val errMsg = completed.error.map(e => s"${e.code}: ${e.message}").getOrElse(s"Task ended in state ${completed.state}")
-          IO.pure(Left(errMsg))
-        _ <- outcome match
-          case Right(Some(message)) =>
-            deliverWithRetry(trigger.targetSessionId, message).attempt.flatMap {
-              case Right(_) =>
-                serial {
-                  store.get(trigger.id).flatMap {
-                    case Some(current) if current.status == "active" =>
-                      val nextStatus = if current.once then "triggered" else "active"
-                      val nextCheck = if current.once then None else Some(checkedAt.plusMillis(parsePositiveDurationMs("every", current.every)).toString)
-                      store.save(current.copy(
-                        status = nextStatus,
-                        nextCheckAt = nextCheck,
-                        lastCheckedAt = Some(checkedAt.toString),
-                        lastTriggeredAt = Some(checkedAt.toString),
-                        lastTaskId = Some(task.id),
-                        lastError = None,
-                        checkCount = current.checkCount + 1,
-                        triggerCount = current.triggerCount + 1
-                      ))
-                    case _ => IO.unit
-                  }
-                }
-              case Left(sendErr) =>
-                recordCheckFailure(trigger.id, checkedAt, Some(task.id), s"delivery_failed: ${sendErr.getMessage}")
-            }
-          case Right(None) =>
-            serial {
-              store.get(trigger.id).flatMap {
-                case Some(current) if current.status == "active" =>
-                  val nextCheck = checkedAt.plusMillis(parsePositiveDurationMs("every", current.every)).toString
-                  store.save(current.copy(
-                    nextCheckAt = Some(nextCheck),
-                    lastCheckedAt = Some(checkedAt.toString),
-                    lastTaskId = Some(task.id),
-                    lastError = None,
-                    checkCount = current.checkCount + 1
-                  ))
-                case _ => IO.unit
-              }
-            }
-          case Left(errMsg) =>
-            recordCheckFailure(trigger.id, checkedAt, Some(task.id), errMsg)
-      yield ()
-
-    run.handleErrorWith { err =>
-      IO.realTimeInstant.flatMap(now => recordCheckFailure(trigger.id, now, None, Option(err.getMessage).getOrElse(err.toString)))
-    }
-
-  private def deliverWithRetry(targetSessionId: String, message: String): IO[NotifyReceipt] =
-    def attempt(remaining: Int, delay: FiniteDuration): IO[NotifyReceipt] =
-      notifyService.send(NotifyRequest(targetSessionId, message)).handleErrorWith {
-        case err: NotifyFailure if (err.code == "notify_offline" || err.code == "notify_busy") && remaining > 0 =>
-          IO.sleep(delay) *> attempt(remaining - 1, delay * 2)
-        case err => IO.raiseError(err)
-      }
-    attempt(remaining = 3, delay = 500.millis)
-
-  private def recordCheckFailure(id: String, checkedAt: Instant, taskId: Option[String], error: String): IO[Unit] =
-    serial {
-      store.get(id).flatMap {
-        case Some(current) if current.status == "active" =>
-          val nextCheck = checkedAt.plusMillis(parsePositiveDurationMs("every", current.every)).toString
-          store.save(current.copy(
-            nextCheckAt = Some(nextCheck),
-            lastCheckedAt = Some(checkedAt.toString),
-            lastTaskId = taskId.orElse(current.lastTaskId),
-            lastError = Some(error.take(2048)),
-            checkCount = current.checkCount + 1
-          ))
-        case _ => IO.unit
-      }
-    }
+      refreshed <- store.get(id).map(_.getOrElse(updated))
+    yield NotifyTriggerManager.toPublic(refreshed, running = false, now = now)
 
   private def parsePositiveDurationMs(name: String, text: String): Long =
     try GraalValidation.durationMs(name, text)
     catch case e: Exception => throw NotifyFailure("invalid_notify", e.getMessage)
-
-  private def shutdown: IO[Unit] =
-    serial(IO { accepting = false }) *> wake
 
 object NotifyTriggerManager:
   val defaultEvery = "15s"
   val defaultDelay = "0ms"
   val defaultCpu = "2s"
   val defaultScriptTimeout = "30s"
+  val defaultDeliveryRetry: RetryPolicy = RetryPolicy(maxRetries = 3, delay = "500ms", backoff = 2, maxDelay = "5s")
   val maxCodeBytes: Int = 1024 * 1024
   val maxActiveTriggers = 256
 
@@ -258,6 +131,104 @@ object NotifyTriggerManager:
   private val relativeDuration = "^\\+(\\d+)(ms|s|m|h|d)$".r
 
   def triggerId(): String = s"ntf_${UUID.randomUUID().toString.replace("-", "")}"
+
+  private def markerFor(id: String): String = s"__GROOT_NOTIFY_RESULT_${id}__:"
+
+  private def definitionHash(t: StoredTrigger): String =
+    val key = s"${t.id}|${t.sessionId}|${t.every}|${t.delay}|${t.once}|${t.cpu}|${t.scriptTimeout}|${t.code}"
+    HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(key.getBytes(UTF_8)))
+
+  private def toScheduledItem(t: StoredTrigger): ScheduledItem =
+    val ctx = Map("sessionId" -> t.sessionId) ++ t.cwd.map("cwd" -> _)
+    ScheduledItem(
+      everyMs = ScheduleValidation.durationMs(t.every),
+      cpu = t.cpu,
+      timeout = t.scriptTimeout,
+      retry = defaultDeliveryRetry,
+      enabled = t.status == "active",
+      firstRunAt = t.firstRunAt.map(Instant.parse),
+      expiresAt = t.expiresAt.map(Instant.parse),
+      context = ctx,
+      definitionHash = definitionHash(t)
+    )
+
+  private def toPublic(t: StoredTrigger, running: Boolean, now: Instant): NotifyTrigger =
+    val everyMs = ScheduleValidation.durationMs(t.every)
+    val next =
+      if t.status != "active" || running || t.state.inFlight then None
+      else
+        val computed = ScheduleValidation.nextRun(everyMs, t.firstRunAt.map(Instant.parse), t.state)
+        Some(computed.getOrElse(now).toString)
+    NotifyTrigger(
+      id = t.id,
+      sessionId = t.sessionId,
+      cwd = t.cwd,
+      code = t.code,
+      every = t.every,
+      delay = t.delay,
+      once = t.once,
+      cpu = t.cpu,
+      scriptTimeout = t.scriptTimeout,
+      createdAt = t.createdAt,
+      expiresAt = t.expiresAt,
+      nextRunAt = next,
+      lastRunAt = t.state.lastRunAt,
+      lastFinishedAt = t.state.lastFinishedAt,
+      lastTriggeredAt = t.lastTriggeredAt,
+      lastTaskId = t.state.lastTaskId,
+      lastError = t.state.lastError,
+      attempt = t.state.attempt,
+      checkCount = t.checkCount,
+      triggerCount = t.triggerCount,
+      status = t.status
+    )
+
+  private final class NotifyBackend(store: NotifyTriggerStore, notifyService: NotifyService) extends ScheduleBackend:
+    def snapshot: IO[(Map[String, Double], Map[String, ScheduledItem])] =
+      store.active.map(list => Map.empty[String, Double] -> list.map(t => t.id -> toScheduledItem(t)).toMap)
+
+    def state(name: String): IO[JobState] = store.state(name)
+    def writeState(name: String, state: JobState): IO[Unit] = store.writeState(name, state)
+    def removeState(name: String): IO[Unit] = store.clearInFlightState(name)
+    def appendLog(name: String, text: String): IO[Unit] = IO.unit
+
+    def loadSource(name: String, item: ScheduledItem): IO[Source] =
+      store.get(name).flatMap {
+        case None => IO.raiseError(NotifyFailure("notify_not_found", s"Trigger $name disappeared"))
+        case Some(t) =>
+          val wrapped = wrapPredicate(t.code, markerFor(name))
+          IO(JavaScript.source(wrapped, name = s"$name.js", cached = false))
+      }
+
+    override def onSucceeded(name: String, item: ScheduledItem, task: GraalTask, output: String, finishedAt: Instant): IO[Option[TaskError]] =
+      store.get(name).flatMap {
+        case Some(current) if current.status == "active" =>
+          extractMessage(output, markerFor(name)) match
+            case None =>
+              store.update(name)(t => t.copy(checkCount = t.checkCount + 1)).as(None)
+            case Some(message) =>
+              notifyService.send(NotifyRequest(current.sessionId, message)).attempt.flatMap {
+                case Right(_) =>
+                  store.update(name) { t =>
+                    t.copy(
+                      status = if t.once then "triggered" else "active",
+                      lastTriggeredAt = Some(finishedAt.toString),
+                      checkCount = t.checkCount + 1,
+                      triggerCount = t.triggerCount + 1
+                    )
+                  }.as(None)
+                case Left(err: NotifyFailure) =>
+                  store.update(name)(t => t.copy(checkCount = t.checkCount + 1))
+                    .as(Some(TaskError(err.code, err.getMessage)))
+                case Left(err) =>
+                  store.update(name)(t => t.copy(checkCount = t.checkCount + 1))
+                    .as(Some(TaskError("delivery_error", Option(err.getMessage).getOrElse(err.toString))))
+              }
+        case _ => IO.pure(None)
+      }
+
+    override def onExpired(name: String, now: Instant): IO[Unit] =
+      store.update(name)(t => if t.status == "active" then t.copy(status = "expired") else t).void
 
   private[notify] def parseNonNegativeDurationMs(name: String, text: String): Long = text match
     case "0" => 0L
@@ -308,9 +279,6 @@ object NotifyTriggerManager:
   ): Resource[IO, NotifyTriggerManager] =
     for
       store <- NotifyTriggerStore.resource(home)
-      mutex <- Resource.eval(Mutex[IO])
-      supervisor <- Supervisor[IO](await = true)
-      changed <- Resource.eval(Queue.dropping[IO, Unit](1))
-      manager <- Resource.make(IO(new NotifyTriggerManager(store, notifyService, graaljs, mutex, supervisor, changed)))(_.shutdown)
-      _ <- if startLoop then manager.loop.background.void else Resource.unit
-    yield manager
+      backend = new NotifyBackend(store, notifyService)
+      scheduler <- Scheduler.withBackend(graaljs, backend, startLoop = startLoop)
+    yield new NotifyTriggerManager(store, scheduler)

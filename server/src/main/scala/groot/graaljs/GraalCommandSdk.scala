@@ -23,19 +23,29 @@ final class GraalCommandSdk private (endpoints: Vector[Endpoint]):
     id
   }
 
-  def call(id: String, input: Json): IO[Json] = call(id, Some(input))
+  def call(id: String, input: Json): IO[Json] = call(id, Some(input), Map.empty)
 
-  def call(id: String, input: Option[Json] = None): IO[Json] = IO.defer {
+  def call(id: String, input: Option[Json] = None, context: Map[String, String] = Map.empty): IO[Json] = IO.defer {
     val spec = byId.getOrElse(id, throw new IllegalArgumentException(s"Unknown command: $id"))
-    val bodyInput = spec.inputs.find(_.location == InputLocation.Body)
-    val bodyOnly = bodyInput.nonEmpty && spec.inputs.size == 1
+    val implicitNames = spec.inputs.iterator
+      .filter(i => i.location != InputLocation.Body && context.contains(i.name))
+      .map(_.name)
+      .toSet
+    val explicitInputs = spec.inputs.filterNot(i => i.location != InputLocation.Body && implicitNames.contains(i.name))
+    val bodyInput = explicitInputs.find(_.location == InputLocation.Body)
+    val bodyOnly = bodyInput.nonEmpty && explicitInputs.size == 1
     val args = if bodyOnly then JsonObject.empty else
       input.fold(JsonObject.empty)(_.asObject.getOrElse(throw new IllegalArgumentException("Command input must be an object")))
-    val names = spec.inputs.map(parameter => if parameter.location == InputLocation.Body then "body" else parameter.name).toSet
+    val names = explicitInputs.map(parameter => if parameter.location == InputLocation.Body then "body" else parameter.name).toSet
     require(args.keys.forall(names), s"Unknown parameter for $id")
     val groups = Vector(InputLocation.Path, InputLocation.Query, InputLocation.Header, InputLocation.Cookie).map { location =>
       val declared = spec.inputs.filter(_.location == location)
-      val group = JsonObject.fromIterable(declared.flatMap(parameter => args(parameter.name).map(parameter.name -> _)))
+      val group = JsonObject.fromIterable(declared.flatMap { parameter =>
+        val valueOpt =
+          if implicitNames.contains(parameter.name) then Some(Json.fromString(context(parameter.name)))
+          else args(parameter.name)
+        valueOpt.map(parameter.name -> _)
+      })
       declared.foreach { parameter =>
         group(parameter.name).foreach { value =>
           require(matches(parameter.schema, value), s"Invalid type for ${parameter.name}")

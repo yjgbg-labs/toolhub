@@ -105,7 +105,7 @@ class StateSuite extends CatsEffectSuite:
       def run(source: String, expected: String = "succeeded"): IO[Unit] = StateService.resource(home.resolve("state")).use { service =>
         val sdk = GraalCommandSdk(httpApp { StateRoutes.register(service) })
         GraalManager.resource(home.resolve("tasks"), IO.pure(sdk)).use { manager => for
-          task <- manager.start(JavaScript.source(source), "1s", "10s")
+          task <- manager.submit(JavaScript.source(source), "1s", "10s")
           done <- manager.await(task.id)
         yield assertEquals(done.state, expected, done.error.toString) }
       }

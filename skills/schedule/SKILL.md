@@ -54,7 +54,7 @@ groot-cli graaljs logs --id gjs_...
 - `status=retrying` 为等待重试；`queued` 为等待逻辑资源；GraalJS 内部状态见 `lastTaskState`。
 - `lastExitCode` 为结果标记：成功 0、取消/中断 143、其他失败 1，不是进程退出码。
 - `log --lines` 范围 1–10000，默认 100，包含每次尝试的 ID、输出、结果和下次重试时间。
-- 删除任务保留历史日志。一次性执行使用 `graaljs start`，没有 `schedule run`。
+- 删除任务保留历史日志。一次性执行使用 `graaljs submit`，没有 `schedule run`。
 
 ## 脚本文件与提交时校验
 
@@ -68,7 +68,7 @@ groot-cli graaljs logs --id gjs_...
 - 编辑脚本不重置周期/重试状态，不中断活动 Context。建议原子替换，避免读到尚未写完的源码。
 - 文件不可读、缺失、为空、编码或大小错误使后续尝试以 `source_error` 失败，不继续执行旧缓存。
 - 文件错误由 schedule 记录并重试，此时尚未提交 GraalJS，`lastTaskId` 为空。
-- 语法错误在执行时报告；修复文件后自动被后续尝试使用。一次性 `graaljs start` 仍接受内联 `source`。
+- 语法错误在执行时报告；修复文件后自动被后续尝试使用。一次性 `graaljs submit` 仍接受内联 `source`。
 
 ## 重试
 
@@ -80,7 +80,7 @@ groot-cli graaljs logs --id gjs_...
 - 错误、超时、资源超限、取消、中断及提交失败都重试；捕获错误后正常返回会被视为成功。
 - 重试优先于普通周期，等待重试时释放逻辑资源；到期定时器唤醒，资源释放后立即调度队列。
 - 成功或耗尽重试后恢复普通周期，下一周期为最近一次尝试开始时间加 `every`，`attempt` 重新从 1 开始。
-- schedule 调用 `start`，从返回的 `GraalTask.id` 获取 ID 后保存；重启核对已保存 ID 的真实结果。
+- schedule 调用 `submit`，从返回的 `GraalTask.id` 获取 ID 后保存；重启核对已保存 ID 的真实结果。
 - 接受提交成功但 ID 尚未保存时崩溃造成的重复提交窗口。已产生的外部副作用不会回滚。
 
 ## 完整配置

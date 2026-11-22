@@ -36,6 +36,7 @@ const mockOpenApi = {
 let server: ReturnType<typeof Bun.serve>;
 let baseUrl = "";
 let lastSubmittedScript = "";
+let lastSubmittedParams: Record<string, string> = {};
 
 beforeAll(() => {
   server = Bun.serve({
@@ -46,8 +47,9 @@ beforeAll(() => {
       if (url.pathname === "/openapi.json") {
         return Response.json(mockOpenApi);
       }
-      if (url.pathname === "/graaljs/start" && req.method === "POST") {
+      if (url.pathname === "/graaljs/submit" && req.method === "POST") {
         lastSubmittedScript = await req.text();
+        lastSubmittedParams = Object.fromEntries(url.searchParams.entries());
         return Response.json({ id: "gjs_e2e_1", state: "running" });
       }
       if (url.pathname === "/graaljs/logsFollow") {
@@ -166,7 +168,9 @@ describe("groot-agy native binary", () => {
     const exec = await nextMessage();
     expect(exec.result.isError).toBeUndefined();
     expect(exec.result.content[0].text).toBe("ok-from-e2e");
-    expect(lastSubmittedScript).toContain('"conversationId":"ses_sideband_99"');
+    expect(lastSubmittedParams.sessionId).toBe("ses_sideband_99");
+    expect(lastSubmittedParams.cwd).toBe("/tmp/work");
+    expect(lastSubmittedScript).not.toContain("const ctx");
 
     proc.stdin.end();
     expect(await proc.exited).toBe(0);
