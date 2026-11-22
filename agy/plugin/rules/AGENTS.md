@@ -1,6 +1,6 @@
 # Groot Code Mode
 
-Groot capabilities are discovered dynamically from live `/openapi.json` (summarized at session start) and exposed via the `groot` MCP server using **two tools**:
+Groot capabilities are discovered dynamically from live `/openapi.json` (summarized at session start) and exposed via the `groot_codemode` MCP server using **two tools**:
 
 1. **`search`**: Discover Groot GraalJS SDK TypeScript signatures from live `/openapi.json`.
    - Arguments: `{"namespace"?: string, "keyword"?: string}`

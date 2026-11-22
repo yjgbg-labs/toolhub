@@ -173,7 +173,7 @@ class AgySuite extends munit.FunSuite:
         |    "id": "call-1",
         |    "name": "call_mcp_tool",
         |    "args": {
-        |      "ServerName": "groot_groot",
+        |      "ServerName": "groot_codemode",
         |      "ToolName": "execute",
         |      "Arguments": { "graalScript": "return ctx.conversationId;" }
         |    }

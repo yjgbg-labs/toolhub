@@ -436,7 +436,7 @@ cp -R skills/. "$stage/skills/"
 cat > "$stage/mcp_config.json" <<EOF
 {
   "mcpServers": {
-    "groot": {
+    "codemode": {
       "command": "$AGY_PLUGIN_DIR/bin/groot-agy",
       "args": ["mcp"]
     }

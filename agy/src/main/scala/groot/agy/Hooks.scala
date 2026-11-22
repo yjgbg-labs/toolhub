@@ -9,7 +9,7 @@ object Hooks:
         val sb = new StringBuilder
         sb.append("<groot_codemode>\n")
         sb.append(s"Groot server connected ($baseUrl, ${catalog.operations.size} GraalJS operations).\n")
-        sb.append("Use MCP server `groot`: call `search(namespace, keyword)` to inspect TypeScript signatures, then `execute(graalScript, timeout)` to run JS against `tools.*`.\n\n")
+        sb.append("Use MCP server `groot_codemode`: call `search(namespace, keyword)` to inspect TypeScript signatures, then `execute(graalScript, timeout)` to run JS against `tools.*`.\n\n")
         sb.append("Available namespaces (`tools.<namespace>.*`):\n")
         catalog.topLevelSummaries.foreach { summary =>
           val subHint =
