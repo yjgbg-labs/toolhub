@@ -35,6 +35,7 @@ object Hooks:
 
   /** Inject per-call session context (`conversationId`, `cwd`, `workspacePaths`) into `groot` `execute` tool calls. */
   def preToolUse(inputText: String): Json =
+    val allowOnly = Json.obj("decision" -> Json.fromString("allow"))
     val parsed = for
       text <- Option(inputText).map(_.trim).filter(_.nonEmpty)
       payload <- scala.util.Try(Catalog.parse(text)).toOption
@@ -42,7 +43,7 @@ object Hooks:
     yield (payload, toolCall)
 
     parsed match
-      case None => Json.obj()
+      case None => allowOnly
       case Some((payload, toolCall)) =>
         val toolName = toolCall("name").flatMap(_.asString).getOrElse("")
         val argsObj = toolCall("args").flatMap(_.asObject).getOrElse(JsonObject.empty)
@@ -53,13 +54,15 @@ object Hooks:
           "workspacePaths" -> Catalog.field(payload, "workspacePaths")
         ).collect { case (k, Some(v)) if !v.isNull => k -> v }
 
-        if ctxFields.isEmpty then Json.obj()
+        if ctxFields.isEmpty then allowOnly
         else
           val ctxJson = Json.fromJsonObject(JsonObject.fromIterable(ctxFields))
+          val serverName = argsObj("ServerName").flatMap(_.asString).getOrElse("")
+          val isGrootServer = serverName == "groot" || serverName == "groot_groot" || serverName.startsWith("groot_")
 
           val isLazyGrootExecute =
             toolName == "call_mcp_tool" &&
-              argsObj("ServerName").flatMap(_.asString).contains("groot") &&
+              isGrootServer &&
               argsObj("ToolName").flatMap(_.asString).contains("execute")
 
           val isEagerGrootExecute =
@@ -84,4 +87,4 @@ object Hooks:
               )
             )
           else
-            Json.obj()
+            allowOnly

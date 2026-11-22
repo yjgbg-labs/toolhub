@@ -173,7 +173,7 @@ class AgySuite extends munit.FunSuite:
         |    "id": "call-1",
         |    "name": "call_mcp_tool",
         |    "args": {
-        |      "ServerName": "groot",
+        |      "ServerName": "groot_groot",
         |      "ToolName": "execute",
         |      "Arguments": { "graalScript": "return ctx.conversationId;" }
         |    }
@@ -189,10 +189,10 @@ class AgySuite extends munit.FunSuite:
         |  "conversationId": "conv-123",
         |  "toolCall": {
         |    "name": "call_mcp_tool",
-        |    "args": { "ServerName": "groot", "ToolName": "search", "Arguments": {} }
+        |    "args": { "ServerName": "groot_groot", "ToolName": "search", "Arguments": {} }
         |  }
         |}""".stripMargin
-    assertEquals(Hooks.preToolUse(otherPayload), Json.obj())
+    assertEquals(Hooks.preToolUse(otherPayload), Json.obj("decision" -> Json.fromString("allow")))
   }
 
   test("Executor wraps script with ctx and return capture, strips graaljs trailer, and truncates long output") {

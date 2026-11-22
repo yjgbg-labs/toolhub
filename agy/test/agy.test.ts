@@ -96,7 +96,7 @@ describe("groot-agy native binary", () => {
         id: "t1",
         name: "call_mcp_tool",
         args: {
-          ServerName: "groot",
+          ServerName: "groot_groot",
           ToolName: "execute",
           Arguments: { graalScript: "return ctx.conversationId;" },
         },
