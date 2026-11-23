@@ -2,10 +2,9 @@ package groot.http
 
 import cats.effect.{IO, Resource}
 import cats.syntax.all.*
+import framework.validation.Contracts
 import fs2.{Chunk, Stream}
 import fs2.compression.{Compression, InflateParams}
-import fs2.concurrent.Signal
-import groot.config.{GrootConfig, HttpConfig}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.util.Base64
 import org.http4s.{Header, Headers, Method, Request, Response, Uri}
@@ -18,12 +17,12 @@ import scala.concurrent.duration.*
 final class HttpService(
     client: Client[IO],
     timeout: FiniteDuration = 30.seconds,
-    config: Option[Signal[IO, HttpConfig]] = None
+    config: Option[IO[HttpConfig]] = None
 ):
   import HttpService.*
 
-  def apply(input: HttpRequest): IO[HttpResponse] = config.fold(IO.pure((timeout, maxBytes, 20)))(_.get.map(c =>
-    (GrootConfig.parseDuration("http.timeout", c.timeout), c.maxBytes, c.maxRedirects))).flatMap { (reqTimeout, capBytes, maxRedirs) =>
+  def apply(input: HttpRequest): IO[HttpResponse] = config.fold(IO.pure((timeout, maxBytes, 20)))(_.map(c =>
+    (Contracts.parseDuration(c.timeout), c.maxBytes, c.maxRedirects))).flatMap { (reqTimeout, capBytes, maxRedirs) =>
     IO.defer {
       val uri = parseUrl(input.url)
       val upper = input.method.toUpperCase(java.util.Locale.ROOT)
@@ -48,7 +47,7 @@ final class HttpService(
       }.groupMap(_._1)(_._2).toVector.map((name, values) => name -> values.mkString(", "))
       val size = input.url.getBytes(UTF_8).length.toLong + input.method.length +
         fields.map((k, v) => k.length.toLong + v.getBytes(UTF_8).length).sum + body.fold(0)(_.length)
-      if size > capBytes then throw HttpFailure("RangeError", s"http() request exceeds ${GrootConfig.formatBytes(capBytes.toLong)}")
+      if size > capBytes then throw HttpFailure("RangeError", s"http() request exceeds ${Contracts.formatBytes(capBytes.toLong)}")
       val typed = if input.body.nonEmpty && input.bodyEncoding == BodyEncoding.utf8 && !fields.exists(_._1 == "content-type") then
         fields :+ ("content-type" -> "text/plain;charset=UTF-8") else fields
       // Framing is computed from the buffered body, including when callers reuse response headers.
@@ -113,23 +112,23 @@ final class HttpService(
         }
       else response.body
     bytes.take(capBytes.toLong + 1).compile.to(Array).flatMap { body =>
-      if body.length > capBytes then IO.raiseError(HttpFailure("RangeError", s"http() response exceeds ${GrootConfig.formatBytes(capBytes.toLong)}"))
+      if body.length > capBytes then IO.raiseError(HttpFailure("RangeError", s"http() response exceeds ${Contracts.formatBytes(capBytes.toLong)}"))
       else IO.pure(body)
     }
 
 object HttpService:
   val maxBytes = 1024 * 1024
 
-  def resource: Resource[IO, HttpService] = resourceWithConfig(Signal.constant(HttpConfig()))
+  def resource: Resource[IO, HttpService] = resourceWithConfig(IO.pure(HttpConfig()))
 
-  def resourceWithConfig(config: Signal[IO, HttpConfig]): Resource[IO, HttpService] =
+  def resourceWithConfig(config: IO[HttpConfig]): Resource[IO, HttpService] =
     for
-      init <- Resource.eval(config.get)
+      init <- Resource.eval(config)
       client <- EmberClientBuilder.default[IO]
         .withTimeout(Duration.Inf)
         .withMaxResponseHeaderSize(math.max(init.maxHeaderBytes, 64 * 1024))
         .build
-    yield new HttpService(client, GrootConfig.parseDuration("http.timeout", init.timeout), Some(config))
+    yield new HttpService(client, Contracts.parseDuration(init.timeout), Some(config))
 
   private def header(headers: Headers, name: String): Option[String] = headers.headers.find(_.name == CIString(name)).map(_.value)
 

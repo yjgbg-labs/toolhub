@@ -3,7 +3,7 @@ package groot.sqlite
 import cats.effect.{IO, Resource}
 import cats.syntax.all.*
 import framework.model.JsonModel
-import groot.config.SqliteConfig
+import framework.validation.Contracts
 import io.circe.Json
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Path
@@ -29,7 +29,7 @@ private[sqlite] object SqliteExecutor:
     DriverManager.getConnection(s"jdbc:sqlite:${path.toUri.toASCIIString}", config.toProperties).asInstanceOf[SQLiteConnection]
 
   def execute(path: Path, sql: String, cfg: SqliteConfig = SqliteConfig()): IO[ExecuteResult] = IO.defer {
-    if sql.getBytes(UTF_8).length > cfg.maxSqlBytes then throw InvalidSqlite(s"SQL exceeds ${groot.config.GrootConfig.formatBytes(cfg.maxSqlBytes.toLong)}")
+    if sql.getBytes(UTF_8).length > cfg.maxSqlBytes then throw InvalidSqlite(s"SQL exceeds ${Contracts.formatBytes(cfg.maxSqlBytes.toLong)}")
     val statements = SqlStatements.split(sql)
     Resource.fromAutoCloseable(IO.blocking(open(path, busyTimeoutMs = cfg.busyTimeoutMs))).use { connection =>
       // A cancelled observer interrupts the native worker and waits for it before closing the connection.

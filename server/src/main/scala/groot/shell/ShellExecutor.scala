@@ -4,8 +4,6 @@ import cats.effect.{IO, Resource}
 import cats.effect.kernel.Resource.ExitCase
 import cats.effect.std.Mutex
 import cats.syntax.all.*
-import fs2.concurrent.Signal
-import groot.config.ShellConfig
 import groot.graaljs.{InvalidGraalTask, Validation}
 import java.io.{ByteArrayOutputStream, InputStream}
 import java.nio.charset.StandardCharsets.UTF_8
@@ -21,12 +19,12 @@ import scala.util.control.NonFatal
 private[shell] final class ShellExecutor private (
     environment: ShellEnvironment,
     connection: Option[ShellExecutor.Connection],
-    config: Signal[IO, ShellConfig]
+    config: IO[ShellConfig]
 ):
   import ShellExecutor.*
   import ShellScripts.quote
 
-  def execute(request: ShellRequest): IO[ShellResult] = config.get.flatMap { cfg =>
+  def execute(request: ShellRequest): IO[ShellResult] = config.flatMap { cfg =>
     connection match
       case None => Process.run(request.script, request.timeout, request.cwd, cfg.maxScriptBytes, cfg.maxOutputBytes)
       case Some(ssh) => remote(ssh, request, cfg.maxOutputBytes)
@@ -98,7 +96,7 @@ private[shell] object ShellExecutor:
     def command(args: String*): String = (base ++ args).map(ShellScripts.quote).mkString(" ")
 
   def resource(home: Path, environment: ShellEnvironment, ssh: String,
-      config: Signal[IO, ShellConfig] = Signal.constant(ShellConfig())): Resource[IO, ShellExecutor] = for
+      config: IO[ShellConfig] = IO.pure(ShellConfig())): Resource[IO, ShellExecutor] = for
     connection <- environment.target.traverse { target => for
       idleSeconds <- Resource.eval(IO {
         val millis = duration(environment.idle).toMillis

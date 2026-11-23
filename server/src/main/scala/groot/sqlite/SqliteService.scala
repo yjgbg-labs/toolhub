@@ -3,8 +3,6 @@ package groot.sqlite
 import cats.effect.{IO, Resource}
 import cats.effect.std.Mutex
 import cats.syntax.all.*
-import fs2.concurrent.Signal
-import groot.config.SqliteConfig
 import java.nio.channels.FileChannel
 import java.nio.file.{Files, Path, StandardOpenOption}
 import java.sql.Connection
@@ -16,7 +14,7 @@ final class SqliteService private (
     directory: Path,
     registry: Connection,
     mutex: Mutex[IO],
-    config: Signal[IO, SqliteConfig] = Signal.constant(SqliteConfig())
+    config: IO[SqliteConfig] = IO.pure(SqliteConfig())
 ):
   private def serial[A](action: => A): IO[A] = mutex.lock.surround(IO.uncancelable(_ => IO.blocking(action)))
 
@@ -92,7 +90,7 @@ final class SqliteService private (
 
   def execute(env: String, sql: String): IO[ExecuteResult] =
     for
-      cfg <- config.get
+      cfg <- config
       environment <- serial(find(env).getOrElse(throw MissingEnvironment(env)))
       res <- SqliteExecutor.execute(Path.of(environment.path), sql, cfg)
     yield res
@@ -100,7 +98,7 @@ final class SqliteService private (
 object SqliteService:
   def resource(
       directory: Path = groot.schedule.Store.defaultHome.resolve("sqlite"),
-      config: Signal[IO, SqliteConfig] = Signal.constant(SqliteConfig())
+      config: IO[SqliteConfig] = IO.pure(SqliteConfig())
   ): Resource[IO, SqliteService] =
     val home = directory.toAbsolutePath.normalize()
     for

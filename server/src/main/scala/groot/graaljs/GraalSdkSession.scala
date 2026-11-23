@@ -32,11 +32,11 @@ private[graaljs] final class GraalSdkSession(
 
   private def submit(id: String, input: String, resolve: Value, reject: Value): Unit =
     require(pending.size < maxPendingCalls, s"At most $maxPendingCalls SDK calls may be pending per task")
-    require(input.getBytes(UTF_8).length <= maxSdkBytes, s"SDK input exceeds ${groot.config.GrootConfig.formatBytes(maxSdkBytes.toLong)}")
+    require(input.getBytes(UTF_8).length <= maxSdkBytes, s"SDK input exceeds ${framework.validation.Contracts.formatBytes(maxSdkBytes.toLong)}")
     val parsed: IO[Option[io.circe.Json]] = if input.isEmpty then IO.pure(None) else IO.fromEither(io.circe.parser.parse(input)).map(Some(_))
     val action = parsed.flatMap(sdk.call(id, _, context)).map { result =>
       val json = result.noSpaces
-      require(json.getBytes(UTF_8).length <= maxSdkBytes, s"SDK response exceeds ${groot.config.GrootConfig.formatBytes(maxSdkBytes.toLong)}")
+      require(json.getBytes(UTF_8).length <= maxSdkBytes, s"SDK response exceeds ${framework.validation.Contracts.formatBytes(maxSdkBytes.toLong)}")
       json
     }
     sequence += 1

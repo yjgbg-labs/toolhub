@@ -5,7 +5,6 @@ import cats.effect.std.{Mutex, Supervisor}
 import cats.syntax.all.*
 import framework.rpc.{PlainText, SSE}
 import fs2.concurrent.Signal
-import groot.config.GraalJsConfig
 import java.nio.file.Path
 import java.time.Instant
 import java.util.UUID
@@ -184,7 +183,7 @@ object GraalManager:
       commands: IO[GraalCommandSdk] = IO.pure(GraalCommandSdk.empty),
       config: Signal[IO, GraalJsConfig] = Signal.constant(GraalJsConfig())
   ): Resource[IO, GraalManager] =
-    managedWithConfig(home, GraalRunner.resource(commands, config), None, config)
+    managedWithConfig(home, GraalRunner.resource(commands, config.get), None, config)
 
   private[graaljs] def managed(
       home: Path,

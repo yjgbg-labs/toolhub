@@ -1,7 +1,16 @@
 package groot.chrome
 
 import framework.model.JsonModel
+import framework.validation.{Contracts, Validator, contract}
 import io.circe.Json
+
+final case class ChromeConfig(
+    @contract[String](Contracts.nonBlank) home: String = ChromeStore.defaultHome.toString,
+    @contract[String](Contracts.nonBlank) binary: Option[String] = sys.env.get("CHROME_BINARY").filter(_.nonEmpty),
+    @contract[String](Contracts.nonBlank) display: Option[String] = sys.env.get("CHROME_DISPLAY").filter(_.nonEmpty),
+    @contract[String](Contracts.nonBlank) waylandDisplay: Option[String] = sys.env.get("CHROME_WAYLAND_DISPLAY").filter(_.nonEmpty),
+    @contract[Int](t => t >= 1 && t <= 120000, "must be in 1..120000") defaultTimeoutMs: Int = 30000
+) derives JsonModel, Validator
 
 final case class ChromeFailure(code: String, message: String) extends RuntimeException(message)
 

@@ -1,7 +1,14 @@
 package groot.fxtwitter
 
 import framework.model.JsonModel
+import framework.validation.{Contracts, Validator, contract}
 import io.circe.Json
+
+final case class FxTwitterConfig(
+    @contract[String](Contracts.isHttpUrl, "must be an absolute http(s) URL") baseUrl: String = "https://api.fxtwitter.com",
+    @contract[String](Contracts.isDuration) timeout: String = "25s",
+    @contract[Int](_ > 0) maxResponseBytes: Int = FxTwitterService.maxResponseBytes
+) derives JsonModel, Validator
 
 final case class FxTwitterFailure(code: String, message: String) extends RuntimeException(message)
 

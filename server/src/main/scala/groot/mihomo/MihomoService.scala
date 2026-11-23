@@ -5,9 +5,7 @@ import cats.effect.std.{Dispatcher, Mutex, Queue}
 import cats.syntax.all.*
 import framework.rpc.{PlainText, SSE}
 import fs2.Stream
-import fs2.concurrent.Signal
-import groot.config.{MihomoConfig, ShellConfig}
-import groot.shell.{ShellEnvironment, ShellRequest, ShellResult, ShellService}
+import groot.shell.{ShellConfig, ShellEnvironment, ShellRequest, ShellResult, ShellService}
 import java.io.{BufferedReader, InputStreamReader}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.util.UUID
@@ -26,11 +24,12 @@ final class MihomoService(
   writeMutex: Mutex[IO],
   apiCache: Ref[IO, Option[ApiEndpoint]],
   customFollow: Option[Int => IO[Stream[IO, PlainText]]] = None,
-  settingsSignal: Option[Signal[IO, MihomoSettings]] = None
+  settingsIO: Option[IO[MihomoSettings]] = None
 ):
   import MihomoService.*
 
-  private def currentSettings: IO[MihomoSettings] = settingsSignal.fold(IO.pure(settings))(_.get)
+  @volatile private var cachedSettingsKey: Option[MihomoSettings] = None
+  private def currentSettings: IO[MihomoSettings] = settingsIO.getOrElse(IO.pure(settings))
 
   def status: IO[MihomoStatus] = currentSettings.flatMap { cur =>
     val script =
@@ -354,18 +353,20 @@ final class MihomoService(
     }
 
   private def resolveApiEndpoint(forceRefresh: Boolean): IO[ApiEndpoint] =
-    (if forceRefresh then IO.pure(None) else apiCache.get).flatMap {
-      case Some(cached) => IO.pure(cached)
-      case None =>
-        for
-          cur <- currentSettings
-          routerHost <- resolveRouterHost
-          configText <- readRemoteConfig
-          endpoint <- IO.fromOption(HostsEditor.parseApiEndpoint(configText, routerHost, cur.apiUrlOverride))(
-            MihomoFailure("invalid_mihomo", s"external-controller is not enabled in ${cur.configPath}")
-          )
-          _ <- apiCache.set(Some(endpoint))
-        yield endpoint
+    currentSettings.flatMap { cur =>
+      val validCache = !forceRefresh && cachedSettingsKey.forall(_ == cur)
+      (if validCache then apiCache.get else IO.pure(None)).flatMap {
+        case Some(cached) => IO.pure(cached)
+        case None =>
+          for
+            routerHost <- resolveRouterHost
+            configText <- readRemoteConfig
+            endpoint <- IO.fromOption(HostsEditor.parseApiEndpoint(configText, routerHost, cur.apiUrlOverride))(
+              MihomoFailure("invalid_mihomo", s"external-controller is not enabled in ${cur.configPath}")
+            )
+            _ <- IO { cachedSettingsKey = Some(cur) } *> apiCache.set(Some(endpoint))
+          yield endpoint
+      }
     }
 
   private def resolveRouterHost: IO[String] =
@@ -411,23 +412,18 @@ object MihomoService:
 
   def resourceWithConfig(
     shell: ShellService,
-    mihomoCfg: Signal[IO, MihomoConfig],
-    shellCfg: Signal[IO, ShellConfig]
+    mihomoCfg: IO[MihomoConfig],
+    shellCfg: IO[ShellConfig]
   ): Resource[IO, MihomoService] =
-    val mapped: Signal[IO, MihomoSettings] = new Signal[IO, MihomoSettings]:
-      def get: IO[MihomoSettings] = (mihomoCfg.get, shellCfg.get).mapN(toSettings)
-      def continuous: Stream[IO, MihomoSettings] = Stream.repeatEval(get)
-      def discrete: Stream[IO, MihomoSettings] =
-        mihomoCfg.discrete.either(shellCfg.discrete).evalMap(_ => get)
+    val mapped: IO[MihomoSettings] = (mihomoCfg, shellCfg).mapN(toSettings)
     for
       httpClient <- EmberClientBuilder.default[IO].withTimeout(30.seconds).build
-      initSettings <- Resource.eval(mapped.get)
+      initSettings <- Resource.eval(mapped)
       mutex <- Resource.eval(Mutex[IO])
       cache <- Resource.eval(Ref.of[IO, Option[ApiEndpoint]](None))
-      _ <- mapped.discrete.changes(using cats.kernel.Eq.fromUniversalEquals).evalMap(_ => cache.set(None)).compile.drain.background
     yield new MihomoService(
-      runShell = (script, timeout) => mapped.get.flatMap(s => shell.execute(ShellRequest(s.shellEnv, script, timeout))),
-      resolveShellEnv = mapped.get.flatMap { s =>
+      runShell = (script, timeout) => mapped.flatMap(s => shell.execute(ShellRequest(s.shellEnv, script, timeout))),
+      resolveShellEnv = mapped.flatMap { s =>
         shell.list.flatMap { envs =>
           IO.fromOption(envs.find(_.name == s.shellEnv))(
             MihomoFailure("mihomo_not_found", s"Shell environment '${s.shellEnv}' is not registered")
@@ -438,7 +434,7 @@ object MihomoService:
       settings = initSettings,
       writeMutex = mutex,
       apiCache = cache,
-      settingsSignal = Some(mapped)
+      settingsIO = Some(mapped)
     )
 
   private def toSettings(m: MihomoConfig, s: ShellConfig): MihomoSettings =

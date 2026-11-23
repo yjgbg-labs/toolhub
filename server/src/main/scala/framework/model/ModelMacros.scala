@@ -51,3 +51,26 @@ private[framework] object ModelMacros:
     }
     val values = Expr.ofList(defaults)
     '{ $values.toVector }
+
+  def fieldAliases[A: Type](using Quotes): Expr[Vector[Vector[String]]] =
+    import quotes.reflect.*
+    val tpe = TypeRepr.of[A].dealias
+    val aliasSym = TypeRepr.of[configAlias].typeSymbol
+    val caseFields = tpe.typeSymbol.caseFields
+    val ctorParams = tpe.typeSymbol.primaryConstructor.paramSymss.flatten.filterNot(_.isTypeParam)
+    def extractStrings(term: Term): List[String] = term match
+      case Inlined(_, Nil, inner)          => extractStrings(inner)
+      case Typed(inner, _)                 => extractStrings(inner)
+      case Repeated(elems, _)              => elems.flatMap(extractStrings)
+      case Literal(StringConstant(s))      => List(s)
+      case Apply(_, args)                  => args.flatMap(extractStrings)
+      case NamedArg(_, rhs)                => extractStrings(rhs)
+      case _                               => Nil
+    val perField = caseFields.zipWithIndex.map { (fieldSym, idx) =>
+      val annots = ctorParams.lift(idx).toList.flatMap(_.annotations) ++ fieldSym.annotations
+      val names = annots.filter(_.tpe.dealias.typeSymbol == aliasSym).flatMap(extractStrings).distinct
+      val listExpr = Expr.ofList(names.map(Expr(_)))
+      '{ $listExpr.toVector }
+    }
+    val allExpr = Expr.ofList(perField)
+    '{ $allExpr.toVector }

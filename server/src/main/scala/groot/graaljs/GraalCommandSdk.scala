@@ -92,7 +92,7 @@ final class GraalCommandSdk private (endpoints: Vector[Endpoint], val maxBytesIO
     maxBytesIO.flatMap { capBytes =>
       spec.httpApp(request).flatMap { response =>
         response.body.take(capBytes + 1L).compile.to(Array).flatMap { bytes => IO {
-          require(bytes.length <= capBytes, s"SDK response exceeds ${groot.config.GrootConfig.formatBytes(capBytes.toLong)}")
+          require(bytes.length <= capBytes, s"SDK response exceeds ${framework.validation.Contracts.formatBytes(capBytes.toLong)}")
           val text = new String(bytes, UTF_8)
           val media = response.contentType.map(value => s"${value.mediaType.mainType}/${value.mediaType.subType}").getOrElse("")
           val body = if bytes.isEmpty then Json.Null

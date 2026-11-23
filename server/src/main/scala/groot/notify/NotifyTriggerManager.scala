@@ -2,8 +2,6 @@ package groot.notify
 
 import cats.effect.{IO, Resource}
 import cats.syntax.all.*
-import fs2.concurrent.Signal
-import groot.config.NotifyConfig
 import groot.graaljs.{GraalManager, GraalTask, JavaScript, TaskError, Validation => GraalValidation}
 import groot.schedule.{JobState, RetryPolicy, ScheduleBackend, ScheduledItem, Scheduler, Validation => ScheduleValidation}
 import io.circe.Json
@@ -19,13 +17,13 @@ import org.graalvm.polyglot.Source
 final class NotifyTriggerManager private (
     store: NotifyTriggerStore,
     val scheduler: Scheduler,
-    config: Signal[IO, NotifyConfig]
+    config: IO[NotifyConfig]
 ):
   def loop: IO[Unit] = scheduler.loop
 
   def when(sessionId: String, cwd: Option[String], request: NotifyWhenRequest): IO[NotifyTrigger] =
     for
-      cfg <- config.get
+      cfg <- config
       now <- IO.realTimeInstant
       cleanSession = sessionId.trim
       cleanCwd = cwd.map(_.trim).filter(_.nonEmpty)
@@ -65,7 +63,7 @@ final class NotifyTriggerManager private (
       )
       _ <- scheduler.mutate() {
         for
-          latestCfg <- config.get
+          latestCfg <- config
           active <- store.active
           _ <- IO.raiseWhen(active.size >= latestCfg.maxActiveTriggers)(
             NotifyFailure("notify_busy", s"Too many active notify triggers (limit ${latestCfg.maxActiveTriggers})")
@@ -191,10 +189,10 @@ object NotifyTriggerManager:
   private final class NotifyBackend(
       store: NotifyTriggerStore,
       notifyService: NotifyService,
-      config: Signal[IO, NotifyConfig]
+      config: IO[NotifyConfig]
   ) extends ScheduleBackend:
     def snapshot: IO[(Map[String, Double], Map[String, ScheduledItem])] =
-      (store.active, config.get).tupled.map { (list, cfg) =>
+      (store.active, config).tupled.map { (list, cfg) =>
         Map.empty[String, Double] -> list.map(t => t.id -> toScheduledItem(t, cfg.deliveryRetry)).toMap
       }
 
@@ -287,7 +285,7 @@ object NotifyTriggerManager:
       graaljs: GraalManager,
       home: Path = groot.schedule.Store.defaultHome,
       startLoop: Boolean = true,
-      config: Signal[IO, NotifyConfig] = Signal.constant(NotifyConfig())
+      config: IO[NotifyConfig] = IO.pure(NotifyConfig())
   ): Resource[IO, NotifyTriggerManager] =
     for
       store <- NotifyTriggerStore.resource(home)

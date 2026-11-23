@@ -4,9 +4,9 @@ import cats.effect.{IO, Resource}
 import cats.effect.std.Mutex
 import cats.syntax.all.*
 import framework.model.JsonModel
+import framework.validation.Contracts
 import fs2.Stream
-import fs2.concurrent.{Signal, SignallingRef}
-import groot.config.{GrootConfig, WidgetConfig}
+import fs2.concurrent.SignallingRef
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Path
 import scala.concurrent.duration.*
@@ -16,14 +16,14 @@ final class WidgetService private (
     state: SignallingRef[IO, WidgetState],
     mutex: Mutex[IO],
     heartbeat: FiniteDuration,
-    cfgSignal: Signal[IO, WidgetConfig] = Signal.constant(WidgetConfig())
+    cfgIO: IO[WidgetConfig] = IO.pure(WidgetConfig())
 ):
   import WidgetService.*
 
   def show: IO[Vector[WidgetItem]] = state.get.map(_.items)
   def config: IO[WidgetSettings] = state.get.map(_.settings)
 
-  def set(input: WidgetUpdate): IO[WidgetItem] = cfgSignal.get.flatMap { wcfg =>
+  def set(input: WidgetUpdate): IO[WidgetItem] = cfgIO.flatMap { wcfg =>
     update { (current, now) =>
       key(input.key)
       val label = input.label.trim
@@ -63,7 +63,7 @@ final class WidgetService private (
 
   /** Signals carry no old payload: every notification/heartbeat reads the newest committed snapshot. */
   def subscribe: Stream[IO, WidgetSnapshot] =
-    Stream.eval(if heartbeat == 15.seconds then cfgSignal.get.map(c => GrootConfig.parseDuration("widget.heartbeat", c.heartbeat)) else IO.pure(heartbeat)).flatMap { hb =>
+    Stream.eval(if heartbeat == 15.seconds then cfgIO.map(c => Contracts.parseDuration(c.heartbeat)) else IO.pure(heartbeat)).flatMap { hb =>
       state.discrete.void.merge(Stream.awakeEvery[IO](hb).void).evalMap { _ =>
         for
           current <- state.get
@@ -96,7 +96,7 @@ object WidgetService:
   def resource(
       home: Path = groot.schedule.Store.defaultHome.resolve("widget"),
       heartbeat: FiniteDuration = 15.seconds,
-      config: Signal[IO, WidgetConfig] = Signal.constant(WidgetConfig())
+      config: IO[WidgetConfig] = IO.pure(WidgetConfig())
   ): Resource[IO, WidgetService] = for
     _ <- Resource.eval(IO(require(heartbeat > Duration.Zero, "Heartbeat must be positive")))
     store <- WidgetStore.resource(home)

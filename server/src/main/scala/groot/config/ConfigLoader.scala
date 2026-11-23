@@ -14,6 +14,7 @@ import com.typesafe.config.{
   ConfigValueType
 }
 import framework.model.{JsonModel, SchemaNode}
+import framework.validation.Validator
 import fs2.Stream
 import fs2.concurrent.SignallingRef
 import io.circe.{Json, JsonObject}
@@ -25,14 +26,13 @@ import scala.jdk.CollectionConverters.*
 object ConfigLoader:
   final case class FileStamp(path: Path, exists: Boolean, lastModifiedNanos: Long, size: Long, fileKey: Option[AnyRef])
 
-  /** Parse a HOCON string into `A` via Circe `JsonModel[A]` with schema normalization and unknown-field checking. */
+  /** Parse a HOCON string into `A` via Circe `JsonModel[A]` and validate all `@contract` annotations via `Validator[A]`. */
   def parseHocon[A](
       rawText: String,
       default: => A,
-      validate: A => Either[String, A] = (a: A) => Right(a),
       origin: String = "inline.conf"
-  )(using model: JsonModel[A]): Either[String, A] =
-    if rawText.trim.isEmpty then validate(default)
+  )(using model: JsonModel[A], validator: Validator[A]): Either[String, A] =
+    if rawText.trim.isEmpty then validator.validateMessage(default)
     else
       val parsedJson =
         try
@@ -40,41 +40,38 @@ object ConfigLoader:
           val cfg = ConfigFactory.parseString(rawText, opts).resolve(ConfigResolveOptions.defaults())
           Right(configValueToJson(cfg.root()))
         catch case e: ConfigException => Left(s"HOCON parse error: ${e.getMessage}")
-      decodeJson(parsedJson, model.schema.node(), validate)
+      decodeJson(parsedJson, model.schema.node())
 
   private def parseHoconFile[A](
-      path: Path,
-      validate: A => Either[String, A]
-  )(using model: JsonModel[A]): Either[String, A] =
+      path: Path
+  )(using model: JsonModel[A], validator: Validator[A]): Either[String, A] =
     val parsedJson =
       try
         val opts = ConfigParseOptions.defaults().setSyntax(ConfigSyntax.CONF).setAllowMissing(false)
         val cfg = ConfigFactory.parseFile(path.toFile, opts).resolve(ConfigResolveOptions.defaults())
         Right(configValueToJson(cfg.root()))
       catch case e: ConfigException => Left(s"HOCON parse error: ${e.getMessage}")
-    decodeJson(parsedJson, model.schema.node(), validate)
+    decodeJson(parsedJson, model.schema.node())
 
   private def decodeJson[A](
       parsedJson: Either[String, Json],
-      schemaRoot: SchemaNode,
-      validate: A => Either[String, A]
-  )(using model: JsonModel[A]): Either[String, A] =
+      schemaRoot: SchemaNode
+  )(using model: JsonModel[A], validator: Validator[A]): Either[String, A] =
     for
       raw <- parsedJson
       normalized = normalizeForSchema(if raw.isNull then Json.obj() else raw, schemaRoot)
       _ <- checkUnknownKeys(normalized, schemaRoot, "")
       decoded <- model.decoder.decodeJson(normalized).left.map(e => s"Config decode error${formatCursor(e.history)}: ${e.message}")
-      validated <- validate(decoded)
+      validated <- validator.validateMessage(decoded)
     yield validated
 
   /** Load HOCON into a `SignallingRef[IO, A]` and poll file metadata every `pollInterval` (default 500ms) for hot reload. */
   def resource[A](
       resolvePath: IO[Path],
       default: => A,
-      validate: A => Either[String, A] = (a: A) => Right(a),
       pollInterval: FiniteDuration = 500.millis,
       onChange: (A, A) => IO[Unit] = (_: A, _: A) => IO.unit
-  )(using model: JsonModel[A]): Resource[IO, SignallingRef[IO, A]] =
+  )(using model: JsonModel[A], validator: Validator[A]): Resource[IO, SignallingRef[IO, A]] =
     def stat(path: Path): IO[FileStamp] = IO.blocking {
       try
         val attrs = Files.readAttributes(path, classOf[BasicFileAttributes])
@@ -86,9 +83,9 @@ object ConfigLoader:
     }
 
     def readAndDecode(stamp: FileStamp): IO[Either[String, A]] =
-      if !stamp.exists then IO(validate(default))
+      if !stamp.exists then IO(validator.validateMessage(default))
       else
-        IO.blocking(parseHoconFile[A](stamp.path, validate)).attempt.map {
+        IO.blocking(parseHoconFile[A](stamp.path)).attempt.map {
           case Left(ioErr) => Left(s"Cannot read ${stamp.path}: ${Option(ioErr.getMessage).getOrElse(ioErr.getClass.getSimpleName)}")
           case Right(res)  => res
         }
@@ -125,29 +122,18 @@ object ConfigLoader:
       _ <- Stream.awakeEvery[IO](pollInterval).evalMap(_ => pollStep.handleErrorWith(e => IO(scribe.warn("Config metadata poll error", e)))).compile.drain.background
     yield sigRef
 
-  def applyLogLevel(level: LogLevel): IO[Unit] = IO {
-    val target = level match
-      case LogLevel.trace => scribe.Level.Trace
-      case LogLevel.debug => scribe.Level.Debug
-      case LogLevel.info  => scribe.Level.Info
-      case LogLevel.warn  => scribe.Level.Warn
-      case LogLevel.error => scribe.Level.Error
-    scribe.Logger.root.clearModifiers().withMinimumLevel(target).replace()
-    ()
-  }
-
   private def configValueToJson(cv: ConfigValue): Json = cv.valueType() match
     case ConfigValueType.NULL    => Json.Null
     case ConfigValueType.BOOLEAN => Json.fromBoolean(cv.unwrapped().asInstanceOf[java.lang.Boolean].booleanValue())
     case ConfigValueType.STRING  => Json.fromString(cv.unwrapped().asInstanceOf[String])
     case ConfigValueType.NUMBER  =>
       cv.unwrapped() match
-        case i: java.lang.Integer    => Json.fromInt(i.intValue())
-        case l: java.lang.Long       => Json.fromLong(l.longValue())
+        case i: java.lang.Integer     => Json.fromInt(i.intValue())
+        case l: java.lang.Long        => Json.fromLong(l.longValue())
         case bi: java.math.BigInteger => Json.fromBigInt(BigInt(bi))
         case bd: java.math.BigDecimal => Json.fromBigDecimal(BigDecimal(bd))
-        case n: java.lang.Number     => Json.fromDoubleOrString(n.doubleValue())
-        case other                   => Json.fromString(other.toString)
+        case n: java.lang.Number      => Json.fromDoubleOrString(n.doubleValue())
+        case other                    => Json.fromString(other.toString)
     case ConfigValueType.LIST =>
       Json.fromValues(cv.asInstanceOf[ConfigList].asScala.map(configValueToJson))
     case ConfigValueType.OBJECT =>
@@ -162,9 +148,11 @@ object ConfigLoader:
       else json.asObject match
         case None => json
         case Some(obj) =>
-          val fieldSchemas = fields().map(f => f.name -> f.schema()).toMap
+          val resolvedFields = fields()
+          val fieldSchemas = resolvedFields.map(f => f.name -> f.schema()).toMap
+          val aliasToCanonical = resolvedFields.flatMap(f => f.aliases.map(_ -> f.name)).toMap
           val mapped = obj.toVector.map { (k, v) =>
-            val normKey = if k == "notify" && !fieldSchemas.contains("notify") && fieldSchemas.contains("notifications") then "notifications" else k
+            val normKey = if fieldSchemas.contains(k) then k else aliasToCanonical.getOrElse(k, k)
             fieldSchemas.get(normKey) match
               case Some(childSchema) => normKey -> normalizeForSchema(v, childSchema)
               case None              => normKey -> v
@@ -199,7 +187,7 @@ object ConfigLoader:
           obj.toVector.traverse_ { (k, v) =>
             val full = if prefix.isEmpty then k else s"$prefix.$k"
             fieldMap.get(k) match
-              case None => Left(s"Unknown config field '$full'")
+              case None        => Left(s"Unknown config field '$full'")
               case Some(child) => checkUnknownKeys(v, child, full)
           }
     case SchemaNode.ArrayOf(elem) =>

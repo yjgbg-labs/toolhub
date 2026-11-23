@@ -1,9 +1,8 @@
 package groot.fxtwitter
 
 import cats.effect.{IO, Resource}
+import framework.validation.Contracts
 import fs2.compression.{Compression, InflateParams}
-import fs2.concurrent.Signal
-import groot.config.{FxTwitterConfig, GrootConfig}
 import io.circe.{ACursor, HCursor, Json}
 import io.circe.parser.parse
 import java.net.URLEncoder
@@ -18,7 +17,7 @@ final class FxTwitterService(
     http: Client[IO],
     val baseUri: Uri = Uri.unsafeFromString("https://api.fxtwitter.com"),
     requestTimeout: FiniteDuration = 25.seconds,
-    configSignal: Option[Signal[IO, FxTwitterConfig]] = None
+    configIO: Option[IO[FxTwitterConfig]] = None
 ):
   import FxTwitterService.*
 
@@ -131,11 +130,11 @@ final class FxTwitterService(
       IO.raiseError(FxTwitterFailure("invalid_fx_twitter", "path must be a relative FxTwitter path such as /2/status/20"))
     else getJson(if p.startsWith("/") then p else s"/$p", req.query)
 
-  private def currentSettings: IO[(Uri, FiniteDuration, Int)] = configSignal match
+  private def currentSettings: IO[(Uri, FiniteDuration, Int)] = configIO match
     case None => IO.pure((baseUri, requestTimeout, maxResponseBytes))
-    case Some(sig) => sig.get.map { cfg =>
+    case Some(cfgIO) => cfgIO.map { cfg =>
       val u = Uri.fromString(cfg.baseUrl.trim).getOrElse(baseUri)
-      val t = GrootConfig.parseDuration("fxTwitter.timeout", cfg.timeout)
+      val t = Contracts.parseDuration(cfg.timeout)
       (u, t, cfg.maxResponseBytes)
     }
 
@@ -184,7 +183,7 @@ object FxTwitterService:
 
   def resource(
       baseUri: Uri = Uri.unsafeFromString("https://api.fxtwitter.com"),
-      config: Option[Signal[IO, FxTwitterConfig]] = None
+      config: Option[IO[FxTwitterConfig]] = None
   ): Resource[IO, FxTwitterService] =
     EmberClientBuilder.default[IO].withTimeout(Duration.Inf).withMaxResponseHeaderSize(64 * 1024).build
       .map(new FxTwitterService(_, baseUri, 25.seconds, config))

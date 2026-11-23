@@ -4,8 +4,7 @@ import cats.effect.{IO, Ref, Resource}
 import cats.effect.std.Semaphore
 import cats.syntax.all.*
 import framework.model.JsonModel
-import fs2.concurrent.Signal
-import groot.config.WineSettings
+import framework.validation.Contracts
 import io.circe.Json
 import io.circe.parser.parse
 import java.nio.charset.StandardCharsets.UTF_8
@@ -20,7 +19,7 @@ final class WineService private (
     environment: Ref[IO, Option[(WineEnvironment, IO[Unit])]],
     setup: Semaphore[IO],
     slots: Semaphore[IO],
-    settingsSignal: Signal[IO, WineSettings]
+    settingsIO: IO[WineSettings]
 ):
   import WineValidation.*
   private def prepare(runtime: String, architecture: String): IO[WineEnvironment] = setup.permit.use { _ => IO.uncancelable { poll => for
@@ -32,7 +31,7 @@ final class WineService private (
   private def validate[A: JsonModel](request: A, timeout: Int, architecture: String, cwd: Option[String], env: Map[String, String], limitBytes: Int): IO[Unit] = IO {
     require(timeout >= 1 && timeout <= 86400000, "timeoutMs must be between 1 and 86400000")
     require(Set("x64", "x86").contains(architecture), "architecture must be x64 or x86")
-    require(JsonModel[A].encoder(request).noSpaces.getBytes(UTF_8).length <= limitBytes, s"Request exceeds ${groot.config.GrootConfig.formatBytes(limitBytes.toLong)}")
+    require(JsonModel[A].encoder(request).noSpaces.getBytes(UTF_8).length <= limitBytes, s"Request exceeds ${Contracts.formatBytes(limitBytes.toLong)}")
     cwd.foreach(p => require(p.startsWith("/") && !p.contains('\u0000') && Files.isDirectory(Path.of(p)), "cwd must be an existing absolute Linux directory"))
     require(env.size <= 128 && env.forall((k, v) => k.matches("[A-Za-z_][A-Za-z0-9_]*") && !v.contains('\u0000')), "Invalid environment variables")
   }
@@ -67,7 +66,7 @@ final class WineService private (
   yield result
 
   def execute(request: WineExec): IO[WineExecResult] =
-    settingsSignal.get.flatMap { ws =>
+    settingsIO.flatMap { ws =>
       validate(request, request.timeoutMs, request.architecture, request.cwd, request.env, ws.maxResultBytes) *> IO {
         windows(request.exe)
         require(Set("wine", "dotnet", "framework").contains(request.runtime), "runtime must be wine, dotnet or framework")
@@ -82,7 +81,7 @@ final class WineService private (
     }
 
   def call(request: WineCall): IO[WineCallResult] =
-    settingsSignal.get.flatMap { ws =>
+    settingsIO.flatMap { ws =>
       val limitBytes = ws.maxResultBytes
       validate(request, request.timeoutMs, request.architecture, request.cwd, request.env, limitBytes) *> IO {
         require(Set("native", "dotnet", "com").contains(request.kind), "kind must be native, dotnet or com")
@@ -129,7 +128,7 @@ final class WineService private (
         process <- run(env, args, request.cwd, request.env, "", directory, request.runtime == "dotnet", logs, ws.maxLogBytes)
         result <- IO.blocking {
           if !Files.isRegularFile(output) then throw WineFailure("wine_call_failed", s"Invoker exited ${process.exitCode} without a result")
-          if Files.size(output) > limitBytes then throw WineFailure("wine_call_failed", s"Invoker result exceeds ${groot.config.GrootConfig.formatBytes(limitBytes.toLong)}")
+          if Files.size(output) > limitBytes then throw WineFailure("wine_call_failed", s"Invoker result exceeds ${Contracts.formatBytes(limitBytes.toLong)}")
           parse(Files.readString(output)).fold(e => throw WineFailure("wine_call_failed", e.message), identity)
         }
         cursor = result.hcursor
@@ -146,8 +145,8 @@ final class WineService private (
   private def close: IO[Unit] = setup.permit.use(_ => environment.getAndSet(None).flatMap(_.traverse_(_._2)))
 
 object WineService:
-  def resource(settings: Signal[IO, WineSettings] = Signal.constant(WineSettings())): Resource[IO, WineService] =
-    Resource.eval(settings.get).flatMap { init =>
+  def resource(settings: IO[WineSettings] = IO.pure(WineSettings())): Resource[IO, WineService] =
+    Resource.eval(settings).flatMap { init =>
       managed(
         WineConfig(Path.of(init.home), Path.of(init.runtimeRoot), Path.of(init.helperRoot)),
         settings
@@ -156,7 +155,7 @@ object WineService:
 
   private[wine] def managed(
       config: WineConfig,
-      settings: Signal[IO, WineSettings] = Signal.constant(WineSettings())
+      settings: IO[WineSettings] = IO.pure(WineSettings())
   ): Resource[IO, WineService] = for
     environment <- Resource.eval(Ref.of[IO, Option[(WineEnvironment, IO[Unit])]](None))
     setup <- Resource.eval(Semaphore[IO](1))

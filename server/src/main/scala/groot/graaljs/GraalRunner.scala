@@ -2,8 +2,7 @@ package groot.graaljs
 
 import cats.effect.{IO, Resource}
 import cats.effect.std.Dispatcher
-import fs2.concurrent.Signal
-import groot.config.GraalJsConfig
+import framework.validation.Contracts
 import java.io.{IOException, InputStream, OutputStream}
 import java.lang.management.ManagementFactory
 import java.nio.file.{Files, Path, StandardOpenOption}
@@ -42,7 +41,7 @@ private[graaljs] object GraalRunner:
     override def write(bytes: Array[Byte], offset: Int, length: Int): Unit = synchronized {
       if length > maxLogBytes - written then
         exceeded.set(true)
-        throw new IOException(s"Task output exceeded ${groot.config.GrootConfig.formatBytes(maxLogBytes)}")
+        throw new IOException(s"Task output exceeded ${Contracts.formatBytes(maxLogBytes)}")
       output.write(bytes, offset, length)
       written += length
     }
@@ -66,7 +65,7 @@ private[graaljs] object GraalRunner:
       engine: Engine,
       dispatcher: Dispatcher[IO],
       commands: IO[GraalCommandSdk],
-      config: Signal[IO, GraalJsConfig]
+      config: IO[GraalJsConfig]
   ) extends GraalRunner:
     private val cpu = ManagementFactory.getThreadMXBean
     if cpu.isThreadCpuTimeSupported && !cpu.isThreadCpuTimeEnabled then cpu.setThreadCpuTimeEnabled(true)
@@ -79,7 +78,7 @@ private[graaljs] object GraalRunner:
       start(task, source, log, Map.empty)
 
     override def start(task: GraalTask, source: Source, log: Path, taskContext: Map[String, String]): IO[GraalExecution] =
-      commands.flatMap(sdk => config.get.flatMap { cfg => IO {
+      commands.flatMap(sdk => config.flatMap { cfg => IO {
         val context = new AtomicReference[Context]()
         val stop = new AtomicReference[TaskError]()
         val completed = new CompletableFuture[RunResult]()
@@ -145,7 +144,7 @@ private[graaljs] object GraalRunner:
             if output != null then
               try output.close()
               catch case NonFatal(cause) => if error.isEmpty then error = Some(failure(cause))
-              if output.exceeded.get() then error = Some(TaskError("output_limit", s"Task output exceeded ${groot.config.GrootConfig.formatBytes(cfg.maxLogBytes)}"))
+              if output.exceeded.get() then error = Some(TaskError("output_limit", s"Task output exceeded ${Contracts.formatBytes(cfg.maxLogBytes)}"))
             error = Option(stop.get()).orElse(error)
             if !returned && error.isEmpty then error = Some(TaskError("runtime_error", "Worker terminated unexpectedly"))
             val state = error.map(_.code) match
@@ -161,10 +160,10 @@ private[graaljs] object GraalRunner:
 
   def resource(
       commands: IO[GraalCommandSdk] = IO.pure(GraalCommandSdk.empty),
-      config: Signal[IO, GraalJsConfig] = Signal.constant(GraalJsConfig())
+      config: IO[GraalJsConfig] = IO.pure(GraalJsConfig())
   ): Resource[IO, GraalRunner] = for
     dispatcher <- Dispatcher.parallel[IO]
-    initCfg <- Resource.eval(config.get)
+    initCfg <- Resource.eval(config)
     isolateCeiling = math.max(initCfg.engineBytes, 512L * 1024 * 1024)
     engine <- Resource.make(IO.blocking {
       Engine.newBuilder("js").sandbox(SandboxPolicy.ISOLATED).spawnIsolate(true)

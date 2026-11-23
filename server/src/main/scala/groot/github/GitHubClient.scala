@@ -2,10 +2,9 @@ package groot.github
 
 import cats.effect.IO
 import cats.syntax.all.*
+import framework.validation.Contracts
 import fs2.{Chunk, Stream}
 import fs2.compression.{Compression, InflateParams}
-import fs2.concurrent.Signal
-import groot.config.{GitHubConfig, GrootConfig}
 import io.circe.Json
 import io.circe.parser.parse
 import java.net.URLEncoder
@@ -20,17 +19,17 @@ final class GitHubClient(
     val apiBase: Uri = Uri.unsafeFromString("https://api.github.com"),
     val oauthBase: Uri = Uri.unsafeFromString("https://github.com"),
     requestTimeout: FiniteDuration = 30.seconds,
-    configSignal: Option[Signal[IO, GitHubConfig]] = None
+    configIO: Option[IO[GitHubConfig]] = None
 ):
   import GitHubClient.*
 
-  private def currentSettings: IO[(Uri, Uri, FiniteDuration, Int, Int)] = configSignal match
+  private def currentSettings: IO[(Uri, Uri, FiniteDuration, Int, Int)] = configIO match
     case None => IO.pure((apiBase, oauthBase, requestTimeout, maxJsonBytes, maxRawBytes))
-    case Some(sig) => sig.get.map { cfg =>
+    case Some(cfgIO) => cfgIO.map { cfg =>
       (
         Uri.fromString(cfg.apiBase.trim).getOrElse(apiBase),
         Uri.fromString(cfg.oauthBase.trim).getOrElse(oauthBase),
-        GrootConfig.parseDuration("github.timeout", cfg.timeout),
+        Contracts.parseDuration(cfg.timeout),
         cfg.maxJsonBytes,
         cfg.maxRawBytes
       )

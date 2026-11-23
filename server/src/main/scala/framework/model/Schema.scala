@@ -1,5 +1,10 @@
 package framework.model
 
+import scala.annotation.StaticAnnotation
+
+/** Declare alternative external field keys accepted when normalizing config JSON/HOCON objects. */
+final class configAlias(val names: String*) extends StaticAnnotation
+
 final case class Schema[A](node: () => SchemaNode)
 
 enum SchemaNode:
@@ -16,5 +21,6 @@ final case class SchemaField(
     name: String,
     schema: () => SchemaNode,
     required: Boolean,
-    default: Option[() => io.circe.Json]
+    default: Option[() => io.circe.Json],
+    aliases: Vector[String] = Vector.empty
 )

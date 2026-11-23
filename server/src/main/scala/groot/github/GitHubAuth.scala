@@ -5,8 +5,6 @@ import cats.effect.std.Mutex
 import cats.syntax.all.*
 import framework.rpc.PlainText
 import fs2.Stream
-import fs2.concurrent.Signal
-import groot.config.GitHubConfig
 import io.circe.parser.decode
 import io.circe.syntax.*
 import java.nio.charset.StandardCharsets.UTF_8
@@ -18,7 +16,7 @@ import scala.concurrent.duration.*
 final class GitHubAuth private (
     authFile: Path, state: Ref[IO, Option[StoredGitHubAuth]], mutex: Mutex[IO],
     client: GitHubClient, defaultClientId: String,
-    configSignal: Option[Signal[IO, GitHubConfig]]
+    configIO: Option[IO[GitHubConfig]]
 ):
   def requireToken: IO[String] = state.get.flatMap {
     case Some(s) if s.token.nonEmpty => IO.pure(s.token)
@@ -35,7 +33,7 @@ final class GitHubAuth private (
     token.map(_.trim).filter(_.nonEmpty) match
       case Some(raw) => verifyAndPersist(raw).map(s => Stream.emit(renderSuccess(s)))
       case None =>
-        configSignal.traverse(_.get).flatMap { cfgOpt =>
+        configIO.sequence.flatMap { cfgOpt =>
           val cid = clientId.map(_.trim).filter(_.nonEmpty).orElse(cfgOpt.map(_.oauthClientId)).getOrElse(defaultClientId)
           val effectiveScopes = if scopes == GitHubAuth.defaultScopes then cfgOpt.map(_.defaultScopes).getOrElse(scopes) else scopes
           val cleanScope = effectiveScopes.split("[,\\s]+").iterator.map(_.trim).filter(_.nonEmpty).mkString(" ")
@@ -122,7 +120,7 @@ object GitHubAuth:
 
   def resource(home: Path, client: GitHubClient,
       defaultClientId: String = sys.env.get("GITHUB_CLIENT_ID").filter(_.nonEmpty).getOrElse(defaultOAuthClientId),
-      config: Option[Signal[IO, GitHubConfig]] = None): Resource[IO, GitHubAuth] =
+      config: Option[IO[GitHubConfig]] = None): Resource[IO, GitHubAuth] =
     Resource.eval {
       val authFile = home.resolve("github").resolve("auth.json")
       for

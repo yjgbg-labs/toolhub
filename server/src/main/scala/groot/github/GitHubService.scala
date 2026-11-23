@@ -3,8 +3,6 @@ package groot.github
 import cats.effect.{IO, Resource}
 import cats.syntax.all.*
 import framework.rpc.{PlainText, SSE}
-import fs2.concurrent.Signal
-import groot.config.GitHubConfig
 import groot.schedule.Store
 import io.circe.{ACursor, HCursor, Json}
 import java.net.URLEncoder
@@ -370,7 +368,7 @@ object GitHubService:
       home: Path = Store.defaultHome,
       apiBase: Uri = Uri.unsafeFromString("https://api.github.com"),
       oauthBase: Uri = Uri.unsafeFromString("https://github.com"),
-      config: Option[Signal[IO, GitHubConfig]] = None
+      config: Option[IO[GitHubConfig]] = None
   ): Resource[IO, GitHubService] =
     for
       http <- EmberClientBuilder.default[IO].withTimeout(Duration.Inf).withMaxResponseHeaderSize(64 * 1024).build

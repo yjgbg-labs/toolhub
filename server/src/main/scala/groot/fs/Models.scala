@@ -1,6 +1,12 @@
 package groot.fs
 
 import framework.model.JsonModel
+import framework.validation.{Validator, contract}
+
+final case class FsConfig(
+    @contract[Int](_ > 0) maxBytes: Int = 1024 * 1024,
+    @contract[Int](_ > 0) maxEntries: Int = 1000
+) derives JsonModel, Validator
 
 enum FileEncoding derives JsonModel:
   case utf8, base64

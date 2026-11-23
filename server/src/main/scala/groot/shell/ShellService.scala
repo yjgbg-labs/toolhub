@@ -4,8 +4,6 @@ import cats.effect.{Deferred, IO, Resource}
 import cats.effect.std.Mutex
 import cats.syntax.all.*
 import framework.model.JsonModel
-import fs2.concurrent.Signal
-import groot.config.ShellConfig
 import groot.graaljs.{InvalidGraalTask, Validation}
 import java.nio.channels.FileChannel
 import java.nio.charset.StandardCharsets.UTF_8
@@ -16,7 +14,7 @@ final class ShellService private (
     home: Path,
     ssh: String,
     mutex: Mutex[IO],
-    config: Signal[IO, ShellConfig] = Signal.constant(ShellConfig())
+    config: IO[ShellConfig] = IO.pure(ShellConfig())
 ):
   import ShellService.*
   private class Entry(val environment: ShellEnvironment, val run: Run, val release: IO[Unit], val closed: Deferred[IO, Unit]):
@@ -31,7 +29,8 @@ final class ShellService private (
   private def find(name: String): Entry = entries.getOrElse(name, throw ShellFailure("shell_not_found", s"No shell environment named $name"))
 
   private def create(environment: ShellEnvironment): IO[Entry] = for
-    allocated <- ShellExecutor.resource(home.resolve("ssh"), environment, ssh, config).allocated
+    curSsh <- if ssh == "/usr/bin/ssh" then config.map(_.sshExecutable) else IO.pure(ssh)
+    allocated <- ShellExecutor.resource(home.resolve("ssh"), environment, curSsh, config).allocated
     (executor, release) = allocated
     closed <- Deferred[IO, Unit]
   yield new Entry(environment, executor.execute, release, closed)
@@ -94,7 +93,7 @@ final class ShellService private (
   }
 
   def execute(request: ShellRequest): IO[ShellResult] =
-    config.get.flatMap { cfg =>
+    config.flatMap { cfg =>
       Resource.make(serial(IO {
         ensureOpen()
         validateScript(request, cfg.maxScriptBytes)
@@ -154,7 +153,7 @@ object ShellService:
       home: Path = groot.schedule.Store.defaultHome.resolve("shell"),
       initial: Vector[ShellEnvironment] = defaults,
       ssh: String = "/usr/bin/ssh",
-      config: Signal[IO, ShellConfig] = Signal.constant(ShellConfig())
+      config: IO[ShellConfig] = IO.pure(ShellConfig())
   ): Resource[IO, ShellService] = for
     directory <- Resource.eval(IO(home.toAbsolutePath.normalize()))
     _ <- Resource.make(IO.blocking {
@@ -170,6 +169,6 @@ object ShellService:
     })(channel => IO.blocking(channel.close()))
     mutex <- Resource.eval(Mutex[IO])
     service <- Resource.make(IO(new ShellService(directory, ssh, mutex, config)))(_.close)
-    seed <- Resource.eval(if initial == defaults then config.get.map(_.seedEnvironments) else IO.pure(initial))
+    seed <- Resource.eval(if initial == defaults then config.map(_.seedEnvironments) else IO.pure(initial))
     _ <- Resource.eval(service.initialize(seed))
   yield service

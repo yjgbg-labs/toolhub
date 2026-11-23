@@ -3,9 +3,8 @@ package groot.notify
 import cats.effect.{Deferred, IO, Resource}
 import cats.effect.std.{Mutex, Queue}
 import cats.syntax.all.*
+import framework.validation.Contracts
 import fs2.Stream
-import fs2.concurrent.Signal
-import groot.config.{GrootConfig, NotifyConfig}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.util.UUID
 import scala.concurrent.duration.*
@@ -16,7 +15,7 @@ final class NotifyService private (
     stopped: Deferred[IO, Unit],
     capacity: Int,
     heartbeat: FiniteDuration,
-    config: Option[Signal[IO, NotifyConfig]]
+    config: Option[IO[NotifyConfig]]
 ):
   private var listeners = Map.empty[String, (Queue[IO, Notification], Int)]
   private var closed = false
@@ -27,7 +26,7 @@ final class NotifyService private (
 
   private def currentSettings: IO[(Int, FiniteDuration)] = config match
     case None => IO.pure(capacity -> heartbeat)
-    case Some(sig) => sig.get.map(c => c.subscriberCapacity -> GrootConfig.parseDuration("notifications.heartbeat", c.heartbeat))
+    case Some(cfgIO) => cfgIO.map(c => c.subscriberCapacity -> Contracts.parseDuration(c.heartbeat))
 
   def send(request: NotifyRequest): IO[NotifyReceipt] = serial {
     for
@@ -80,7 +79,7 @@ object NotifyService:
   def resource(
       capacity: Int = 64,
       heartbeat: FiniteDuration = 15.seconds,
-      config: Option[Signal[IO, NotifyConfig]] = None
+      config: Option[IO[NotifyConfig]] = None
   ): Resource[IO, NotifyService] = for
     _ <- Resource.eval(IO(require(capacity > 0 && heartbeat > Duration.Zero)))
     mutex <- Resource.eval(Mutex[IO])

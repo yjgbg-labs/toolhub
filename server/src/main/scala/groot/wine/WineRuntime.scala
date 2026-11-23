@@ -7,7 +7,7 @@ import java.nio.file.{Files, Path, StandardOpenOption}
 import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
 
-private[groot] case class WineConfig(home: Path, runtime: Path, helper: Path):
+private[wine] case class WineConfig(home: Path, runtime: Path, helper: Path):
   val binary: Path = runtime.resolve("usr/lib/x86_64-linux-gnu/wine/wine")
   val server: Path = runtime.resolve("usr/lib/x86_64-linux-gnu/wine/wineserver")
   val xvfb: Path = runtime.resolve("usr/bin/Xvfb")
@@ -15,7 +15,7 @@ private[groot] case class WineConfig(home: Path, runtime: Path, helper: Path):
     "WINEPREFIX" -> prefix.toString, "WINEARCH" -> "win64", "WINEDEBUG" -> "-all", "WINESERVER" -> server.toString,
     "WINEDLLOVERRIDES" -> "winemenubuilder.exe=d;mscoree=d",
     "LD_LIBRARY_PATH" -> runtime.resolve("usr/lib/x86_64-linux-gnu").toString)
-private[groot] object WineConfig:
+private[wine] object WineConfig:
   def default: WineConfig =
     val home = System.getProperty("user.home")
     WineConfig(Path.of(sys.env.getOrElse("WINE_HOME", s"$home/groot-wine")),

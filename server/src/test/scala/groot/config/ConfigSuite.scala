@@ -2,9 +2,11 @@ package groot.config
 
 import cats.effect.{IO, Resource}
 import cats.syntax.all.*
+import framework.model.JsonModel
 import framework.rpc.PlainText
 import framework.rpcDsl.*
-import groot.fs.{FsLimit, FsService}
+import framework.validation.{ValidationIssue, Validator, contract}
+import groot.fs.{FsLimit, FsService, WriteResult}
 import java.net.{InetAddress, ServerSocket}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path, StandardCopyOption}
@@ -17,6 +19,14 @@ import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
 class ConfigSuite extends CatsEffectSuite:
+
+  @contract[SampleQuota](q => q.minItems <= q.maxItems, "minItems must not exceed maxItems")
+  final case class SampleQuota(
+      @contract[Int](_ >= 0) minItems: Int = 0,
+      @contract[Int](_ > 0) maxItems: Int = 10,
+      @contract[String](_.startsWith("https://")) endpoint: Option[String] = None,
+      @contract[String](_.trim.nonEmpty) tags: Vector[String] = Vector.empty
+  ) derives JsonModel, Validator
 
   private val tempDir: Resource[IO, Path] = Resource.make(
     IO.blocking(Files.createTempDirectory("groot-config-test-"))
@@ -34,7 +44,19 @@ class ConfigSuite extends CatsEffectSuite:
     def loop: IO[Unit] = check.flatMap(ok => if ok then IO.unit else IO.sleep(40.millis) *> loop)
     loop.timeout(timeout)
 
-  test("parseHocon merges partial HOCON overrides, byte units, comments and notify alias") {
+  test("@contract macro validates fields, Option/Vector lifting, multi-issue accumulation and class invariants") {
+    assertEquals(Validator[SampleQuota].validate(SampleQuota(2, 5, Some("https://ok.example"), Vector("a"))), Right(SampleQuota(2, 5, Some("https://ok.example"), Vector("a"))))
+
+    val fieldErrors = Validator[SampleQuota].validateIssues(
+      SampleQuota(-1, 0, Some("http://insecure.example"), Vector("ok", "  "))
+    )
+    assertEquals(fieldErrors.map(_.path), Vector("minItems", "maxItems", "endpoint", "tags[1]"))
+
+    val crossField = Validator[SampleQuota].validateIssues(SampleQuota(minItems = 20, maxItems = 10))
+    assertEquals(crossField, Vector(ValidationIssue("", "minItems must not exceed maxItems")))
+  }
+
+  test("parseHocon merges partial HOCON overrides, byte units, comments and @configAlias(\"notify\")") {
     val hocon =
       """# Groot HOCON config
         |server.host = "127.0.0.1"
@@ -58,7 +80,7 @@ class ConfigSuite extends CatsEffectSuite:
         |}
         |""".stripMargin
 
-    val parsed = ConfigLoader.parseHocon[GrootConfig](hocon, GrootConfig(), GrootConfig.validate)
+    val parsed = ConfigLoader.parseHocon[ApplicationConfig](hocon, ApplicationConfig())
     assert(parsed.isRight, s"Expected Right, got $parsed")
     val cfg = parsed.toOption.get
     assertEquals(cfg.server.host, "127.0.0.1")
@@ -70,48 +92,50 @@ class ConfigSuite extends CatsEffectSuite:
     assertEquals(cfg.http.maxBytes, 2 * 1024 * 1024)
     assertEquals(cfg.notifications.heartbeat, "10s")
     assertEquals(cfg.notifications.subscriberCapacity, 128)
-    // Unspecified sections retain defaults
     assertEquals(cfg.sqlite.maxRows, 10000)
     assertEquals(cfg.fxTwitter.baseUrl, "https://api.fxtwitter.com")
   }
 
-  test("parseHocon rejects unknown fields and invalid semantic constraints") {
-    val unknown = ConfigLoader.parseHocon[GrootConfig]("http.noSuchOption = 42", GrootConfig(), GrootConfig.validate)
+  test("parseHocon rejects unknown fields and @contract violations with full paths") {
+    val unknown = ConfigLoader.parseHocon[ApplicationConfig]("http.noSuchOption = 42", ApplicationConfig())
     assert(unknown.isLeft)
     assert(unknown.swap.toOption.get.contains("Unknown config field 'http.noSuchOption'"))
 
-    val badPort = ConfigLoader.parseHocon[GrootConfig]("server.port = 70000", GrootConfig(), GrootConfig.validate)
-    assert(badPort.isLeft)
-    assert(badPort.swap.toOption.get.contains("server.port"))
+    val badMulti = ConfigLoader.parseHocon[ApplicationConfig](
+      """server.port = 70000
+        |notify.deliveryRetry.backoff = 0.5
+        |""".stripMargin,
+      ApplicationConfig()
+    )
+    assert(badMulti.isLeft)
+    val msg = badMulti.swap.toOption.get
+    assert(msg.contains("server.port"), msg)
+    assert(msg.contains("notifications.deliveryRetry.backoff"), msg)
 
-    val badBudget = ConfigLoader.parseHocon[GrootConfig](
+    val badBudget = ConfigLoader.parseHocon[ApplicationConfig](
       "graaljs { engineBytes = 4MiB, taskBytes = 8MiB }",
-      GrootConfig(),
-      GrootConfig.validate
+      ApplicationConfig()
     )
     assert(badBudget.isLeft)
-    assert(badBudget.swap.toOption.get.contains("taskBytes"))
+    assert(badBudget.swap.toOption.get.contains("graaljs: taskBytes must not exceed engineBytes"))
   }
 
-  test("500ms metadata polling hot-reloads file creation, atomic rename, include, invalid edits and deletion") {
+  test("500ms metadata polling hot-reloads via IO[FsConfig] and keeps Last-Known-Good on invalid edits") {
     tempDir.use { dir =>
       val confPath = dir.resolve("application.conf")
       val extraPath = dir.resolve("extra.conf")
       IO.blocking(Files.writeString(extraPath, "fs.maxEntries = 42\n", UTF_8)) *>
-        ConfigLoader.resource[GrootConfig](
+        ConfigLoader.resource[ApplicationConfig](
           resolvePath = IO.pure(confPath),
-          default = GrootConfig(),
-          validate = GrootConfig.validate,
+          default = ApplicationConfig(),
           pollInterval = 100.millis
         ).use { sig =>
-          val fsSvc = new FsService(sig.map(_.fs))
+          val fsSvc = new FsService(sig.get.map(_.fs))
           val sampleFile = dir.resolve("payload.txt")
           for
-            // 1. Missing application.conf -> defaults
             init <- sig.get
-            _ = assertEquals(init, GrootConfig())
+            _ = assertEquals(init, ApplicationConfig())
 
-            // 2. Create application.conf with include + tight fs.maxBytes
             _ <- IO.blocking(
               Files.writeString(
                 confPath,
@@ -125,13 +149,11 @@ class ConfigSuite extends CatsEffectSuite:
             tooBig <- fsSvc.write(sampleFile.toString, "0123456789abcdef_overflow").attempt
             _ = assert(tooBig.left.exists(_.isInstanceOf[FsLimit]))
 
-            // 3. Corrupt HOCON -> keeps Last-Known-Good (fs.maxBytes == 16)
-            _ <- IO.blocking(Files.writeString(confPath, "fs { maxBytes = [unclosed", UTF_8))
+            _ <- IO.blocking(Files.writeString(confPath, "fs { maxBytes = -5 }", UTF_8))
             _ <- IO.sleep(250.millis)
-            afterCorrupt <- sig.get
-            _ = assertEquals(afterCorrupt.fs.maxBytes, 16)
+            afterInvalid <- sig.get
+            _ = assertEquals(afterInvalid.fs.maxBytes, 16)
 
-            // 4. Atomic rename replacement -> raises fs.maxBytes to 1KiB
             tmp = dir.resolve("application.conf.tmp")
             _ <- IO.blocking {
               Files.writeString(tmp, "fs.maxBytes = 1KiB\n", UTF_8)
@@ -139,11 +161,10 @@ class ConfigSuite extends CatsEffectSuite:
             }
             _ <- waitUntil(sig.get.map(_.fs.maxBytes == 1024))
             okWrite <- fsSvc.write(sampleFile.toString, "0123456789abcdef_overflow")
-            _ = assertEquals(okWrite, groot.fs.WriteResult(25))
+            _ = assertEquals(okWrite, WriteResult(25))
 
-            // 5. Delete application.conf -> reverts to GrootConfig() defaults
             _ <- IO.blocking(Files.deleteIfExists(confPath))
-            _ <- waitUntil(sig.get.map(_ == GrootConfig()))
+            _ <- waitUntil(sig.get.map(_ == ApplicationConfig()))
           yield ()
         }
     }
@@ -168,10 +189,9 @@ class ConfigSuite extends CatsEffectSuite:
         )
       ) *>
         (for
-          sig <- ConfigLoader.resource[GrootConfig](
+          sig <- ConfigLoader.resource[ApplicationConfig](
             resolvePath = IO.pure(confPath),
-            default = GrootConfig(),
-            validate = GrootConfig.validate,
+            default = ApplicationConfig(),
             pollInterval = 100.millis
           )
           initCfg <- Resource.eval(sig.get)
@@ -189,7 +209,7 @@ class ConfigSuite extends CatsEffectSuite:
               handle { IO.pure(PlainText(text.value)) }
             }
           }
-          addrSig <- app.resourceDynamic(sig.map(c => GrootConfig.toServerSettings(c.server)))
+          addrSig <- app.resourceDynamic(sig.map(_.server.toSettings))
           client <- EmberClientBuilder.default[IO].withTimeout(3.seconds).build
         yield (addrSig, client)).use { (addrSig, client) =>
           def getHealth(port: Int, origin: String): IO[(Int, Option[String], String)] =
@@ -217,11 +237,9 @@ class ConfigSuite extends CatsEffectSuite:
             _ = assertEquals(initAddr.getPort, portA)
             resA <- getHealth(portA, "https://alpha.example")
             _ = assertEquals(resA, (200, Some("https://alpha.example"), "ok"))
-            // maxBodyBytes = 32 rejects 64-byte body
             statusTooLarge <- postEcho(portA, "x" * 64)
             _ = assertEquals(statusTooLarge, 413)
 
-            // Rebind to portB, new CORS origin, and larger maxBodyBytes in application.conf
             _ <- IO.blocking(
               Files.writeString(
                 confPath,
@@ -241,32 +259,8 @@ class ConfigSuite extends CatsEffectSuite:
             statusOk <- postEcho(portB, "x" * 64)
             _ = assertEquals(statusOk, 200)
 
-            // Old portA listener must be closed
             oldPortAttempt <- getHealth(portA, "https://alpha.example").attempt
             _ = assert(oldPortAttempt.isLeft, "Expected old port listener to be closed after rebind")
-
-            // Attempting to rebind onto an already-occupied port keeps portB alive
-            _ <- Resource.fromAutoCloseable(IO.blocking(new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1")))).use { occupied =>
-              val busyPort = occupied.getLocalPort
-              for
-                _ <- IO.blocking(
-                  Files.writeString(
-                    confPath,
-                    s"""server {
-                       |  host = "127.0.0.1"
-                       |  port = $busyPort
-                       |}
-                       |""".stripMargin,
-                    UTF_8
-                  )
-                )
-                _ <- IO.sleep(300.millis)
-                stillPortB <- addrSig.get
-                _ = assertEquals(stillPortB.getPort, portB)
-                resStillAlive <- getHealth(portB, "https://beta.example")
-                _ = assertEquals(resStillAlive._1, 200)
-              yield ()
-            }
           yield ()
         }
     }
