@@ -148,14 +148,11 @@ object ConfigLoader:
       else json.asObject match
         case None => json
         case Some(obj) =>
-          val resolvedFields = fields()
-          val fieldSchemas = resolvedFields.map(f => f.name -> f.schema()).toMap
-          val aliasToCanonical = resolvedFields.flatMap(f => f.aliases.map(_ -> f.name)).toMap
+          val fieldSchemas = fields().map(f => f.name -> f.schema()).toMap
           val mapped = obj.toVector.map { (k, v) =>
-            val normKey = if fieldSchemas.contains(k) then k else aliasToCanonical.getOrElse(k, k)
-            fieldSchemas.get(normKey) match
-              case Some(childSchema) => normKey -> normalizeForSchema(v, childSchema)
-              case None              => normKey -> v
+            fieldSchemas.get(k) match
+              case Some(childSchema) => k -> normalizeForSchema(v, childSchema)
+              case None              => k -> v
           }
           Json.fromJsonObject(JsonObject.fromIterable(mapped))
     case SchemaNode.ArrayOf(elem) =>

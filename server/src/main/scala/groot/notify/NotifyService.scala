@@ -15,7 +15,7 @@ final class NotifyService private (
     stopped: Deferred[IO, Unit],
     capacity: Int,
     heartbeat: FiniteDuration,
-    config: Option[IO[NotifyConfig]]
+    config: IO[NotifyConfig]
 ):
   private var listeners = Map.empty[String, (Queue[IO, Notification], Int)]
   private var closed = false
@@ -24,9 +24,12 @@ final class NotifyService private (
   private def ensureOpen(): Unit =
     if closed then throw NotifyFailure("notify_closed", "Notification service is shutting down")
 
-  private def currentSettings: IO[(Int, FiniteDuration)] = config match
-    case None => IO.pure(capacity -> heartbeat)
-    case Some(cfgIO) => cfgIO.map(c => c.subscriberCapacity -> Contracts.parseDuration(c.heartbeat))
+  private def currentSettings: IO[(Int, FiniteDuration)] =
+    config.map { c =>
+      val cap = if capacity != 64 then capacity else c.subscriberCapacity
+      val hb = if heartbeat != 15.seconds then heartbeat else Contracts.parseDuration(c.heartbeat)
+      cap -> hb
+    }
 
   def send(request: NotifyRequest): IO[NotifyReceipt] = serial {
     for
@@ -79,7 +82,7 @@ object NotifyService:
   def resource(
       capacity: Int = 64,
       heartbeat: FiniteDuration = 15.seconds,
-      config: Option[IO[NotifyConfig]] = None
+      config: IO[NotifyConfig] = IO.pure(NotifyConfig())
   ): Resource[IO, NotifyService] = for
     _ <- Resource.eval(IO(require(capacity > 0 && heartbeat > Duration.Zero)))
     mutex <- Resource.eval(Mutex[IO])

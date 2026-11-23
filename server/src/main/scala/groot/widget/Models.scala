@@ -1,11 +1,11 @@
 package groot.widget
 
 import framework.model.JsonModel
-import framework.validation.{Contracts, Validator, contract}
+import framework.validation.*
 
 final case class WidgetConfig(
-    @contract[Int](_ > 0) maxItems: Int = WidgetService.maxItems,
-    @contract[String](Contracts.isDuration) heartbeat: String = "15s"
+    @positive maxItems: Int = WidgetService.maxItems,
+    @duration heartbeat: String = "15s"
 ) derives JsonModel, Validator
 
 enum WidgetColor derives JsonModel:

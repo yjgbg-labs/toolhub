@@ -1,26 +1,21 @@
 package framework.runtime
 
 import cats.data.Kleisli
-import cats.effect.{IO, Ref, Resource}
-import cats.effect.std.Mutex
+import cats.effect.{IO, Resource}
 import cats.syntax.all.*
 import com.comcast.ip4s.{Host, Port}
 import framework.Client
 import framework.http.*
 import framework.model.JsonModel
-import fs2.concurrent.{Signal, SignallingRef}
 import io.circe.{Json, Printer}
 import io.circe.syntax.*
-import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets.UTF_8
 import java.security.MessageDigest
-import java.util.concurrent.atomic.AtomicReference
 import org.http4s.{Header, HttpApp, Request, Response, Status}
 import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.headers.`Content-Type`
 import org.typelevel.ci.CIString
-import scala.concurrent.duration.*
 import scala.util.Try
 import sttp.apispec.openapi.circe.*
 
@@ -49,9 +44,11 @@ final class Application private[framework] (
     }
   }
 
-  val httpApp: HttpApp[IO] =
-    val handler = httpHandler((req, segs) => dispatch(req, segs, serverSettings.maxBodyBytes))
-    serverSettings.cors.fold(handler)(Cors(_, handler))
+  val httpApp: HttpApp[IO] = httpAppWith(serverSettings)
+
+  def httpAppWith(settings: ServerSettings): HttpApp[IO] =
+    val handler = httpHandler((req, segs) => dispatch(req, segs, settings.maxBodyBytes))
+    settings.cors.fold(handler)(Cors(_, handler))
 
   val endpoints: Vector[Endpoint] = ordered.map { endpoint =>
     val spec = endpoint.spec
@@ -59,20 +56,6 @@ final class Application private[framework] (
       Endpoint.Input(input.name, input.location, input.schema.node(), input.bodyMediaType)
     }, spec.exposedOn, httpHandler((request, segments) => route(request, segments, Vector(endpoint), serverSettings.maxBodyBytes)))
   }
-
-  def dynamicHttpApp(settingsSignal: Signal[IO, ServerSettings]): HttpApp[IO] =
-    val appCache = new AtomicReference[(ServerSettings, HttpApp[IO])](null)
-    def appFor(s: ServerSettings): HttpApp[IO] =
-      val cached = appCache.get()
-      if cached != null && cached._1 == s then cached._2
-      else
-        val base = httpHandler((req, segs) => dispatch(req, segs, s.maxBodyBytes))
-        val wrapped = s.cors.fold(base)(Cors(_, base))
-        appCache.set(s -> wrapped)
-        wrapped
-    Kleisli { req =>
-      settingsSignal.get.flatMap(s => appFor(s).run(req))
-    }
 
   def resource: Resource[IO, org.http4s.server.Server] =
     EmberServerBuilder.default[IO]
@@ -83,79 +66,7 @@ final class Application private[framework] (
         scribe.info(s"Groot HTTP listening at ${server.address}; OpenAPI: ${openApiSettings.endpoint}")
       })
 
-  /** Bind EmberServer and dynamically rebind `host` / `port` in-place whenever `settingsSignal` changes. */
-  def resourceDynamic(settingsSignal: Signal[IO, ServerSettings]): Resource[IO, Signal[IO, InetSocketAddress]] =
-    val app = dynamicHttpApp(settingsSignal)
-    def bindOne(h: String, p: Int): IO[(org.http4s.server.Server, IO[Unit])] =
-      for
-        hostVal <- IO.fromOption(Host.fromString(h.trim))(new IllegalArgumentException(s"Invalid server.host: $h"))
-        portVal <- IO.fromOption(Port.fromInt(p))(new IllegalArgumentException(s"Invalid server.port: $p"))
-        allocated <- EmberServerBuilder.default[IO]
-          .withHost(hostVal)
-          .withPort(portVal)
-          .withHttpApp(app)
-          .withShutdownTimeout(2.seconds)
-          .build
-          .allocated
-        _ <- IO(scribe.info(s"Groot HTTP listening at ${allocated._1.address}; OpenAPI: ${openApiSettings.endpoint}"))
-      yield allocated
-
-    final case class ActiveListener(host: String, configuredPort: Int, server: org.http4s.server.Server, release: IO[Unit])
-
-    for
-      mutex <- Resource.eval(Mutex[IO])
-      init <- Resource.eval(settingsSignal.get)
-      initHost = init.host.trim
-      first <- Resource.eval(bindOne(initHost, init.port))
-      activeRef <- Resource.make(
-        Ref.of[IO, Option[ActiveListener]](Some(ActiveListener(initHost, init.port, first._1, first._2)))
-      )(ref => mutex.lock.surround(ref.getAndSet(None).flatMap(_.traverse_(_.release.attempt.void))))
-      addrSignal <- Resource.eval(SignallingRef[IO, InetSocketAddress](first._1.address))
-      rebindTo = (nextHost: String, nextPort: Int) =>
-        mutex.lock.surround {
-          activeRef.get.flatMap {
-            case None => IO.unit
-            case Some(cur) if cur.host == nextHost && (cur.configuredPort == nextPort || cur.server.address.getPort == nextPort) =>
-              IO.unit
-            case Some(cur) if nextPort != cur.server.address.getPort =>
-              bindOne(nextHost, nextPort).attempt.flatMap {
-                case Right((newSrv, newRel)) =>
-                  cur.release.attempt.void *>
-                    activeRef.set(Some(ActiveListener(nextHost, nextPort, newSrv, newRel))) *>
-                    addrSignal.set(newSrv.address) *>
-                    IO(scribe.info(s"Rebound Groot HTTP listener from ${cur.server.address} to ${newSrv.address}"))
-                case Left(err) =>
-                  IO(scribe.error(s"Failed to rebind Groot HTTP listener to $nextHost:$nextPort; keeping ${cur.server.address} active", err))
-              }
-            case Some(cur) =>
-              // Same port, different host interface (e.g. 0.0.0.0 -> 127.0.0.1): release first, with automatic rollback on failure.
-              cur.release.attempt.void *>
-                bindOne(nextHost, nextPort).attempt.flatMap {
-                  case Right((newSrv, newRel)) =>
-                    activeRef.set(Some(ActiveListener(nextHost, nextPort, newSrv, newRel))) *>
-                      addrSignal.set(newSrv.address) *>
-                      IO(scribe.info(s"Rebound Groot HTTP listener from ${cur.host}:${cur.server.address.getPort} to ${newSrv.address}"))
-                  case Left(err) =>
-                    IO(scribe.error(s"Failed to bind Groot HTTP listener to $nextHost:$nextPort; restoring ${cur.host}:${cur.server.address.getPort}", err)) *>
-                      bindOne(cur.host, cur.server.address.getPort).attempt.flatMap {
-                        case Right((restoredSrv, restoredRel)) =>
-                          activeRef.set(Some(ActiveListener(cur.host, cur.configuredPort, restoredSrv, restoredRel))) *>
-                            addrSignal.set(restoredSrv.address)
-                        case Left(fatal) =>
-                          activeRef.set(None) *> IO(scribe.error("Failed to restore previous HTTP listener", fatal))
-                      }
-                }
-          }
-        }
-      _ <- settingsSignal.map(s => (s.host.trim, s.port)).discrete.changes
-        .evalMap((h, p) => rebindTo(h, p).handleErrorWith(e => IO(scribe.error("Unexpected HTTP listener rebind error", e))))
-        .compile.drain.background
-    yield addrSignal
-
   def serve: IO[Nothing] = resource.useForever
-
-  def serveDynamic(settingsSignal: Signal[IO, ServerSettings]): IO[Nothing] =
-    resourceDynamic(settingsSignal).useForever
 
   private def dispatch(request: Request[IO], segments: Vector[String], maxBodyBytes: Long): IO[Response[IO]] =
     if docs.matches(segments).nonEmpty then

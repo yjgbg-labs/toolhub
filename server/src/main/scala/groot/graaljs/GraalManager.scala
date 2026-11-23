@@ -38,19 +38,15 @@ final class GraalManager private (
       )(start => (now - start).toNanos.toDouble / 1000000d))
     }
 
-  def submitText(code: String, cpu: String, timeout: String, context: Map[String, String] = Map.empty): IO[GraalTask] =
-    config.get.flatMap(cfg => IO(JavaScript.source(code, maxBytes = cfg.maxSourceBytes))).flatMap(submit(_, cpu, timeout, context))
-
   def submit(source: Source, cpu: String, timeout: String, context: Map[String, String] = Map.empty): IO[GraalTask] =
     IO(GraalManager.taskId()).flatMap(id => submitTask(id, source, cpu, timeout, context))
 
   private def submitTask(id: String, source: Source, cpu: String, timeout: String, context: Map[String, String]): IO[GraalTask] =
     for
-      cfg <- config.get
       limits <- IO((Validation.durationMs("cpu", cpu), Validation.durationMs("timeout", timeout)))
       _ <- IO.raiseUnless(source.getLanguage == "js" && source.hasCharacters)(InvalidGraalTask("Source must contain JavaScript characters"))
       text <- IO(source.getCharacters.toString)
-      _ <- IO.raiseWhen(text.trim.isEmpty || text.getBytes(UTF_8).length > JavaScript.maxExecutableBytesFor(cfg.maxSourceBytes))(InvalidGraalTask("Invalid JavaScript Source size"))
+      _ <- IO.raiseWhen(text.trim.isEmpty || text.getBytes(UTF_8).length > JavaScript.maxExecutableBytes)(InvalidGraalTask("Invalid JavaScript Source size"))
       task <- serial {
         for
           latestCfg <- config.get

@@ -1,7 +1,7 @@
 package groot.config
 
 import framework.http.ServerConfig
-import framework.model.{JsonModel, configAlias}
+import framework.model.JsonModel
 import framework.runtime.LogConfig
 import framework.validation.Validator
 import groot.chrome.ChromeConfig
@@ -28,7 +28,7 @@ final case class ApplicationConfig(
     shell: ShellConfig = ShellConfig(),
     fs: FsConfig = FsConfig(),
     sqlite: SqliteConfig = SqliteConfig(),
-    @configAlias("notify") notifications: NotifyConfig = NotifyConfig(),
+    notifications: NotifyConfig = NotifyConfig(),
     mihomo: MihomoConfig = MihomoConfig(),
     github: GitHubConfig = GitHubConfig(),
     fxTwitter: FxTwitterConfig = FxTwitterConfig(),

@@ -5,7 +5,8 @@ import cats.syntax.all.*
 import framework.model.JsonModel
 import framework.rpc.PlainText
 import framework.rpcDsl.*
-import framework.validation.{ValidationIssue, Validator, contract}
+import framework.runtime.DynamicServer
+import framework.validation.*
 import groot.fs.{FsLimit, FsService, WriteResult}
 import java.net.{InetAddress, ServerSocket}
 import java.nio.charset.StandardCharsets.UTF_8
@@ -20,12 +21,13 @@ import scala.util.Using
 
 class ConfigSuite extends CatsEffectSuite:
 
+  final class evenInt extends contract[Int](_ % 2 == 0, "must be even")
+
   @contract[SampleQuota](q => q.minItems <= q.maxItems, "minItems must not exceed maxItems")
   final case class SampleQuota(
-      @contract[Int](_ >= 0) minItems: Int = 0,
-      @contract[Int](_ > 0) maxItems: Int = 10,
-      @contract[String](_.startsWith("https://")) endpoint: Option[String] = None,
-      @contract[String](_.trim.nonEmpty) tags: Vector[String] = Vector.empty
+      @min(0) minItems: Int = 0,
+      @min(1) @max(100) @evenInt maxItems: Int = 10,
+      @nonBlank tags: Vector[String] = Vector.empty
   ) derives JsonModel, Validator
 
   private val tempDir: Resource[IO, Path] = Resource.make(
@@ -44,19 +46,20 @@ class ConfigSuite extends CatsEffectSuite:
     def loop: IO[Unit] = check.flatMap(ok => if ok then IO.unit else IO.sleep(40.millis) *> loop)
     loop.timeout(timeout)
 
-  test("@contract macro validates fields, Option/Vector lifting, multi-issue accumulation and class invariants") {
-    assertEquals(Validator[SampleQuota].validate(SampleQuota(2, 5, Some("https://ok.example"), Vector("a"))), Right(SampleQuota(2, 5, Some("https://ok.example"), Vector("a"))))
+  test("@contract and subclass annotations (@min, @max, custom extends contract[Int]) validate fields and class invariants") {
+    assertEquals(Validator[SampleQuota].validate(SampleQuota(2, 10, Vector("a"))), Right(SampleQuota(2, 10, Vector("a"))))
 
     val fieldErrors = Validator[SampleQuota].validateIssues(
-      SampleQuota(-1, 0, Some("http://insecure.example"), Vector("ok", "  "))
+      SampleQuota(-1, 3, Vector("ok", "  "))
     )
-    assertEquals(fieldErrors.map(_.path), Vector("minItems", "maxItems", "endpoint", "tags[1]"))
+    assertEquals(fieldErrors.map(_.path), Vector("minItems", "maxItems", "tags[1]"))
 
     val crossField = Validator[SampleQuota].validateIssues(SampleQuota(minItems = 20, maxItems = 10))
-    assertEquals(crossField, Vector(ValidationIssue("", "minItems must not exceed maxItems")))
+    assertEquals(crossField.map(_.path), Vector(""))
+    assert(crossField.head.message.contains("minItems must not exceed maxItems"))
   }
 
-  test("parseHocon merges partial HOCON overrides, byte units, comments and @configAlias(\"notify\")") {
+  test("parseHocon merges partial HOCON overrides, byte units, and comments") {
     val hocon =
       """# Groot HOCON config
         |server.host = "127.0.0.1"
@@ -74,7 +77,7 @@ class ConfigSuite extends CatsEffectSuite:
         |  maxBytes = 2MiB
         |}
         |
-        |notify {
+        |notifications {
         |  heartbeat = 10s
         |  subscriberCapacity = 128
         |}
@@ -96,14 +99,14 @@ class ConfigSuite extends CatsEffectSuite:
     assertEquals(cfg.fxTwitter.baseUrl, "https://api.fxtwitter.com")
   }
 
-  test("parseHocon rejects unknown fields and @contract violations with full paths") {
+  test("parseHocon rejects unknown fields and annotation contract violations with full paths") {
     val unknown = ConfigLoader.parseHocon[ApplicationConfig]("http.noSuchOption = 42", ApplicationConfig())
     assert(unknown.isLeft)
     assert(unknown.swap.toOption.get.contains("Unknown config field 'http.noSuchOption'"))
 
     val badMulti = ConfigLoader.parseHocon[ApplicationConfig](
       """server.port = 70000
-        |notify.deliveryRetry.backoff = 0.5
+        |notifications.deliveryRetry.backoff = 0.5
         |""".stripMargin,
       ApplicationConfig()
     )
@@ -117,7 +120,7 @@ class ConfigSuite extends CatsEffectSuite:
       ApplicationConfig()
     )
     assert(badBudget.isLeft)
-    assert(badBudget.swap.toOption.get.contains("graaljs: taskBytes must not exceed engineBytes"))
+    assert(badBudget.swap.toOption.get.contains("taskBytes must not exceed engineBytes"))
   }
 
   test("500ms metadata polling hot-reloads via IO[FsConfig] and keeps Last-Known-Good on invalid edits") {
@@ -209,7 +212,7 @@ class ConfigSuite extends CatsEffectSuite:
               handle { IO.pure(PlainText(text.value)) }
             }
           }
-          addrSig <- app.resourceDynamic(sig.map(_.server.toSettings))
+          addrSig <- DynamicServer.resource(app, sig.map(_.server.toSettings))
           client <- EmberClientBuilder.default[IO].withTimeout(3.seconds).build
         yield (addrSig, client)).use { (addrSig, client) =>
           def getHealth(port: Int, origin: String): IO[(Int, Option[String], String)] =

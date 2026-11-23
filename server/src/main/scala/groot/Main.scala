@@ -3,7 +3,7 @@ package groot
 import cats.effect.{Deferred, IO, IOApp, Resource}
 import cats.syntax.all.*
 import framework.rpcDsl.*
-import framework.runtime.Logging
+import framework.runtime.{DynamicServer, Logging}
 import framework.validation.Contracts
 import groot.config.{ApplicationConfig, ConfigLoader}
 import groot.graaljs.{GraalCommandSdk, GraalJsRoutes, GraalManager}
@@ -42,11 +42,11 @@ object Main extends IOApp.Simple:
     state <- StateService.resource(home.resolve("state"))
     shell <- ShellService.resource(home.resolve("shell"), config = readCfg.map(_.shell))
     mihomo <- MihomoService.resourceWithConfig(shell, readCfg.map(_.mihomo), readCfg.map(_.shell))
-    github <- GitHubService.resource(home, config = Some(readCfg.map(_.github)))
-    fxTwitter <- FxTwitterService.resource(config = Some(readCfg.map(_.fxTwitter)))
-    chrome <- ChromeService.resource(config = Some(readCfg.map(_.chrome)))
+    github <- GitHubService.resource(home, config = readCfg.map(_.github))
+    fxTwitter <- FxTwitterService.resource(config = readCfg.map(_.fxTwitter))
+    chrome <- ChromeService.resource(config = readCfg.map(_.chrome))
     wine <- WineService.resource(readCfg.map(_.wine))
-    notify <- NotifyService.resource(config = Some(readCfg.map(_.notifications)))
+    notify <- NotifyService.resource(config = readCfg.map(_.notifications))
     graaljs <- GraalManager.resource(home.resolve("graaljs"), commands = commands.get, config = cfgSignal.map(_.graaljs))
     notifyTriggers <- NotifyTriggerManager.resource(notify, graaljs, home = home, startLoop = false, config = readCfg.map(_.notifications))
     scheduler <- Scheduler.resource(graaljs, home = home, startLoop = false)
@@ -94,10 +94,10 @@ object Main extends IOApp.Simple:
           handle { IO.pure(PlainText("ok")) }
         }
       }
-      commands.complete(GraalCommandSdk(app, readCfg.map(_.graaljs.sdkMaxBytes))) *>
+      commands.complete(GraalCommandSdk(app)) *>
         scheduler.loop.background.use(_ =>
           notifyTriggers.loop.background.use(_ =>
-            app.serveDynamic(cfgSignal.map(_.server.toSettings))
+            DynamicServer.serve(app, cfgSignal.map(_.server.toSettings))
           )
         )
   }

@@ -2,7 +2,6 @@ package groot.http
 
 import cats.effect.{IO, Resource}
 import cats.syntax.all.*
-import framework.validation.Contracts
 import fs2.{Chunk, Stream}
 import fs2.compression.{Compression, InflateParams}
 import java.nio.charset.StandardCharsets.UTF_8
@@ -14,64 +13,59 @@ import org.typelevel.ci.CIString
 import scala.concurrent.duration.*
 
 /** Buffered HTTP requests. All transport IO belongs to the task session and is cancelled with it. */
-final class HttpService(
-    client: Client[IO],
-    timeout: FiniteDuration = 30.seconds,
-    config: Option[IO[HttpConfig]] = None
-):
+final class HttpService(client: Client[IO], timeout: FiniteDuration = 30.seconds, config: IO[HttpConfig] = IO.pure(HttpConfig())):
   import HttpService.*
 
-  def apply(input: HttpRequest): IO[HttpResponse] = config.fold(IO.pure((timeout, maxBytes, 20)))(_.map(c =>
-    (Contracts.parseDuration(c.timeout), c.maxBytes, c.maxRedirects))).flatMap { (reqTimeout, capBytes, maxRedirs) =>
+  def apply(input: HttpRequest): IO[HttpResponse] = config.flatMap: cfg =>
+    val reqTimeout = if timeout != 30.seconds then timeout else framework.validation.Contracts.parseDuration(cfg.timeout)
     IO.defer {
-      val uri = parseUrl(input.url)
-      val upper = input.method.toUpperCase(java.util.Locale.ROOT)
-      val normalized = if Set("DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT").contains(upper) then upper else input.method
-      val method = Method.fromString(normalized).fold(error => throw error, identity)
-      if Set("CONNECT", "TRACE", "TRACK").contains(method.name.toUpperCase(java.util.Locale.ROOT)) then
-        throw HttpFailure("TypeError", s"http() does not support method ${method.name}")
-      if (method == Method.GET || method == Method.HEAD) && input.body.nonEmpty then
-        throw HttpFailure("TypeError", "http() request with GET/HEAD method cannot have body")
-      val body = input.body.map { text => input.bodyEncoding match
-        case BodyEncoding.utf8 => text.getBytes(UTF_8)
-        case BodyEncoding.base64 => Base64.getDecoder.decode(text)
-      }
-      if input.headers.size > 1024 then throw HttpFailure("TypeError", "http() accepts at most 1024 headers")
-      val fields = input.headers.toVector.map { (rawName, rawValue) =>
-        val name = rawName.toLowerCase(java.util.Locale.ROOT)
-        val value = rawValue.dropWhile(c => c == ' ' || c == '\t' || c == '\r' || c == '\n')
-          .reverse.dropWhile(c => c == ' ' || c == '\t' || c == '\r' || c == '\n').reverse
-        if !name.matches("[!#$%&'*+.^_`|~0-9a-z-]+") || value.exists(c => c == 0 || c == '\r' || c == '\n' || c > 255) then
-          throw HttpFailure("TypeError", "http() has an invalid header name or value")
-        name -> value
-      }.groupMap(_._1)(_._2).toVector.map((name, values) => name -> values.mkString(", "))
-      val size = input.url.getBytes(UTF_8).length.toLong + input.method.length +
-        fields.map((k, v) => k.length.toLong + v.getBytes(UTF_8).length).sum + body.fold(0)(_.length)
-      if size > capBytes then throw HttpFailure("RangeError", s"http() request exceeds ${Contracts.formatBytes(capBytes.toLong)}")
-      val typed = if input.body.nonEmpty && input.bodyEncoding == BodyEncoding.utf8 && !fields.exists(_._1 == "content-type") then
-        fields :+ ("content-type" -> "text/plain;charset=UTF-8") else fields
-      // Framing is computed from the buffered body, including when callers reuse response headers.
-      val headers = Headers(typed.filterNot { (name, _) =>
-        name.equalsIgnoreCase("content-length") || name.equalsIgnoreCase("transfer-encoding")
-      }.map { (name, value) => Header.Raw(CIString(name), value) })
-      val request = Request[IO](method, uri, headers = headers)
-      val encoded = body.fold(request)(bytes => request.withBodyStream(Stream.chunk(Chunk.array(bytes)))
-        .putHeaders(Header.Raw(CIString("Content-Length"), bytes.length.toString)))
-      val accepted = if header(encoded.headers, "accept").isDefined then encoded else encoded.putHeaders(Header.Raw(CIString("Accept"), "*/*"))
-      val compressed = if header(accepted.headers, "accept-encoding").isDefined then accepted
-        else accepted.putHeaders(Header.Raw(CIString("Accept-Encoding"), "gzip, deflate"))
-      follow(compressed, 0, capBytes, maxRedirs)
-    }.timeoutTo(reqTimeout, IO.raiseError(HttpFailure("TimeoutError", "http() timed out")))
-      .adaptError { case error if !error.isInstanceOf[HttpFailure] =>
-        HttpFailure("TypeError", s"http failed: ${Option(error.getMessage).getOrElse(error.getClass.getSimpleName)}")
-      }
-  }
+    val uri = parseUrl(input.url)
+    val upper = input.method.toUpperCase(java.util.Locale.ROOT)
+    val normalized = if Set("DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT").contains(upper) then upper else input.method
+    val method = Method.fromString(normalized).fold(error => throw error, identity)
+    if Set("CONNECT", "TRACE", "TRACK").contains(method.name.toUpperCase(java.util.Locale.ROOT)) then
+      throw HttpFailure("TypeError", s"http() does not support method ${method.name}")
+    if (method == Method.GET || method == Method.HEAD) && input.body.nonEmpty then
+      throw HttpFailure("TypeError", "http() request with GET/HEAD method cannot have body")
+    val body = input.body.map { text => input.bodyEncoding match
+      case BodyEncoding.utf8 => text.getBytes(UTF_8)
+      case BodyEncoding.base64 => Base64.getDecoder.decode(text)
+    }
+    if input.headers.size > 1024 then throw HttpFailure("TypeError", "http() accepts at most 1024 headers")
+    val fields = input.headers.toVector.map { (rawName, rawValue) =>
+      val name = rawName.toLowerCase(java.util.Locale.ROOT)
+      val value = rawValue.dropWhile(c => c == ' ' || c == '\t' || c == '\r' || c == '\n')
+        .reverse.dropWhile(c => c == ' ' || c == '\t' || c == '\r' || c == '\n').reverse
+      if !name.matches("[!#$%&'*+.^_`|~0-9a-z-]+") || value.exists(c => c == 0 || c == '\r' || c == '\n' || c > 255) then
+        throw HttpFailure("TypeError", "http() has an invalid header name or value")
+      name -> value
+    }.groupMap(_._1)(_._2).toVector.map((name, values) => name -> values.mkString(", "))
+    val size = input.url.getBytes(UTF_8).length.toLong + input.method.length +
+      fields.map((k, v) => k.length.toLong + v.getBytes(UTF_8).length).sum + body.fold(0)(_.length)
+    if size > cfg.maxBytes then throw HttpFailure("RangeError", s"http() request exceeds ${framework.validation.Contracts.formatBytes(cfg.maxBytes.toLong)}")
+    val typed = if input.body.nonEmpty && input.bodyEncoding == BodyEncoding.utf8 && !fields.exists(_._1 == "content-type") then
+      fields :+ ("content-type" -> "text/plain;charset=UTF-8") else fields
+    // Framing is computed from the buffered body, including when callers reuse response headers.
+    val headers = Headers(typed.filterNot { (name, _) =>
+      name.equalsIgnoreCase("content-length") || name.equalsIgnoreCase("transfer-encoding")
+    }.map { (name, value) => Header.Raw(CIString(name), value) })
+    val request = Request[IO](method, uri, headers = headers)
+    val encoded = body.fold(request)(bytes => request.withBodyStream(Stream.chunk(Chunk.array(bytes)))
+      .putHeaders(Header.Raw(CIString("Content-Length"), bytes.length.toString)))
+    val accepted = if header(encoded.headers, "accept").isDefined then encoded else encoded.putHeaders(Header.Raw(CIString("Accept"), "*/*"))
+    val compressed = if header(accepted.headers, "accept-encoding").isDefined then accepted
+      else accepted.putHeaders(Header.Raw(CIString("Accept-Encoding"), "gzip, deflate"))
+    follow(compressed, 0, cfg)
+  }.timeoutTo(reqTimeout, IO.raiseError(HttpFailure("TimeoutError", "http() timed out")))
+    .adaptError { case error if !error.isInstanceOf[HttpFailure] =>
+      HttpFailure("TypeError", s"http failed: ${Option(error.getMessage).getOrElse(error.getClass.getSimpleName)}")
+    }
 
-  private def follow(request: Request[IO], redirects: Int, capBytes: Int, maxRedirs: Int): IO[HttpResponse] =
+  private def follow(request: Request[IO], redirects: Int, cfg: HttpConfig): IO[HttpResponse] =
     client.run(request).use { response =>
       val location = header(response.headers, "location")
       if Set(301, 302, 303, 307, 308).contains(response.status.code) && location.nonEmpty then IO {
-        if redirects >= maxRedirs then throw HttpFailure("TypeError", s"http() exceeded $maxRedirs redirects")
+        if redirects >= cfg.maxRedirects then throw HttpFailure("TypeError", s"http() exceeded ${cfg.maxRedirects} redirects")
         val target = parseUrl(request.uri.resolve(Uri.unsafeFromString(location.get)).renderString)
         val rewrite = (Set(301, 302).contains(response.status.code) && request.method == Method.POST) ||
           (response.status.code == 303 && request.method != Method.GET && request.method != Method.HEAD)
@@ -83,7 +77,7 @@ final class HttpService(
         }
         Left(next.withUri(target).withHeaders(Headers(stripped)))
       }
-      else readBody(request, response, capBytes).map { bytes =>
+      else readBody(request, response, cfg.maxBytes).map { bytes =>
         val fields = response.headers.headers
         val headers = fields.groupMap(_.name.toString.toLowerCase(java.util.Locale.ROOT))(_.value)
           .toVector.sortBy(_._1).map { (name, values) => name -> values.mkString(", ") }
@@ -93,7 +87,7 @@ final class HttpService(
           response.status.isSuccess, redirects > 0, headers.toMap, Base64.getEncoder.encodeToString(bytes), setCookies))
       }
     }.flatMap {
-      case Left(next) => follow(next, redirects + 1, capBytes, maxRedirs)
+      case Left(next) => follow(next, redirects + 1, cfg)
       case Right(result) => IO.pure(result)
     }
 
@@ -112,7 +106,7 @@ final class HttpService(
         }
       else response.body
     bytes.take(capBytes.toLong + 1).compile.to(Array).flatMap { body =>
-      if body.length > capBytes then IO.raiseError(HttpFailure("RangeError", s"http() response exceeds ${Contracts.formatBytes(capBytes.toLong)}"))
+      if body.length > capBytes then IO.raiseError(HttpFailure("RangeError", s"http() response exceeds ${framework.validation.Contracts.formatBytes(capBytes.toLong)}"))
       else IO.pure(body)
     }
 
@@ -122,13 +116,10 @@ object HttpService:
   def resource: Resource[IO, HttpService] = resourceWithConfig(IO.pure(HttpConfig()))
 
   def resourceWithConfig(config: IO[HttpConfig]): Resource[IO, HttpService] =
-    for
-      init <- Resource.eval(config)
-      client <- EmberClientBuilder.default[IO]
-        .withTimeout(Duration.Inf)
-        .withMaxResponseHeaderSize(math.max(init.maxHeaderBytes, 64 * 1024))
-        .build
-    yield new HttpService(client, Contracts.parseDuration(init.timeout), Some(config))
+    Resource.eval(config).flatMap { init =>
+      EmberClientBuilder.default[IO].withTimeout(Duration.Inf).withMaxResponseHeaderSize(math.max(init.maxHeaderBytes, 64 * 1024)).build
+        .map(new HttpService(_, 30.seconds, config))
+    }
 
   private def header(headers: Headers, name: String): Option[String] = headers.headers.find(_.name == CIString(name)).map(_.value)
 

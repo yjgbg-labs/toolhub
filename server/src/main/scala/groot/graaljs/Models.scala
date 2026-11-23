@@ -1,18 +1,15 @@
 package groot.graaljs
 
 import framework.model.JsonModel
-import framework.validation.{Contracts, Validator, contract}
+import framework.validation.*
 import java.nio.charset.StandardCharsets.UTF_8
 
 @contract[GraalJsConfig](c => c.taskBytes <= c.engineBytes, "taskBytes must not exceed engineBytes")
 final case class GraalJsConfig(
-    @contract[Long](_ > 0) engineBytes: Long = Limits.engineBytes,
-    @contract[Long](_ > 0) taskBytes: Long = Limits.taskBytes,
-    @contract[Int](_ > 0) maxQueued: Int = Limits.maxQueued,
-    @contract[Int](_ > 0) maxSourceBytes: Int = Limits.maxSourceBytes,
-    @contract[Long](_ > 0) maxLogBytes: Long = Limits.maxLogBytes,
-    @contract[Int](_ > 0) maxPendingCalls: Int = GraalSdkSession.maxPending,
-    @contract[Int](_ > 0) sdkMaxBytes: Int = GraalCommandSdk.maxBytes
+    @positive engineBytes: Long = Limits.engineBytes,
+    @positive taskBytes: Long = Limits.taskBytes,
+    @positive maxQueued: Int = Limits.maxQueued,
+    @positive maxLogBytes: Long = Limits.maxLogBytes
 ) derives JsonModel, Validator
 
 case class TaskError(code: String, message: String) derives JsonModel
@@ -61,6 +58,6 @@ private[groot] object Validation:
       millis.toLong
     case _ => throw InvalidGraalTask(s"$name must be an integer followed by ms, s, m, h or d")
 
-  def source(code: String, maxBytes: Int = Limits.maxSourceBytes): Unit =
+  def source(code: String): Unit =
     if code.trim.isEmpty then throw InvalidGraalTask("JavaScript source must not be blank")
-    if code.getBytes(UTF_8).length > maxBytes then throw InvalidGraalTask(s"JavaScript source exceeds ${Contracts.formatBytes(maxBytes.toLong)}")
+    if code.getBytes(UTF_8).length > Limits.maxSourceBytes then throw InvalidGraalTask("JavaScript source exceeds 1 MiB")

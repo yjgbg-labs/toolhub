@@ -1,7 +1,6 @@
 package groot.fxtwitter
 
 import cats.effect.{IO, Resource}
-import framework.validation.Contracts
 import fs2.compression.{Compression, InflateParams}
 import io.circe.{ACursor, HCursor, Json}
 import io.circe.parser.parse
@@ -15,9 +14,9 @@ import scala.concurrent.duration.*
 
 final class FxTwitterService(
     http: Client[IO],
-    val baseUri: Uri = Uri.unsafeFromString("https://api.fxtwitter.com"),
+    val baseUri: Uri = FxTwitterService.defaultBaseUri,
     requestTimeout: FiniteDuration = 25.seconds,
-    configIO: Option[IO[FxTwitterConfig]] = None
+    config: IO[FxTwitterConfig] = IO.pure(FxTwitterConfig())
 ):
   import FxTwitterService.*
 
@@ -130,15 +129,9 @@ final class FxTwitterService(
       IO.raiseError(FxTwitterFailure("invalid_fx_twitter", "path must be a relative FxTwitter path such as /2/status/20"))
     else getJson(if p.startsWith("/") then p else s"/$p", req.query)
 
-  private def currentSettings: IO[(Uri, FiniteDuration, Int)] = configIO match
-    case None => IO.pure((baseUri, requestTimeout, maxResponseBytes))
-    case Some(cfgIO) => cfgIO.map { cfg =>
-      val u = Uri.fromString(cfg.baseUrl.trim).getOrElse(baseUri)
-      val t = Contracts.parseDuration(cfg.timeout)
-      (u, t, cfg.maxResponseBytes)
-    }
-
-  private def getJson(path: String, query: Map[String, String]): IO[Json] = currentSettings.flatMap { (activeBase, activeTimeout, activeCap) =>
+  private def getJson(path: String, query: Map[String, String]): IO[Json] = config.flatMap: cfg =>
+    val activeBase = if baseUri != defaultBaseUri then baseUri else Uri.fromString(cfg.baseUrl.trim).getOrElse(baseUri)
+    val activeTimeout = if requestTimeout != 25.seconds then requestTimeout else framework.validation.Contracts.parseDuration(cfg.timeout)
     IO.defer {
       val cleanPath = if path.startsWith("/") then path else s"/$path"
       val base = Uri.fromString(activeBase.renderString.stripSuffix("/") + cleanPath)
@@ -154,7 +147,7 @@ final class FxTwitterService(
         )
       )
       http.run(req).use { resp =>
-        readDecoded(resp, activeCap).flatMap { bytes =>
+        readDecoded(resp, cfg.maxResponseBytes).flatMap { bytes =>
           val text = new String(bytes, UTF_8)
           val parsed = parse(text).toOption
           val bodyCode = parsed.flatMap(_.hcursor.get[Int]("code").toOption).getOrElse(resp.status.code)
@@ -170,9 +163,9 @@ final class FxTwitterService(
       .adaptError { case e if !e.isInstanceOf[FxTwitterFailure] =>
         FxTwitterFailure("fx_twitter_upstream", s"FxTwitter request failed: ${Option(e.getMessage).getOrElse(e.getClass.getSimpleName)}")
       }
-  }
 
 object FxTwitterService:
+  val defaultBaseUri: Uri = Uri.unsafeFromString("https://api.fxtwitter.com")
   val userAgent = "groot-http/1.0 (+https://github.com/yjgbg-labs/toolhub)"
   val maxResponseBytes: Int = 4 * 1024 * 1024
 
@@ -181,12 +174,8 @@ object FxTwitterService:
   private val handleRe = "^@?([A-Za-z0-9_]{1,15})$".r
   private val profileUrlRe = "^https?://(?:www\\.)?(?:x|twitter|fxtwitter|vxtwitter|fixupx)\\.com/@?([A-Za-z0-9_]{1,15})(?:[/?#].*)?$".r
 
-  def resource(
-      baseUri: Uri = Uri.unsafeFromString("https://api.fxtwitter.com"),
-      config: Option[IO[FxTwitterConfig]] = None
-  ): Resource[IO, FxTwitterService] =
-    EmberClientBuilder.default[IO].withTimeout(Duration.Inf).withMaxResponseHeaderSize(64 * 1024).build
-      .map(new FxTwitterService(_, baseUri, 25.seconds, config))
+  def resource(baseUri: Uri = defaultBaseUri, config: IO[FxTwitterConfig] = IO.pure(FxTwitterConfig())): Resource[IO, FxTwitterService] =
+    EmberClientBuilder.default[IO].withTimeout(Duration.Inf).withMaxResponseHeaderSize(64 * 1024).build.map(new FxTwitterService(_, baseUri, 25.seconds, config))
 
   def parseTweetId(raw: String): String =
     val t = raw.trim

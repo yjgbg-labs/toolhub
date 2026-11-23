@@ -366,9 +366,9 @@ final class GitHubService(val auth: GitHubAuth, val client: GitHubClient):
 object GitHubService:
   def resource(
       home: Path = Store.defaultHome,
-      apiBase: Uri = Uri.unsafeFromString("https://api.github.com"),
-      oauthBase: Uri = Uri.unsafeFromString("https://github.com"),
-      config: Option[IO[GitHubConfig]] = None
+      apiBase: Uri = GitHubClient.defaultApiBase,
+      oauthBase: Uri = GitHubClient.defaultOAuthBase,
+      config: IO[GitHubConfig] = IO.pure(GitHubConfig())
   ): Resource[IO, GitHubService] =
     for
       http <- EmberClientBuilder.default[IO].withTimeout(Duration.Inf).withMaxResponseHeaderSize(64 * 1024).build

@@ -3,14 +3,27 @@ package framework.validation
 import io.circe.Json
 import java.util.UUID
 import scala.annotation.StaticAnnotation
-import scala.compiletime.{erasedValue, summonInline}
+import scala.compiletime.erasedValue
 import scala.deriving.Mirror
 
-/** Attach a typed boolean contract to a case-class field (including Option[F] / Iterable[F]) or to the case class itself. */
-final class contract[F](
+/** Base typed boolean contract annotation; concrete constraint annotations extend `contract[F]`. */
+open class contract[F](
     val predicate: F => Boolean,
     val message: String = ""
 ) extends StaticAnnotation
+
+final class min(value: Long) extends contract[Long](_ >= value, s"must be >= $value")
+final class max(value: Long) extends contract[Long](_ <= value, s"must be <= $value")
+final class range(low: Long, high: Long) extends contract[Long](v => v >= low && v <= high, s"must be in $low..$high")
+final class positive extends contract[Long](_ > 0, "must be > 0")
+final class nonNegative extends contract[Long](_ >= 0, "must be >= 0")
+final class minDouble(value: Double) extends contract[Double](v => v.isFinite && v >= value, s"must be >= $value")
+final class maxDouble(value: Double) extends contract[Double](v => v.isFinite && v <= value, s"must be <= $value")
+final class nonBlank extends contract[String](Contracts.nonBlank, "must not be blank")
+final class pattern(regex: String) extends contract[String](s => s != null && s.matches(regex), s"must match /$regex/")
+final class duration extends contract[String](Contracts.isDuration, "must be a positive duration (e.g. 500ms, 30s, 1h)")
+final class hostAddress extends contract[String](Contracts.isHost, "must be a valid IP or hostname")
+final class httpUrl extends contract[String](Contracts.isHttpUrl, "must be an absolute http(s) URL")
 
 final case class ValidationIssue(path: String, message: String):
   def render: String = if path.isEmpty then message else s"$path: $message"
@@ -30,19 +43,20 @@ object Validator:
 
   def noop[A]: Validator[A] = (_: A, _: String) => Vector.empty
 
-  private[validation] def evalCheck[F](
-      pred: F => Boolean,
+  private[validation] def evalContract[F](
+      instance: contract[F],
       arg: F,
       path: String,
-      explicitMsg: Option[String],
       sourceExpr: String
   ): Option[ValidationIssue] =
     val passed =
-      try pred(arg)
+      try instance.predicate(arg)
       catch case scala.util.control.NonFatal(_) => false
     if passed then None
     else
-      val detail = explicitMsg.filter(_.nonEmpty).getOrElse(s"failed contract ($sourceExpr), got $arg")
+      val detail =
+        if instance.message.nonEmpty then s"${instance.message} (got $arg)"
+        else s"failed contract ($sourceExpr), got $arg"
       Some(ValidationIssue(path, detail))
 
   given Validator[String] = noop
@@ -101,8 +115,8 @@ object Validator:
 
   private inline def summonOrDerive[A]: Validator[A] =
     scala.compiletime.summonFrom {
-      case v: Validator[A]  => v
-      case m: Mirror.Of[A]  => derived[A](using m)
+      case v: Validator[A] => v
+      case m: Mirror.Of[A] => derived[A](using m)
     }
 
   private def deriveSum[A](mirror: Mirror.SumOf[A], branches: Vector[() => Validator[Any]]): Validator[A] =

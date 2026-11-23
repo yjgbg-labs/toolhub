@@ -76,7 +76,6 @@ object JsonModel:
           labels[product.MirroredElemLabels].toVector,
           () => models[product.MirroredElemTypes].toVector,
           constructorDefaults[A],
-          fieldAliases[A],
           product
         )
       case sum: Mirror.SumOf[A] =>
@@ -89,7 +88,6 @@ object JsonModel:
 
   inline def derivedTypeId[A]: String = ${ ModelMacros.typeId[A] }
   inline def constructorDefaults[A]: Vector[Option[() => Any]] = ${ ModelMacros.defaults[A] }
-  inline def fieldAliases[A]: Vector[Vector[String]] = ${ ModelMacros.fieldAliases[A] }
 
   inline def labels[T <: Tuple]: List[String] = inline erasedValue[T] match
     case _: EmptyTuple => Nil
@@ -110,7 +108,6 @@ object JsonModel:
       names: Vector[String],
       modelFactories: () => Vector[() => JsonModel[Any]],
       defaults: Vector[Option[() => Any]],
-      aliases: Vector[Vector[String]],
       mirror: Mirror.ProductOf[A]
   ): JsonModel[A] = new JsonModel[A]:
     lazy val typeId = id()
@@ -142,8 +139,7 @@ object JsonModel:
         names(i),
         () => fields(i).schema.node(),
         required = defaults(i).isEmpty && fields(i).missing.isEmpty,
-        default = defaults(i).map(f => () => fields(i).encoder(f())),
-        aliases = aliases.lift(i).getOrElse(Vector.empty)
+        default = defaults(i).map(f => () => fields(i).encoder(f()))
       )
     }.toVector))
 

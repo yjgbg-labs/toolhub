@@ -1,16 +1,17 @@
 package groot.mihomo
 
 import framework.model.JsonModel
-import framework.validation.{Contracts, Validator, contract}
+import framework.validation.*
 
 final case class MihomoConfig(
-    @contract[String](Contracts.nonBlank) shellEnv: String = sys.env.getOrElse("MIHOMO_SHELL_ENV", "r6s"),
-    @contract[String](Contracts.nonBlank) configDir: String = sys.env.getOrElse("MIHOMO_CONFIG_DIR", "/etc/mihomo"),
-    @contract[String](Contracts.nonBlank) configPath: String = sys.env.getOrElse("MIHOMO_CONFIG_PATH", "/etc/mihomo/config.yaml"),
-    @contract[String](Contracts.nonBlank) binaryPath: String = sys.env.getOrElse("MIHOMO_BINARY", "/usr/local/bin/mihomo"),
-    @contract[String](Contracts.nonBlank) serviceUnit: String = sys.env.getOrElse("MIHOMO_SERVICE", "mihomo.service"),
-    @contract[String](Contracts.isHttpUrl, "must be an absolute http(s) URL") apiUrlOverride: Option[String] = sys.env.get("MIHOMO_API_URL").map(_.trim).filter(_.nonEmpty),
-    @contract[Int](_ > 0) maxBackups: Int = 20
+    @nonBlank shellEnv: String = sys.env.getOrElse("MIHOMO_SHELL_ENV", "r6s"),
+    @nonBlank configDir: String = sys.env.getOrElse("MIHOMO_CONFIG_DIR", "/etc/mihomo"),
+    @nonBlank configPath: String = sys.env.getOrElse("MIHOMO_CONFIG_PATH", "/etc/mihomo/config.yaml"),
+    @nonBlank binaryPath: String = sys.env.getOrElse("MIHOMO_BINARY", "/usr/local/bin/mihomo"),
+    @nonBlank serviceUnit: String = sys.env.getOrElse("MIHOMO_SERVICE", "mihomo.service"),
+    @contract[String](s => s.isEmpty || Contracts.isHttpUrl(s), "must be empty or an absolute http(s) URL")
+    apiUrl: String = sys.env.getOrElse("MIHOMO_API_URL", "").trim,
+    @positive maxBackups: Int = 20
 ) derives JsonModel, Validator
 
 final case class MihomoStatus(

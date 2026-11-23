@@ -169,6 +169,5 @@ object ShellService:
     })(channel => IO.blocking(channel.close()))
     mutex <- Resource.eval(Mutex[IO])
     service <- Resource.make(IO(new ShellService(directory, ssh, mutex, config)))(_.close)
-    seed <- Resource.eval(if initial == defaults then config.map(_.seedEnvironments) else IO.pure(initial))
-    _ <- Resource.eval(service.initialize(seed))
+    _ <- Resource.eval(service.initialize(initial))
   yield service

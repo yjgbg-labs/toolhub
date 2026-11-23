@@ -1,17 +1,17 @@
 package groot.notify
 
 import framework.model.JsonModel
-import framework.validation.{Contracts, Validator, contract}
+import framework.validation.*
 import groot.graaljs.TaskError
 import groot.schedule.{JobState, RetryPolicy}
 
 final case class NotifyConfig(
-    @contract[String](Contracts.isDuration) heartbeat: String = "15s",
-    @contract[Int](_ > 0) subscriberCapacity: Int = 64,
-    @contract[Int](_ > 0) maxActiveTriggers: Int = 256,
-    @contract[String](Contracts.isDuration) defaultEvery: String = "15s",
-    @contract[String](Contracts.isDuration) defaultCpu: String = "2s",
-    @contract[String](Contracts.isDuration) defaultScriptTimeout: String = "30s",
+    @duration heartbeat: String = "15s",
+    @positive subscriberCapacity: Int = 64,
+    @positive maxActiveTriggers: Int = 256,
+    @duration defaultEvery: String = "15s",
+    @duration defaultCpu: String = "2s",
+    @duration defaultScriptTimeout: String = "30s",
     deliveryRetry: RetryPolicy = NotifyTriggerManager.defaultDeliveryRetry
 ) derives JsonModel, Validator
 

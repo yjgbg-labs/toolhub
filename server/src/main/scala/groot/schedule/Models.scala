@@ -2,16 +2,16 @@ package groot.schedule
 
 import io.circe.{Decoder, DecodingFailure}
 import framework.model.JsonModel
-import framework.validation.{Contracts, Validator, contract}
+import framework.validation.*
 import groot.graaljs.{TaskError, InvalidGraalTask, Validation as GraalValidation}
 import java.time.Instant
 import java.nio.file.{Path, InvalidPathException}
 
 case class RetryPolicy(
-    @contract[Int](r => r >= 0 && r <= 100, "must be in 0..100") maxRetries: Int = 3,
-    @contract[String](Contracts.isDuration) delay: String = "1s",
-    @contract[Double](b => b.isFinite && b >= 1.0, "must be >= 1.0") backoff: Double = 2,
-    @contract[String](Contracts.isDuration) maxDelay: String = "30s"
+    @min(0) @max(100) maxRetries: Int = 3,
+    @duration delay: String = "1s",
+    @minDouble(1.0) backoff: Double = 2,
+    @duration maxDelay: String = "30s"
 ) derives JsonModel, Validator
 
 case class ScheduleJob(

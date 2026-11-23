@@ -2,7 +2,6 @@ package groot.github
 
 import cats.effect.IO
 import cats.syntax.all.*
-import framework.validation.Contracts
 import fs2.{Chunk, Stream}
 import fs2.compression.{Compression, InflateParams}
 import io.circe.Json
@@ -16,24 +15,15 @@ import scala.concurrent.duration.*
 
 final class GitHubClient(
     http: Client[IO],
-    val apiBase: Uri = Uri.unsafeFromString("https://api.github.com"),
-    val oauthBase: Uri = Uri.unsafeFromString("https://github.com"),
+    val apiBase: Uri = GitHubClient.defaultApiBase,
+    val oauthBase: Uri = GitHubClient.defaultOAuthBase,
     requestTimeout: FiniteDuration = 30.seconds,
-    configIO: Option[IO[GitHubConfig]] = None
+    config: IO[GitHubConfig] = IO.pure(GitHubConfig())
 ):
   import GitHubClient.*
 
-  private def currentSettings: IO[(Uri, Uri, FiniteDuration, Int, Int)] = configIO match
-    case None => IO.pure((apiBase, oauthBase, requestTimeout, maxJsonBytes, maxRawBytes))
-    case Some(cfgIO) => cfgIO.map { cfg =>
-      (
-        Uri.fromString(cfg.apiBase.trim).getOrElse(apiBase),
-        Uri.fromString(cfg.oauthBase.trim).getOrElse(oauthBase),
-        Contracts.parseDuration(cfg.timeout),
-        cfg.maxJsonBytes,
-        cfg.maxRawBytes
-      )
-    }
+  private def resolveBase(configured: String, fallback: Uri, defaultConst: Uri): Uri =
+    if fallback != defaultConst then fallback else Uri.fromString(configured.trim).getOrElse(fallback)
 
   def getJson(token: String, path: String, query: Map[String, String] = Map.empty): IO[(Map[String, String], Json)] =
     sendJson(token, "GET", path, query).map((_, h, j) => h -> j)
@@ -45,43 +35,37 @@ final class GitHubClient(
       case Left(_) => IO.raiseError(GitHubFailure("invalid_github", s"Unsupported HTTP method: $methodText"))
       case Right(m) if (m == Method.GET || m == Method.HEAD) && body.nonEmpty =>
         IO.raiseError(GitHubFailure("invalid_github", s"$upper request cannot carry a JSON body"))
-      case Right(m) =>
-        currentSettings.flatMap { (curApi, _, curTimeout, curMaxJson, _) =>
-          execute(Some(token), m, resolveApiUri(curApi, path, query), headers, body.map(_.noSpaces.getBytes(UTF_8)), curMaxJson, failOnTruncate = true, curTimeout).flatMap {
-            case (st, hdrs, bytes) if st < 200 || st >= 300 => IO.raiseError(decodeError(st, hdrs, bytes))
-            case (st, hdrs, bytes) =>
-              val j = if bytes.isEmpty || st == 204 || st == 205 then Json.Null else
-                val t = new String(bytes, UTF_8); parse(t).getOrElse(Json.fromString(t))
-              IO.pure((st, hdrs, j))
-          }
-        }
-
-  def paginateArray(token: String, path: String, query: Map[String, String] = Map.empty, maxPages: Int = 10): IO[(Map[String, String], Vector[Json])] =
-    val cap = math.max(1, math.min(maxPages, 50))
-    currentSettings.flatMap { (curApi, _, curTimeout, curMaxJson, _) =>
-      def loop(uri: Uri, page: Int, acc: Vector[Json], h0: Option[Map[String, String]]): IO[(Map[String, String], Vector[Json])] =
-        execute(Some(token), Method.GET, uri, Map.empty, None, curMaxJson, failOnTruncate = true, curTimeout).flatMap {
+      case Right(m) => config.flatMap: cfg =>
+        execute(Some(token), m, resolveApiUri(resolveBase(cfg.apiBase, apiBase, defaultApiBase), path, query), headers, body.map(_.noSpaces.getBytes(UTF_8)), cfg.maxJsonBytes, failOnTruncate = true).flatMap {
           case (st, hdrs, bytes) if st < 200 || st >= 300 => IO.raiseError(decodeError(st, hdrs, bytes))
-          case (_, hdrs, bytes) =>
-            val items = (if bytes.isEmpty then Json.arr() else parseJson(bytes)).asArray.getOrElse(
-              throw GitHubFailure("invalid_github", s"paginate=true requires a JSON array response from ${uri.path.renderString}"))
-            val merged = acc ++ items
-            val firstH = h0.orElse(Some(hdrs))
-            hdrs.get("link").flatMap(nextLinkRe.findFirstMatchIn(_).map(_.group(1))) match
-              case Some(next) if page < cap && items.nonEmpty =>
-                loop(Uri.fromString(next).fold(e => throw GitHubFailure("github_upstream", e.message), identity), page + 1, merged, firstH)
-              case _ => IO.pure(firstH.getOrElse(hdrs) -> merged)
+          case (st, hdrs, bytes) =>
+            val j = if bytes.isEmpty || st == 204 || st == 205 then Json.Null else
+              val t = new String(bytes, UTF_8); parse(t).getOrElse(Json.fromString(t))
+            IO.pure((st, hdrs, j))
         }
-      loop(resolveApiUri(curApi, path, query), 1, Vector.empty, None)
-    }
 
-  def getText(token: String, path: String, accept: String = "application/vnd.github+json", maxBytes: Int = maxTextBytes): IO[(String, Boolean)] =
-    currentSettings.flatMap { (curApi, _, curTimeout, _, curMaxRaw) =>
-      val cap = math.max(1024, math.min(maxBytes, curMaxRaw))
-      execute(Some(token), Method.GET, resolveApiUri(curApi, path, Map.empty), Map("Accept" -> accept), None, cap, failOnTruncate = false, curTimeout).flatMap {
+  def paginateArray(token: String, path: String, query: Map[String, String] = Map.empty, maxPages: Int = 10): IO[(Map[String, String], Vector[Json])] = config.flatMap: cfg =>
+    val cap = math.max(1, math.min(maxPages, 50))
+    def loop(uri: Uri, page: Int, acc: Vector[Json], h0: Option[Map[String, String]]): IO[(Map[String, String], Vector[Json])] =
+      execute(Some(token), Method.GET, uri, Map.empty, None, cfg.maxJsonBytes, failOnTruncate = true).flatMap {
         case (st, hdrs, bytes) if st < 200 || st >= 300 => IO.raiseError(decodeError(st, hdrs, bytes))
-        case (_, _, bytes) => IO.pure((new String(bytes.take(cap), UTF_8), bytes.length > cap))
+        case (_, hdrs, bytes) =>
+          val items = (if bytes.isEmpty then Json.arr() else parseJson(bytes)).asArray.getOrElse(
+            throw GitHubFailure("invalid_github", s"paginate=true requires a JSON array response from ${uri.path.renderString}"))
+          val merged = acc ++ items
+          val firstH = h0.orElse(Some(hdrs))
+          hdrs.get("link").flatMap(nextLinkRe.findFirstMatchIn(_).map(_.group(1))) match
+            case Some(next) if page < cap && items.nonEmpty =>
+              loop(Uri.fromString(next).fold(e => throw GitHubFailure("github_upstream", e.message), identity), page + 1, merged, firstH)
+            case _ => IO.pure(firstH.getOrElse(hdrs) -> merged)
       }
+    loop(resolveApiUri(resolveBase(cfg.apiBase, apiBase, defaultApiBase), path, query), 1, Vector.empty, None)
+
+  def getText(token: String, path: String, accept: String = "application/vnd.github+json", maxBytes: Int = maxTextBytes): IO[(String, Boolean)] = config.flatMap: cfg =>
+    val cap = math.max(1024, math.min(maxBytes, cfg.maxRawBytes))
+    execute(Some(token), Method.GET, resolveApiUri(resolveBase(cfg.apiBase, apiBase, defaultApiBase), path, Map.empty), Map("Accept" -> accept), None, cap, failOnTruncate = false).flatMap {
+      case (st, hdrs, bytes) if st < 200 || st >= 300 => IO.raiseError(decodeError(st, hdrs, bytes))
+      case (_, _, bytes) => IO.pure((new String(bytes.take(cap), UTF_8), bytes.length > cap))
     }
 
   def graphql(token: String, query: String, variables: Map[String, Json] = Map.empty, operationName: Option[String] = None): IO[Json] =
@@ -99,18 +83,18 @@ final class GitHubClient(
           IO.raiseError(GitHubFailure(code, if msg.nonEmpty then msg else payload.noSpaces.take(400)))
       }
 
-  def postOAuthForm(path: String, form: Vector[(String, String)]): IO[Json] =
-    currentSettings.flatMap { (_, curOauth, curTimeout, _, _) =>
-      val uri = Uri.unsafeFromString(curOauth.renderString.stripSuffix("/") + (if path.startsWith("/") then path else s"/$path"))
-      val encoded = form.map((k, v) => s"${URLEncoder.encode(k, UTF_8)}=${URLEncoder.encode(v, UTF_8)}").mkString("&").getBytes(UTF_8)
-      execute(None, Method.POST, uri, Map("Accept" -> "application/json", "Content-Type" -> "application/x-www-form-urlencoded"), Some(encoded), 262144, failOnTruncate = true, curTimeout).flatMap {
-        case (st, hdrs, bytes) if st < 200 || st >= 300 => IO.raiseError(decodeError(st, hdrs, bytes))
-        case (_, _, bytes) => IO(parseJson(bytes))
-      }
+  def postOAuthForm(path: String, form: Vector[(String, String)]): IO[Json] = config.flatMap: cfg =>
+    val activeOauth = resolveBase(cfg.oauthBase, oauthBase, defaultOAuthBase)
+    val uri = Uri.unsafeFromString(activeOauth.renderString.stripSuffix("/") + (if path.startsWith("/") then path else s"/$path"))
+    val encoded = form.map((k, v) => s"${URLEncoder.encode(k, UTF_8)}=${URLEncoder.encode(v, UTF_8)}").mkString("&").getBytes(UTF_8)
+    execute(None, Method.POST, uri, Map("Accept" -> "application/json", "Content-Type" -> "application/x-www-form-urlencoded"), Some(encoded), 262144, failOnTruncate = true).flatMap {
+      case (st, hdrs, bytes) if st < 200 || st >= 300 => IO.raiseError(decodeError(st, hdrs, bytes))
+      case (_, _, bytes) => IO(parseJson(bytes))
     }
 
   private def execute(token: Option[String], method: Method, uri: Uri, extras: Map[String, String],
-      body: Option[Array[Byte]], cap: Int, failOnTruncate: Boolean, activeTimeout: FiniteDuration): IO[(Int, Map[String, String], Array[Byte])] =
+      body: Option[Array[Byte]], cap: Int, failOnTruncate: Boolean): IO[(Int, Map[String, String], Array[Byte])] = config.flatMap: cfg =>
+    val activeTimeout = if requestTimeout != 30.seconds then requestTimeout else framework.validation.Contracts.parseDuration(cfg.timeout)
     val accept = extras.collectFirst { case (k, v) if k.equalsIgnoreCase("accept") => v }.getOrElse("application/vnd.github+json")
     val ctype = extras.collectFirst { case (k, v) if k.equalsIgnoreCase("content-type") => v }.getOrElse("application/json; charset=utf-8")
     val base = Vector(token.map(t => "Authorization" -> s"Bearer $t"), Some("Accept" -> accept), Some("X-GitHub-Api-Version" -> apiVersion),
@@ -157,6 +141,8 @@ final class GitHubClient(
     if extraQuery.isEmpty then uri else uri.copy(query = Query.fromVector(uri.query.pairs ++ extraQuery.toVector.map((k, v) => k -> Some(v))))
 
 object GitHubClient:
+  val defaultApiBase: Uri = Uri.unsafeFromString("https://api.github.com")
+  val defaultOAuthBase: Uri = Uri.unsafeFromString("https://github.com")
   val apiVersion = "2022-11-28"
   val userAgent = "groot-http/1.0"
   val maxJsonBytes: Int = 4 * 1024 * 1024
