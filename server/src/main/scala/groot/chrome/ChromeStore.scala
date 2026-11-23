@@ -79,7 +79,7 @@ private[chrome] final class ChromeStore(val home: Path):
     }
   yield process
 
-private[chrome] object ChromeStore:
+private[groot] object ChromeStore:
   def defaultHome: Path = Path.of(sys.env.getOrElse("CHROME_HOME", s"${System.getProperty("user.home")}/groot-chrome")).toAbsolutePath.normalize()
   def resource(home: Path): Resource[IO, ChromeStore] = Resource.make(IO.blocking {
     Files.createDirectories(home.resolve("instances"))
@@ -94,12 +94,21 @@ private[chrome] object ChromeStore:
       throw error
   })(channel => IO.blocking(channel.close())).as(new ChromeStore(home))
 
-  def binary: String = sys.env.get("CHROME_BINARY").filter(_.nonEmpty).getOrElse {
-    Vector("/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/snap/bin/chromium", "/usr/bin/chromium", "/usr/bin/chromium-browser")
-      .find(path => Files.isExecutable(Path.of(path))).getOrElse(throw ChromeFailure("chrome_unavailable", "Install Chromium or set CHROME_BINARY"))
-  }
+  def binary: String = binaryFrom(None)
 
-  def launch(executable: String, store: ChromeStore, state: SavedInstance): IO[ProcessHandle] = IO.blocking {
+  def binaryFrom(configured: Option[String]): String =
+    configured.map(_.trim).filter(_.nonEmpty).orElse(sys.env.get("CHROME_BINARY").filter(_.nonEmpty)).getOrElse {
+      Vector("/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/snap/bin/chromium", "/usr/bin/chromium", "/usr/bin/chromium-browser")
+        .find(path => Files.isExecutable(Path.of(path))).getOrElse(throw ChromeFailure("chrome_unavailable", "Install Chromium or set CHROME_BINARY"))
+    }
+
+  def launch(
+      executable: String,
+      store: ChromeStore,
+      state: SavedInstance,
+      displayOverride: Option[String] = None,
+      waylandDisplayOverride: Option[String] = None
+  ): IO[ProcessHandle] = IO.blocking {
     val profile = store.profile(state.instanceName)
     Files.deleteIfExists(profile.resolve("DevToolsActivePort"))
     val args = Vector(executable, s"--user-data-dir=$profile", "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0",
@@ -110,7 +119,9 @@ private[chrome] object ChromeStore:
     if !state.headless then
       val env = builder.environment()
       def option(key: String, platform: String) = sys.env.get(key).filter(_.nonEmpty).map(platform -> _)
-      val chosen = option("CHROME_WAYLAND_DISPLAY", "wayland").orElse(option("CHROME_DISPLAY", "x11"))
+      val chosen = waylandDisplayOverride.map(_.trim).filter(_.nonEmpty).map("wayland" -> _)
+        .orElse(displayOverride.map(_.trim).filter(_.nonEmpty).map("x11" -> _))
+        .orElse(option("CHROME_WAYLAND_DISPLAY", "wayland")).orElse(option("CHROME_DISPLAY", "x11"))
         .orElse(option("DISPLAY", "x11")).orElse(option("WAYLAND_DISPLAY", "wayland"))
         .orElse(Option.when(Files.exists(Path.of("/tmp/.X11-unix/X0")))(("x11", ":0")))
         .orElse(sys.env.get("XDG_RUNTIME_DIR").flatMap { dir =>

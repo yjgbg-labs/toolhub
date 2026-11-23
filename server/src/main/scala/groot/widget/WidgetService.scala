@@ -5,30 +5,37 @@ import cats.effect.std.Mutex
 import cats.syntax.all.*
 import framework.model.JsonModel
 import fs2.Stream
-import fs2.concurrent.SignallingRef
+import fs2.concurrent.{Signal, SignallingRef}
+import groot.config.{GrootConfig, WidgetConfig}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Path
 import scala.concurrent.duration.*
 
 final class WidgetService private (
-    store: WidgetStore, state: SignallingRef[IO, WidgetState], mutex: Mutex[IO], heartbeat: FiniteDuration
+    store: WidgetStore,
+    state: SignallingRef[IO, WidgetState],
+    mutex: Mutex[IO],
+    heartbeat: FiniteDuration,
+    cfgSignal: Signal[IO, WidgetConfig] = Signal.constant(WidgetConfig())
 ):
   import WidgetService.*
 
   def show: IO[Vector[WidgetItem]] = state.get.map(_.items)
   def config: IO[WidgetSettings] = state.get.map(_.settings)
 
-  def set(input: WidgetUpdate): IO[WidgetItem] = update { (current, now) =>
-    key(input.key)
-    val label = input.label.trim
-    val value = input.value.map(_.trim).filter(_.nonEmpty)
-    requireValid(label.nonEmpty && count(label) <= 24, "Label must contain 1 to 24 characters")
-    requireValid(count(label) + value.fold(0)(count) <= 40, "Label and value must total at most 40 characters")
-    requireValid(!(label + value.getOrElse("")).exists(Character.isISOControl), "Label and value must be single-line text")
-    val item = WidgetItem(input.key, label, value, input.color, input.order, now)
-    val items = (current.items.filterNot(_.key == input.key) :+ item).sortBy(item => (item.order, item.key))
-    if items.size > maxItems then throw WidgetLimit(s"Widget accepts at most $maxItems items")
-    (current.copy(items = items), item)
+  def set(input: WidgetUpdate): IO[WidgetItem] = cfgSignal.get.flatMap { wcfg =>
+    update { (current, now) =>
+      key(input.key)
+      val label = input.label.trim
+      val value = input.value.map(_.trim).filter(_.nonEmpty)
+      requireValid(label.nonEmpty && count(label) <= 24, "Label must contain 1 to 24 characters")
+      requireValid(count(label) + value.fold(0)(count) <= 40, "Label and value must total at most 40 characters")
+      requireValid(!(label + value.getOrElse("")).exists(Character.isISOControl), "Label and value must be single-line text")
+      val item = WidgetItem(input.key, label, value, input.color, input.order, now)
+      val items = (current.items.filterNot(_.key == input.key) :+ item).sortBy(item => (item.order, item.key))
+      if items.size > wcfg.maxItems then throw WidgetLimit(s"Widget accepts at most ${wcfg.maxItems} items")
+      (current.copy(items = items), item)
+    }
   }
 
   def delete(name: String): IO[Boolean] = update { (current, _) =>
@@ -56,11 +63,13 @@ final class WidgetService private (
 
   /** Signals carry no old payload: every notification/heartbeat reads the newest committed snapshot. */
   def subscribe: Stream[IO, WidgetSnapshot] =
-    state.discrete.void.merge(Stream.awakeEvery[IO](heartbeat).void).evalMap { _ =>
-      for
-        current <- state.get
-        now <- IO.realTimeInstant
-      yield WidgetSnapshot(current.revision.toString, now.toString, current.items, current.settings)
+    Stream.eval(if heartbeat == 15.seconds then cfgSignal.get.map(c => GrootConfig.parseDuration("widget.heartbeat", c.heartbeat)) else IO.pure(heartbeat)).flatMap { hb =>
+      state.discrete.void.merge(Stream.awakeEvery[IO](hb).void).evalMap { _ =>
+        for
+          current <- state.get
+          now <- IO.realTimeInstant
+        yield WidgetSnapshot(current.revision.toString, now.toString, current.items, current.settings)
+      }
     }
 
 object WidgetService:
@@ -84,11 +93,14 @@ object WidgetService:
     if JsonModel[WidgetState].encoder(state).noSpaces.getBytes(UTF_8).length > 512 * 1024 then
       throw WidgetLimit("Widget state exceeds 512 KiB")
 
-  def resource(home: Path = groot.schedule.Store.defaultHome.resolve("widget"),
-      heartbeat: FiniteDuration = 15.seconds): Resource[IO, WidgetService] = for
+  def resource(
+      home: Path = groot.schedule.Store.defaultHome.resolve("widget"),
+      heartbeat: FiniteDuration = 15.seconds,
+      config: Signal[IO, WidgetConfig] = Signal.constant(WidgetConfig())
+  ): Resource[IO, WidgetService] = for
     _ <- Resource.eval(IO(require(heartbeat > Duration.Zero, "Heartbeat must be positive")))
     store <- WidgetStore.resource(home)
     initial <- Resource.eval(store.load.flatTap(value => IO(validateState(value))))
     state <- Resource.eval(SignallingRef[IO, WidgetState](initial))
     mutex <- Resource.eval(Mutex[IO])
-  yield new WidgetService(store, state, mutex, heartbeat)
+  yield new WidgetService(store, state, mutex, heartbeat, config)

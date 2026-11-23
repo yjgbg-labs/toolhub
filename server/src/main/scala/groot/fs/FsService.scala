@@ -3,6 +3,8 @@ package groot.fs
 import cats.effect.{IO, Resource}
 import cats.syntax.all.*
 import fs2.{Chunk, Stream}
+import fs2.concurrent.Signal
+import groot.config.FsConfig
 import java.nio.{ByteBuffer, CharBuffer}
 import java.nio.channels.FileChannel
 import java.nio.charset.StandardCharsets.UTF_8
@@ -11,17 +13,18 @@ import java.nio.file.attribute.{BasicFileAttributes, PosixFileAttributeView}
 import java.util.Base64
 
 /** Server-local files. Each operation owns its handles; cancellation waits for their release. */
-final class FsService:
+final class FsService(config: Signal[IO, FsConfig] = Signal.constant(FsConfig())):
   import FsService.*
   import LinkOption.NOFOLLOW_LINKS
   import StandardOpenOption.*
 
   def read(path: String, encoding: FileEncoding = FileEncoding.utf8): IO[FileContent] = for
+    cfg <- config.get
     file <- absolute(path)
     _ <- regular(file, followLinks = true)
-    bytes <- readChunks(file).flatMap(Stream.chunk).take(maxBytes.toLong + 1).compile.to(Array)
+    bytes <- readChunks(file).flatMap(Stream.chunk).take(cfg.maxBytes.toLong + 1).compile.to(Array)
     result <- IO {
-      if bytes.length > maxBytes then throw FsLimit("File content exceeds 1 MiB")
+      if bytes.length > cfg.maxBytes then throw FsLimit(s"File content exceeds ${groot.config.GrootConfig.formatBytes(cfg.maxBytes.toLong)}")
       val content = encoding match
         case FileEncoding.utf8 => UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString
         case FileEncoding.base64 => Base64.getEncoder.encodeToString(bytes)
@@ -31,8 +34,9 @@ final class FsService:
 
   def write(path: String, body: String, encoding: FileEncoding = FileEncoding.utf8,
       mode: WriteMode = WriteMode.replace): IO[WriteResult] = for
+    cfg <- config.get
     file <- absolute(path)
-    bytes <- decode(body, encoding)
+    bytes <- decode(body, encoding, cfg.maxBytes)
     _ <- writable(file)
     _ <- mode match
       case WriteMode.replace => replace(file)(temporary => writeChunks(temporary, Stream.chunk(Chunk.array(bytes)).chunkLimit(chunkBytes), WRITE))
@@ -47,6 +51,7 @@ final class FsService:
   yield FileStat(kind(info), info.size(), info.lastModifiedTime().toInstant.toString, link)
 
   def list(path: String): IO[Vector[DirectoryEntry]] = for
+    cfg <- config.get
     directory <- absolute(path)
     info <- attributes(directory)
     _ <- IO.raiseUnless(info.isDirectory)(FsConflict("not_directory", s"Not a directory: $directory"))
@@ -54,10 +59,10 @@ final class FsService:
       IO.blocking(stream.iterator()).flatMap { iterator =>
         Stream.repeatEval(IO.interruptible {
           if iterator.hasNext then Some(iterator.next()) else None
-        }).unNoneTerminate.take(maxEntries.toLong + 1).compile.toVector
+        }).unNoneTerminate.take(cfg.maxEntries.toLong + 1).compile.toVector
       }
     }.adaptError { case error: DirectoryIteratorException => error.getCause }
-    _ <- IO.raiseWhen(entries.size > maxEntries)(FsLimit(s"Directory exceeds $maxEntries entries"))
+    _ <- IO.raiseWhen(entries.size > cfg.maxEntries)(FsLimit(s"Directory exceeds ${cfg.maxEntries} entries"))
     result <- entries.sortBy(_.getFileName.toString).traverse { entry =>
       attributes(entry).map(info => DirectoryEntry(entry.getFileName.toString, kind(info)))
     }
@@ -151,9 +156,9 @@ final class FsService:
 
   private def writable(path: Path): IO[Unit] = regular(path, followLinks = false).recover { case _: NoSuchFileException => () }
 
-  private def decode(body: String, encoding: FileEncoding): IO[Array[Byte]] = IO {
-    val maxChars = if encoding == FileEncoding.base64 then ((maxBytes + 2) / 3) * 4 else maxBytes
-    if body.length > maxChars then throw FsLimit("File write exceeds 1 MiB")
+  private def decode(body: String, encoding: FileEncoding, capBytes: Int): IO[Array[Byte]] = IO {
+    val maxChars = if encoding == FileEncoding.base64 then ((capBytes + 2) / 3) * 4 else capBytes
+    if body.length > maxChars then throw FsLimit(s"File write exceeds ${groot.config.GrootConfig.formatBytes(capBytes.toLong)}")
     val bytes = encoding match
       case FileEncoding.utf8 =>
         val encoded = UTF_8.newEncoder().encode(CharBuffer.wrap(body))
@@ -163,7 +168,7 @@ final class FsService:
       case FileEncoding.base64 =>
         try Base64.getDecoder.decode(body)
         catch case _: IllegalArgumentException => throw InvalidFs("Invalid base64 file content")
-    if bytes.length > maxBytes then throw FsLimit("File write exceeds 1 MiB")
+    if bytes.length > capBytes then throw FsLimit(s"File write exceeds ${groot.config.GrootConfig.formatBytes(capBytes.toLong)}")
     bytes
   }
 

@@ -30,7 +30,7 @@ object GraalJsRoutes:
         val ctx = List("sessionId" -> sessionId.value, "cwd" -> cwd.value).collect {
           case (k, Some(v)) if v.trim.nonEmpty => k -> v.trim
         }.toMap
-        IO(JavaScript.source(source.value)).flatMap(manager.submit(_, cpu.value, timeout.value, ctx))
+        manager.submitText(source.value, cpu.value, timeout.value, ctx)
       }
     }
 

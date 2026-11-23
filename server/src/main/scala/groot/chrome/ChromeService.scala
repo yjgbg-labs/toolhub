@@ -4,6 +4,8 @@ import cats.effect.{IO, Ref, Resource}
 import cats.effect.std.Semaphore
 import cats.syntax.all.*
 import framework.model.JsonModel
+import fs2.concurrent.Signal
+import groot.config.ChromeConfig
 import io.circe.Json
 import java.net.http.HttpClient
 import java.nio.file.Path
@@ -12,8 +14,14 @@ import scala.concurrent.duration.*
 import scala.jdk.OptionConverters.*
 
 /** Named persistent profiles. Lifecycle and page mutations are serialized per instance. */
-final class ChromeService private (store: ChromeStore, client: HttpClient,
-    entries: Ref[IO, Map[String, ChromeService.Entry]], lifecycle: Semaphore[IO], executable: () => String):
+final class ChromeService private (
+    store: ChromeStore,
+    client: HttpClient,
+    entries: Ref[IO, Map[String, ChromeService.Entry]],
+    lifecycle: Semaphore[IO],
+    executable: () => String,
+    config: Option[Signal[IO, ChromeConfig]]
+):
   import ChromeService.*
   import ChromeJson.*
 
@@ -73,10 +81,16 @@ final class ChromeService private (store: ChromeStore, client: HttpClient,
             IO.raiseWhen(e.state.kiosk != kiosk || e.state.headless != headless)(ChromeFailure("chrome_conflict", "Stop the instance before changing kiosk/headless")) *>
               live(e).as(info(e))
           case None => IO.uncancelable { poll => for
+            cfgOpt <- config.traverse(_.get)
             _ <- e.running.traverse_(_._2) *> IO { e.running = None }
             next = SavedInstance(name, kiosk, headless)
+            bin = cfgOpt.flatMap(_.binary.map(_.trim).filter(_.nonEmpty)).getOrElse(executable())
             allocated <- poll((for
-              process <- Resource.make(ChromeStore.launch(executable(), store, next))(ChromeStore.terminate)
+              process <- Resource.make(ChromeStore.launch(
+                bin, store, next,
+                displayOverride = cfgOpt.flatMap(_.display),
+                waylandDisplayOverride = cfgOpt.flatMap(_.waylandDisplay)
+              ))(ChromeStore.terminate)
               live <- connect(name, process)
             yield live).allocated)
             (value, release) = allocated
@@ -134,17 +148,20 @@ final class ChromeService private (store: ChromeStore, client: HttpClient,
   yield found.nonEmpty }
 
   private[chrome] def page[A](name: String, tab: String, timeoutMs: Int)(f: ChromePage => IO[A]): IO[A] =
-    IO { ChromeValidation.name(tab); ChromeValidation.timeout(timeoutMs) } *> withLive(name) { (e, value) => for
-      all <- tabs(e, value)
-      target <- all.find(_.tabName == tab).liftTo[IO](ChromeFailure("chrome_not_found", s"Unknown tab: $tab"))
-      page <- value.pages.get(target.targetId).fold(for
-        attached <- value.cdp.call("Target.attachToTarget", obj("targetId" -> str(target.targetId), "flatten" -> Json.True))
-        p = new ChromePage(value.cdp, text(attached, "sessionId"), store.home.resolve("screenshots"))
-        _ <- p.initialize
-        _ <- IO { value.pages(target.targetId) = p }
-      yield p)(IO.pure)
-      result <- f(page)
-    yield result }.timeoutTo(timeoutMs.millis, IO.raiseError(ChromeFailure("chrome_timeout", s"Page operation timed out after ${timeoutMs}ms")))
+    config.traverse(_.get).flatMap { cfgOpt =>
+      val effectiveTimeout = if timeoutMs == 30000 then cfgOpt.map(_.defaultTimeoutMs).getOrElse(timeoutMs) else timeoutMs
+      IO { ChromeValidation.name(tab); ChromeValidation.timeout(math.min(effectiveTimeout, 120000)) } *> withLive(name) { (e, value) => for
+        all <- tabs(e, value)
+        target <- all.find(_.tabName == tab).liftTo[IO](ChromeFailure("chrome_not_found", s"Unknown tab: $tab"))
+        page <- value.pages.get(target.targetId).fold(for
+          attached <- value.cdp.call("Target.attachToTarget", obj("targetId" -> str(target.targetId), "flatten" -> Json.True))
+          p = new ChromePage(value.cdp, text(attached, "sessionId"), store.home.resolve("screenshots"))
+          _ <- p.initialize
+          _ <- IO { value.pages(target.targetId) = p }
+        yield p)(IO.pure)
+        result <- f(page)
+      yield result }.timeoutTo(effectiveTimeout.millis, IO.raiseError(ChromeFailure("chrome_timeout", s"Page operation timed out after ${effectiveTimeout}ms")))
+    }
 
   def cookies(name: String, domain: String): IO[Vector[ChromeCookie]] = IO(ChromeValidation.domain(domain)).flatMap { host =>
     withLive(name) { (_, value) => value.cdp.call("Storage.getCookies").flatMap { json =>
@@ -159,12 +176,17 @@ object ChromeService:
     var running: Option[(Live, IO[Unit])] = None
   private class Live(val process: ProcessHandle, val cdp: Cdp):
     val pages = mutable.Map.empty[String, ChromePage]
-  def resource(home: Path = ChromeStore.defaultHome, executable: () => String = () => ChromeStore.binary): Resource[IO, ChromeService] = for
-    store <- ChromeStore.resource(home)
+  def resource(
+      home: Path = ChromeStore.defaultHome,
+      executable: () => String = () => ChromeStore.binary,
+      config: Option[Signal[IO, ChromeConfig]] = None
+  ): Resource[IO, ChromeService] = for
+    effectiveHome <- Resource.eval(config.traverse(_.get).map(_.map(c => Path.of(c.home).toAbsolutePath.normalize()).getOrElse(home)))
+    store <- ChromeStore.resource(effectiveHome)
     client <- Resource.fromAutoCloseable(IO(HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(5)).build()))
     states <- Resource.eval(store.load)
     initial <- Resource.eval(states.traverse(s => Semaphore[IO](1).map(gate => s.instanceName -> new Entry(s, gate))))
     entries <- Resource.eval(Ref.of[IO, Map[String, Entry]](initial.toMap))
     lifecycle <- Resource.eval(Semaphore[IO](1))
-    service <- Resource.make(IO(new ChromeService(store, client, entries, lifecycle, executable)))(_.close)
+    service <- Resource.make(IO(new ChromeService(store, client, entries, lifecycle, executable, config)))(_.close)
   yield service

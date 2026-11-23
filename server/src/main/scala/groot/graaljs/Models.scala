@@ -49,6 +49,6 @@ private[groot] object Validation:
       millis.toLong
     case _ => throw InvalidGraalTask(s"$name must be an integer followed by ms, s, m, h or d")
 
-  def source(code: String): Unit =
+  def source(code: String, maxBytes: Int = Limits.maxSourceBytes): Unit =
     if code.trim.isEmpty then throw InvalidGraalTask("JavaScript source must not be blank")
-    if code.getBytes(UTF_8).length > Limits.maxSourceBytes then throw InvalidGraalTask("JavaScript source exceeds 1 MiB")
+    if code.getBytes(UTF_8).length > maxBytes then throw InvalidGraalTask(s"JavaScript source exceeds ${groot.config.GrootConfig.formatBytes(maxBytes.toLong)}")

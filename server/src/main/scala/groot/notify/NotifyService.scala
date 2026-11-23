@@ -4,18 +4,30 @@ import cats.effect.{Deferred, IO, Resource}
 import cats.effect.std.{Mutex, Queue}
 import cats.syntax.all.*
 import fs2.Stream
+import fs2.concurrent.Signal
+import groot.config.{GrootConfig, NotifyConfig}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.util.UUID
 import scala.concurrent.duration.*
 
 /** Live-only global fanout. Subscribers route each notification using targetSessionId. */
-final class NotifyService private (mutex: Mutex[IO], stopped: Deferred[IO, Unit], capacity: Int, heartbeat: FiniteDuration):
-  private var listeners = Map.empty[String, Queue[IO, Notification]]
+final class NotifyService private (
+    mutex: Mutex[IO],
+    stopped: Deferred[IO, Unit],
+    capacity: Int,
+    heartbeat: FiniteDuration,
+    config: Option[Signal[IO, NotifyConfig]]
+):
+  private var listeners = Map.empty[String, (Queue[IO, Notification], Int)]
   private var closed = false
 
   private def serial[A](action: => IO[A]): IO[A] = mutex.lock.surround(IO.uncancelable(_ => IO.defer(action)))
   private def ensureOpen(): Unit =
     if closed then throw NotifyFailure("notify_closed", "Notification service is shutting down")
+
+  private def currentSettings: IO[(Int, FiniteDuration)] = config match
+    case None => IO.pure(capacity -> heartbeat)
+    case Some(sig) => sig.get.map(c => c.subscriberCapacity -> GrootConfig.parseDuration("notifications.heartbeat", c.heartbeat))
 
   def send(request: NotifyRequest): IO[NotifyReceipt] = serial {
     for
@@ -32,12 +44,12 @@ final class NotifyService private (mutex: Mutex[IO], stopped: Deferred[IO, Unit]
         if values.isEmpty then throw NotifyFailure("notify_offline", "No online notification subscriber")
         values
       }
-      sizes <- subscribers.traverse(_.size)
+      sizes <- subscribers.traverse { (q, cap) => q.size.map(_ -> cap) }
       // All writers hold the mutex; readers can only free slots. Reject before publishing to anyone.
-      _ <- IO.raiseWhen(sizes.exists(_ >= capacity))(NotifyFailure("notify_busy", "A subscriber is not keeping up; retry later"))
+      _ <- IO.raiseWhen(sizes.exists { (sz, cap) => sz >= cap })(NotifyFailure("notify_busy", "A subscriber is not keeping up; retry later"))
       now <- IO.realTimeInstant
       message <- IO(Notification(UUID.randomUUID().toString, request.targetSessionId, request.message, now.toString))
-      _ <- subscribers.traverse_(_.offer(message))
+      _ <- subscribers.traverse_(_._1.offer(message))
     yield NotifyReceipt(message.id, subscribers.size)
   }
 
@@ -45,15 +57,16 @@ final class NotifyService private (mutex: Mutex[IO], stopped: Deferred[IO, Unit]
     val registration = Resource.make(serial {
       for
         _ <- IO(ensureOpen())
-        queue <- Queue.bounded[IO, Notification](capacity)
+        (cap, hb) <- currentSettings
+        queue <- Queue.bounded[IO, Notification](cap)
         id <- IO(UUID.randomUUID().toString)
-        _ <- IO { listeners += id -> queue }
-      yield (id, queue)
-    }) { (id, _) => serial(IO { listeners -= id }) }
-    Stream.resource(registration).flatMap { (_, queue) =>
+        _ <- IO { listeners += id -> (queue, cap) }
+      yield (id, queue, hb)
+    }) { (id, _, _) => serial(IO { listeners -= id }) }
+    Stream.resource(registration).flatMap { (_, queue, hb) =>
       Stream.emit(NotifyEvent(NotifyEventKind.ready)) ++
         Stream.repeatEval(queue.take).map(value => NotifyEvent(NotifyEventKind.message, Some(value)))
-          .merge(Stream.awakeEvery[IO](heartbeat).as(NotifyEvent(NotifyEventKind.heartbeat)))
+          .merge(Stream.awakeEvery[IO](hb).as(NotifyEvent(NotifyEventKind.heartbeat)))
     }.interruptWhen(stopped.get.attempt)
   }
 
@@ -64,9 +77,13 @@ object NotifyService:
     if !value.matches("[A-Za-z0-9_.:-]{1,128}") then
       throw NotifyFailure("invalid_notify", "Session ID must be 1-128 characters of letters, digits, underscores, hyphens, dots or colons")
 
-  def resource(capacity: Int = 64, heartbeat: FiniteDuration = 15.seconds): Resource[IO, NotifyService] = for
+  def resource(
+      capacity: Int = 64,
+      heartbeat: FiniteDuration = 15.seconds,
+      config: Option[Signal[IO, NotifyConfig]] = None
+  ): Resource[IO, NotifyService] = for
     _ <- Resource.eval(IO(require(capacity > 0 && heartbeat > Duration.Zero)))
     mutex <- Resource.eval(Mutex[IO])
     stopped <- Resource.eval(Deferred[IO, Unit])
-    service <- Resource.make(IO(new NotifyService(mutex, stopped, capacity, heartbeat)))(_.close)
+    service <- Resource.make(IO(new NotifyService(mutex, stopped, capacity, heartbeat, config)))(_.close)
   yield service

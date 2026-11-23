@@ -3,6 +3,8 @@ package groot.github
 import cats.effect.{IO, Resource}
 import cats.syntax.all.*
 import framework.rpc.{PlainText, SSE}
+import fs2.concurrent.Signal
+import groot.config.GitHubConfig
 import groot.schedule.Store
 import io.circe.{ACursor, HCursor, Json}
 import java.net.URLEncoder
@@ -364,12 +366,16 @@ final class GitHubService(val auth: GitHubAuth, val client: GitHubClient):
     }
 
 object GitHubService:
-  def resource(home: Path = Store.defaultHome, apiBase: Uri = Uri.unsafeFromString("https://api.github.com"),
-      oauthBase: Uri = Uri.unsafeFromString("https://github.com")): Resource[IO, GitHubService] =
+  def resource(
+      home: Path = Store.defaultHome,
+      apiBase: Uri = Uri.unsafeFromString("https://api.github.com"),
+      oauthBase: Uri = Uri.unsafeFromString("https://github.com"),
+      config: Option[Signal[IO, GitHubConfig]] = None
+  ): Resource[IO, GitHubService] =
     for
-      http <- EmberClientBuilder.default[IO].withTimeout(30.seconds).withMaxResponseHeaderSize(64 * 1024).build
-      ghClient = new GitHubClient(http, apiBase, oauthBase)
-      auth <- GitHubAuth.resource(home, ghClient)
+      http <- EmberClientBuilder.default[IO].withTimeout(Duration.Inf).withMaxResponseHeaderSize(64 * 1024).build
+      ghClient = new GitHubClient(http, apiBase, oauthBase, 30.seconds, config)
+      auth <- GitHubAuth.resource(home, ghClient, config = config)
     yield new GitHubService(auth, ghClient)
 
   private val prListQuery =

@@ -5,6 +5,8 @@ import cats.effect.std.{Dispatcher, Mutex, Queue}
 import cats.syntax.all.*
 import framework.rpc.{PlainText, SSE}
 import fs2.Stream
+import fs2.concurrent.Signal
+import groot.config.{MihomoConfig, ShellConfig}
 import groot.shell.{ShellEnvironment, ShellRequest, ShellResult, ShellService}
 import java.io.{BufferedReader, InputStreamReader}
 import java.nio.charset.StandardCharsets.UTF_8
@@ -23,15 +25,18 @@ final class MihomoService(
   val settings: MihomoSettings,
   writeMutex: Mutex[IO],
   apiCache: Ref[IO, Option[ApiEndpoint]],
-  customFollow: Option[Int => IO[Stream[IO, PlainText]]] = None
+  customFollow: Option[Int => IO[Stream[IO, PlainText]]] = None,
+  settingsSignal: Option[Signal[IO, MihomoSettings]] = None
 ):
   import MihomoService.*
 
-  def status: IO[MihomoStatus] =
+  private def currentSettings: IO[MihomoSettings] = settingsSignal.fold(IO.pure(settings))(_.get)
+
+  def status: IO[MihomoStatus] = currentSettings.flatMap { cur =>
     val script =
       s"""set -euo pipefail
          |export LC_ALL=C
-         |sudo -n systemctl show ${shellQuote(settings.serviceUnit)} --no-pager \\
+         |sudo -n systemctl show ${shellQuote(cur.serviceUnit)} --no-pager \\
          |  --property=ActiveState,SubState,UnitFileState,MainPID,ActiveEnterTimestamp,MemoryCurrent
          |""".stripMargin
     for
@@ -45,6 +50,7 @@ final class MihomoService(
       memoryBytes = props.get("MemoryCurrent").flatMap(_.toLongOption).filter(v => v >= 0 && v < Long.MaxValue)
       version <- if activeState == "active" then withApi(api.version(_, 2.seconds)).option.map(_.flatten) else IO.pure(None)
     yield MihomoStatus(activeState, subState, unitFileState, mainPid, since, memoryBytes, version)
+  }
 
   def start: IO[MihomoStatus] = lifecycleAction("start", clearCache = false)
   def stop: IO[MihomoStatus] = lifecycleAction("stop", clearCache = true)
@@ -52,26 +58,30 @@ final class MihomoService(
 
   private def lifecycleAction(action: String, clearCache: Boolean): IO[MihomoStatus] =
     writeMutex.lock.surround {
-      val script =
-        s"""set -euo pipefail
-           |export LC_ALL=C
-           |sudo -n systemctl $action ${shellQuote(settings.serviceUnit)}
-           |""".stripMargin
-      execChecked(script, "25s") *>
-        (if clearCache then apiCache.set(None) else IO.unit) *>
-        status
+      currentSettings.flatMap { cur =>
+        val script =
+          s"""set -euo pipefail
+             |export LC_ALL=C
+             |sudo -n systemctl $action ${shellQuote(cur.serviceUnit)}
+             |""".stripMargin
+        execChecked(script, "25s") *>
+          (if clearCache then apiCache.set(None) else IO.unit) *>
+          status
+      }
     }
 
   def logs(lines: Int): IO[PlainText] =
     if lines < 1 || lines > 5000 then
       IO.raiseError(MihomoFailure("invalid_mihomo", "lines must be between 1 and 5000"))
     else
-      val script =
-        s"""set -euo pipefail
-           |export LC_ALL=C
-           |sudo -n journalctl -u ${shellQuote(settings.serviceUnit)} -n $lines --no-pager
-           |""".stripMargin
-      execChecked(script, "15s").map(r => PlainText(r.stdout))
+      currentSettings.flatMap { cur =>
+        val script =
+          s"""set -euo pipefail
+             |export LC_ALL=C
+             |sudo -n journalctl -u ${shellQuote(cur.serviceUnit)} -n $lines --no-pager
+             |""".stripMargin
+        execChecked(script, "15s").map(r => PlainText(r.stdout))
+      }
 
   def logsFollow(lines: Int): IO[SSE[PlainText]] =
     if lines < 1 || lines > 5000 then
@@ -80,11 +90,11 @@ final class MihomoService(
       customFollow match
         case Some(factory) => factory(lines).map(SSE(_))
         case None =>
-          resolveShellEnv.map { env =>
+          (resolveShellEnv, currentSettings).tupled.map { (env, cur) =>
             val command: Vector[String] = env.target match
               case Some(sshTarget) =>
                 Vector(
-                  "/usr/bin/setsid", "--", settings.sshExecutable,
+                  "/usr/bin/setsid", "--", cur.sshExecutable,
                   "-T",
                   "-o", "BatchMode=yes",
                   "-o", "StrictHostKeyChecking=yes",
@@ -93,12 +103,12 @@ final class MihomoService(
                   "-o", "ServerAliveInterval=15",
                   "-o", "ServerAliveCountMax=2",
                   sshTarget,
-                  s"exec sudo -n journalctl -u ${shellQuote(settings.serviceUnit)} -f -n $lines --no-pager"
+                  s"exec sudo -n journalctl -u ${shellQuote(cur.serviceUnit)} -f -n $lines --no-pager"
                 )
               case None =>
                 Vector(
                   "/usr/bin/setsid", "--", "/bin/bash", "--noprofile", "--norc", "-c",
-                  s"exec journalctl -u ${shellQuote(settings.serviceUnit)} -f -n $lines --no-pager"
+                  s"exec journalctl -u ${shellQuote(cur.serviceUnit)} -f -n $lines --no-pager"
                 )
             SSE(streamProcessLines(command))
           }
@@ -108,6 +118,7 @@ final class MihomoService(
 
   def validateConfig(content: String): IO[ConfigValidateResult] =
     for
+      cur <- currentSettings
       bytes <- validateConfigPayload(content)
       marker = s"__GROOT_MIHOMO_${UUID.randomUUID().toString.replace("-", "")}__"
       payload = if content.endsWith("\n") then content else content + "\n"
@@ -122,7 +133,7 @@ final class MihomoService(
            |truncate -s ${bytes.length} "$$tmp/config.yaml"
            |test "$$(wc -c < "$$tmp/config.yaml")" -eq ${bytes.length}
            |set +e
-           |out=$$(sudo -n ${shellQuote(settings.binaryPath)} -t -d ${shellQuote(settings.configDir)} -f "$$tmp/config.yaml" 2>&1)
+           |out=$$(sudo -n ${shellQuote(cur.binaryPath)} -t -d ${shellQuote(cur.configDir)} -f "$$tmp/config.yaml" 2>&1)
            |rc=$$?
            |set -e
            |printf '%d\\n%s\\n' "$$rc" "$$out"
@@ -142,52 +153,54 @@ final class MihomoService(
 
   def rollbackConfig: IO[ConfigRollbackResult] =
     writeMutex.lock.surround {
-      val fileName = fileNameOf(settings.configPath)
-      val script =
-        s"""set -euo pipefail
-           |export LC_ALL=C
-           |cfg=${shellQuote(settings.configPath)}
-           |dir=${shellQuote(settings.configDir)}
-           |bin=${shellQuote(settings.binaryPath)}
-           |unit=${shellQuote(settings.serviceUnit)}
-           |trap 'sudo -n rm -f "$$dir/.groot-config.tmp.$$" >/dev/null 2>&1 || true' EXIT
-           |bak=$$(sudo -n find "$$dir" -maxdepth 1 -type f -name ${shellQuote(s"$fileName.bak.*")} -printf '%p\\n' | sort | tail -n 1)
-           |if [ -z "$$bak" ]; then
-           |  printf 'NO_BACKUP\\n'
-           |  exit 0
-           |fi
-           |if ! out=$$(sudo -n "$$bin" -t -d "$$dir" -f "$$bak" 2>&1); then
-           |  printf 'INVALID\\n%s\\n' "$$out"
-           |  exit 0
-           |fi
-           |sudo -n install -o root -g root -m 600 "$$bak" "$$dir/.groot-config.tmp.$$"
-           |sudo -n mv -f "$$dir/.groot-config.tmp.$$" "$$cfg"
-           |active=$$(sudo -n systemctl is-active "$$unit" 2>/dev/null || true)
-           |printf 'OK\\n%s\\n%s\\n' "$$bak" "$$active"
-           |""".stripMargin
-      for
-        routerHost <- resolveRouterHost
-        previousText <- readRemoteConfig.option
-        res <- execChecked(script, "25s")
-        lines = res.stdout.split("\n", -1).toVector
-        outcome <- lines.headOption.getOrElse("") match
-          case "NO_BACKUP" =>
-            IO.raiseError(MihomoFailure("mihomo_not_found", s"No backup found for ${settings.configPath}"))
-          case "INVALID" =>
-            val detail = lines.drop(1).mkString("\n").trim
-            IO.raiseError(MihomoFailure("mihomo_config_invalid", s"Latest backup failed mihomo -t validation: $detail"))
-          case "OK" if lines.length >= 3 =>
-            val restoredFrom = lines(1).trim
-            val activeState = lines(2).trim
-            for
-              restoredText <- readRemoteConfig
-              prevApi = previousText.flatMap(HostsEditor.parseApiEndpoint(_, routerHost, settings.apiUrlOverride))
-              nextApi = HostsEditor.parseApiEndpoint(restoredText, routerHost, settings.apiUrlOverride)
-              applied <- reloadOrRestart(activeState, prevApi, nextApi)
-            yield ConfigRollbackResult(restoredFrom, reloaded = applied._1, restarted = applied._2)
-          case _ =>
-            IO.raiseError(MihomoFailure("mihomo_ssh", s"Unexpected rollback output: ${res.stdout.trim.take(200)}"))
-      yield outcome
+      currentSettings.flatMap { cur =>
+        val fileName = fileNameOf(cur.configPath)
+        val script =
+          s"""set -euo pipefail
+             |export LC_ALL=C
+             |cfg=${shellQuote(cur.configPath)}
+             |dir=${shellQuote(cur.configDir)}
+             |bin=${shellQuote(cur.binaryPath)}
+             |unit=${shellQuote(cur.serviceUnit)}
+             |trap 'sudo -n rm -f "$$dir/.groot-config.tmp.$$" >/dev/null 2>&1 || true' EXIT
+             |bak=$$(sudo -n find "$$dir" -maxdepth 1 -type f -name ${shellQuote(s"$fileName.bak.*")} -printf '%p\\n' | sort | tail -n 1)
+             |if [ -z "$$bak" ]; then
+             |  printf 'NO_BACKUP\\n'
+             |  exit 0
+             |fi
+             |if ! out=$$(sudo -n "$$bin" -t -d "$$dir" -f "$$bak" 2>&1); then
+             |  printf 'INVALID\\n%s\\n' "$$out"
+             |  exit 0
+             |fi
+             |sudo -n install -o root -g root -m 600 "$$bak" "$$dir/.groot-config.tmp.$$"
+             |sudo -n mv -f "$$dir/.groot-config.tmp.$$" "$$cfg"
+             |active=$$(sudo -n systemctl is-active "$$unit" 2>/dev/null || true)
+             |printf 'OK\\n%s\\n%s\\n' "$$bak" "$$active"
+             |""".stripMargin
+        for
+          routerHost <- resolveRouterHost
+          previousText <- readRemoteConfig.option
+          res <- execChecked(script, "25s")
+          lines = res.stdout.split("\n", -1).toVector
+          outcome <- lines.headOption.getOrElse("") match
+            case "NO_BACKUP" =>
+              IO.raiseError(MihomoFailure("mihomo_not_found", s"No backup found for ${cur.configPath}"))
+            case "INVALID" =>
+              val detail = lines.drop(1).mkString("\n").trim
+              IO.raiseError(MihomoFailure("mihomo_config_invalid", s"Latest backup failed mihomo -t validation: $detail"))
+            case "OK" if lines.length >= 3 =>
+              val restoredFrom = lines(1).trim
+              val activeState = lines(2).trim
+              for
+                restoredText <- readRemoteConfig
+                prevApi = previousText.flatMap(HostsEditor.parseApiEndpoint(_, routerHost, cur.apiUrlOverride))
+                nextApi = HostsEditor.parseApiEndpoint(restoredText, routerHost, cur.apiUrlOverride)
+                applied <- reloadOrRestart(activeState, prevApi, nextApi, cur)
+              yield ConfigRollbackResult(restoredFrom, reloaded = applied._1, restarted = applied._2)
+            case _ =>
+              IO.raiseError(MihomoFailure("mihomo_ssh", s"Unexpected rollback output: ${res.stdout.trim.take(200)}"))
+        yield outcome
+      }
     }
 
   def listDns: IO[Vector[DnsHost]] =
@@ -258,19 +271,20 @@ final class MihomoService(
 
   private def applyConfigWithKnownPrevious(previousContent: String, nextContent: String): IO[ConfigWriteResult] =
     for
+      cur <- currentSettings
       bytes <- validateConfigPayload(nextContent)
       routerHost <- resolveRouterHost
-      fileName = fileNameOf(settings.configPath)
+      fileName = fileNameOf(cur.configPath)
       marker = s"__GROOT_MIHOMO_${UUID.randomUUID().toString.replace("-", "")}__"
       payload = if nextContent.endsWith("\n") then nextContent else nextContent + "\n"
-      maxBackups = settings.maxBackups.max(1)
+      maxBackups = cur.maxBackups.max(1)
       script =
         s"""set -euo pipefail
            |export LC_ALL=C
-           |cfg=${shellQuote(settings.configPath)}
-           |dir=${shellQuote(settings.configDir)}
-           |bin=${shellQuote(settings.binaryPath)}
-           |unit=${shellQuote(settings.serviceUnit)}
+           |cfg=${shellQuote(cur.configPath)}
+           |dir=${shellQuote(cur.configDir)}
+           |bin=${shellQuote(cur.binaryPath)}
+           |unit=${shellQuote(cur.serviceUnit)}
            |tmp=$$(mktemp -d /tmp/groot-mihomo-write.XXXXXX)
            |chmod 700 "$$tmp"
            |trap 'rm -rf "$$tmp"; sudo -n rm -f "$$dir/.groot-config.tmp.$$" >/dev/null 2>&1 || true' EXIT
@@ -304,9 +318,9 @@ final class MihomoService(
         case "OK" if lines.length >= 3 =>
           val backupPath = Option(lines(1).trim).filter(_.nonEmpty)
           val activeState = lines(2).trim
-          val prevApi = HostsEditor.parseApiEndpoint(previousContent, routerHost, settings.apiUrlOverride)
-          val nextApi = HostsEditor.parseApiEndpoint(nextContent, routerHost, settings.apiUrlOverride)
-          reloadOrRestart(activeState, prevApi, nextApi).map { (reloaded, restarted) =>
+          val prevApi = HostsEditor.parseApiEndpoint(previousContent, routerHost, cur.apiUrlOverride)
+          val nextApi = HostsEditor.parseApiEndpoint(nextContent, routerHost, cur.apiUrlOverride)
+          reloadOrRestart(activeState, prevApi, nextApi, cur).map { (reloaded, restarted) =>
             ConfigWriteResult(changed = true, reloaded = reloaded, restarted = restarted, backupPath = backupPath)
           }
         case _ =>
@@ -317,17 +331,18 @@ final class MihomoService(
   private def reloadOrRestart(
     activeState: String,
     previousApi: Option[ApiEndpoint],
-    nextApi: Option[ApiEndpoint]
+    nextApi: Option[ApiEndpoint],
+    cur: MihomoSettings
   ): IO[(Boolean, Boolean)] =
     if activeState == "active" then
       (previousApi, nextApi) match
         case (Some(prev), Some(next)) if prev.baseUrl == next.baseUrl =>
-          api.reloadConfigs(prev, settings.configPath) *> apiCache.set(Some(next)).as((true, false))
+          api.reloadConfigs(prev, cur.configPath) *> apiCache.set(Some(next)).as((true, false))
         case _ =>
-          val restartScript = s"set -euo pipefail\nsudo -n systemctl restart ${shellQuote(settings.serviceUnit)}\n"
+          val restartScript = s"set -euo pipefail\nsudo -n systemctl restart ${shellQuote(cur.serviceUnit)}\n"
           execChecked(restartScript, "25s") *> apiCache.set(nextApi).as((false, true))
     else
-      val startScript = s"set -euo pipefail\nsudo -n systemctl start ${shellQuote(settings.serviceUnit)}\n"
+      val startScript = s"set -euo pipefail\nsudo -n systemctl start ${shellQuote(cur.serviceUnit)}\n"
       execChecked(startScript, "25s") *> apiCache.set(nextApi).as((false, true))
 
   private def withApi[A](action: ApiEndpoint => IO[A]): IO[A] =
@@ -343,10 +358,11 @@ final class MihomoService(
       case Some(cached) => IO.pure(cached)
       case None =>
         for
+          cur <- currentSettings
           routerHost <- resolveRouterHost
           configText <- readRemoteConfig
-          endpoint <- IO.fromOption(HostsEditor.parseApiEndpoint(configText, routerHost, settings.apiUrlOverride))(
-            MihomoFailure("invalid_mihomo", s"external-controller is not enabled in ${settings.configPath}")
+          endpoint <- IO.fromOption(HostsEditor.parseApiEndpoint(configText, routerHost, cur.apiUrlOverride))(
+            MihomoFailure("invalid_mihomo", s"external-controller is not enabled in ${cur.configPath}")
           )
           _ <- apiCache.set(Some(endpoint))
         yield endpoint
@@ -356,12 +372,14 @@ final class MihomoService(
     resolveShellEnv.map(env => HostsEditor.extractSshHost(env.target))
 
   private def readRemoteConfig: IO[String] =
-    val script =
-      s"""set -euo pipefail
-         |export LC_ALL=C
-         |sudo -n cat ${shellQuote(settings.configPath)}
-         |""".stripMargin
-    execChecked(script, "15s").map(_.stdout)
+    currentSettings.flatMap { cur =>
+      val script =
+        s"""set -euo pipefail
+           |export LC_ALL=C
+           |sudo -n cat ${shellQuote(cur.configPath)}
+           |""".stripMargin
+      execChecked(script, "15s").map(_.stdout)
+    }
 
   private def execChecked(script: String, timeout: String): IO[ShellResult] =
     runShell(script, timeout).adaptError {
@@ -390,6 +408,50 @@ object MihomoService:
       httpClient <- EmberClientBuilder.default[IO].withTimeout(30.seconds).build
       service <- Resource.eval(fromClient(shell, httpClient, settings))
     yield service
+
+  def resourceWithConfig(
+    shell: ShellService,
+    mihomoCfg: Signal[IO, MihomoConfig],
+    shellCfg: Signal[IO, ShellConfig]
+  ): Resource[IO, MihomoService] =
+    val mapped: Signal[IO, MihomoSettings] = new Signal[IO, MihomoSettings]:
+      def get: IO[MihomoSettings] = (mihomoCfg.get, shellCfg.get).mapN(toSettings)
+      def continuous: Stream[IO, MihomoSettings] = Stream.repeatEval(get)
+      def discrete: Stream[IO, MihomoSettings] =
+        mihomoCfg.discrete.either(shellCfg.discrete).evalMap(_ => get)
+    for
+      httpClient <- EmberClientBuilder.default[IO].withTimeout(30.seconds).build
+      initSettings <- Resource.eval(mapped.get)
+      mutex <- Resource.eval(Mutex[IO])
+      cache <- Resource.eval(Ref.of[IO, Option[ApiEndpoint]](None))
+      _ <- mapped.discrete.changes(using cats.kernel.Eq.fromUniversalEquals).evalMap(_ => cache.set(None)).compile.drain.background
+    yield new MihomoService(
+      runShell = (script, timeout) => mapped.get.flatMap(s => shell.execute(ShellRequest(s.shellEnv, script, timeout))),
+      resolveShellEnv = mapped.get.flatMap { s =>
+        shell.list.flatMap { envs =>
+          IO.fromOption(envs.find(_.name == s.shellEnv))(
+            MihomoFailure("mihomo_not_found", s"Shell environment '${s.shellEnv}' is not registered")
+          )
+        }
+      },
+      api = new MihomoApi(httpClient),
+      settings = initSettings,
+      writeMutex = mutex,
+      apiCache = cache,
+      settingsSignal = Some(mapped)
+    )
+
+  private def toSettings(m: MihomoConfig, s: ShellConfig): MihomoSettings =
+    MihomoSettings(
+      shellEnv = m.shellEnv,
+      configDir = m.configDir,
+      configPath = m.configPath,
+      binaryPath = m.binaryPath,
+      serviceUnit = m.serviceUnit,
+      apiUrlOverride = m.apiUrlOverride,
+      sshExecutable = s.sshExecutable,
+      maxBackups = m.maxBackups
+    )
 
   def fromClient(
     shell: ShellService,

@@ -8,9 +8,10 @@ private[groot] object JavaScript:
   val maxSourceBytes: Int = Limits.maxSourceBytes
   private val prefix = "(async () => {\n"
   private val suffix = "\n})()"
-  private[graaljs] val maxExecutableBytes: Int = maxSourceBytes + prefix.length + suffix.length
+  private[graaljs] def maxExecutableBytesFor(maxBytes: Int): Int = maxBytes + prefix.length + suffix.length
+  private[graaljs] val maxExecutableBytes: Int = maxExecutableBytesFor(maxSourceBytes)
 
-  def source(text: String, name: String = "inline.graal.js", cached: Boolean = false): Source =
-    Validation.source(text)
+  def source(text: String, name: String = "inline.graal.js", cached: Boolean = false, maxBytes: Int = Limits.maxSourceBytes): Source =
+    Validation.source(text, maxBytes)
     Source.newBuilder("js", s"$prefix$text$suffix", name)
       .uri(URI.create(s"graaljs:/$name")).cached(cached).buildLiteral()

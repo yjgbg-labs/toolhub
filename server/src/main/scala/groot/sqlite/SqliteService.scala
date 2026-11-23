@@ -3,6 +3,8 @@ package groot.sqlite
 import cats.effect.{IO, Resource}
 import cats.effect.std.Mutex
 import cats.syntax.all.*
+import fs2.concurrent.Signal
+import groot.config.SqliteConfig
 import java.nio.channels.FileChannel
 import java.nio.file.{Files, Path, StandardOpenOption}
 import java.sql.Connection
@@ -10,7 +12,12 @@ import java.util.UUID
 import scala.util.Using
 
 /** The registry is serialized; each SQL request owns an independent connection to its selected database. */
-final class SqliteService private (directory: Path, registry: Connection, mutex: Mutex[IO]):
+final class SqliteService private (
+    directory: Path,
+    registry: Connection,
+    mutex: Mutex[IO],
+    config: Signal[IO, SqliteConfig] = Signal.constant(SqliteConfig())
+):
   private def serial[A](action: => A): IO[A] = mutex.lock.surround(IO.uncancelable(_ => IO.blocking(action)))
 
   private def validateName(name: String): Unit =
@@ -84,11 +91,17 @@ final class SqliteService private (directory: Path, registry: Connection, mutex:
   }
 
   def execute(env: String, sql: String): IO[ExecuteResult] =
-    serial(find(env).getOrElse(throw MissingEnvironment(env)))
-      .flatMap(environment => SqliteExecutor.execute(Path.of(environment.path), sql))
+    for
+      cfg <- config.get
+      environment <- serial(find(env).getOrElse(throw MissingEnvironment(env)))
+      res <- SqliteExecutor.execute(Path.of(environment.path), sql, cfg)
+    yield res
 
 object SqliteService:
-  def resource(directory: Path = groot.schedule.Store.defaultHome.resolve("sqlite")): Resource[IO, SqliteService] =
+  def resource(
+      directory: Path = groot.schedule.Store.defaultHome.resolve("sqlite"),
+      config: Signal[IO, SqliteConfig] = Signal.constant(SqliteConfig())
+  ): Resource[IO, SqliteService] =
     val home = directory.toAbsolutePath.normalize()
     for
       _ <- Resource.make(IO.blocking {
@@ -115,4 +128,4 @@ object SqliteService:
         }
       })
       mutex <- Resource.eval(Mutex[IO])
-    yield new SqliteService(home, registry, mutex)
+    yield new SqliteService(home, registry, mutex, config)
