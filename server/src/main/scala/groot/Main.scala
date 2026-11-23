@@ -15,6 +15,7 @@ import groot.wine.{WineRoutes, WineService}
 import groot.notify.{NotifyRoutes, NotifyService, NotifyTriggerManager}
 import groot.mihomo.{MihomoRoutes, MihomoService}
 import groot.github.{GitHubRoutes, GitHubService}
+import groot.fxtwitter.{FxTwitterRoutes, FxTwitterService}
 import scala.concurrent.duration.*
 
 object Main extends IOApp.Simple:
@@ -27,13 +28,14 @@ object Main extends IOApp.Simple:
     shell <- ShellService.resource()
     mihomo <- MihomoService.resource(shell)
     github <- GitHubService.resource()
+    fxTwitter <- FxTwitterService.resource()
     chrome <- ChromeService.resource()
     wine <- WineService.resource()
     notify <- NotifyService.resource()
     graaljs <- GraalManager.resource(commands = commands.get)
     notifyTriggers <- NotifyTriggerManager.resource(notify, graaljs, startLoop = false)
     scheduler <- Scheduler.resource(graaljs, startLoop = false)
-  yield (scheduler, sqlite, http, widget, state, shell, mihomo, github, chrome, wine, notify, notifyTriggers, graaljs, commands)).use { (scheduler, sqlite, http, widget, state, shell, mihomo, github, chrome, wine, notify, notifyTriggers, graaljs, commands) =>
+  yield (scheduler, sqlite, http, widget, state, shell, mihomo, github, fxTwitter, chrome, wine, notify, notifyTriggers, graaljs, commands)).use { (scheduler, sqlite, http, widget, state, shell, mihomo, github, fxTwitter, chrome, wine, notify, notifyTriggers, graaljs, commands) =>
     val app = httpApp {
       server {
         host("0.0.0.0")
@@ -64,6 +66,7 @@ object Main extends IOApp.Simple:
       ShellRoutes.register(shell)
       MihomoRoutes.register(mihomo)
       GitHubRoutes.register(github)
+      FxTwitterRoutes.register(fxTwitter)
       WidgetRoutes.register(widget)
       StateRoutes.register(state)
       ChromeRoutes.register(chrome)
