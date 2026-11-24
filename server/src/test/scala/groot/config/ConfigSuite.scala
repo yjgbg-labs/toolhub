@@ -97,6 +97,7 @@ class ConfigSuite extends CatsEffectSuite:
     assertEquals(cfg.notifications.subscriberCapacity, 128)
     assertEquals(cfg.sqlite.maxRows, 10000)
     assertEquals(cfg.fxTwitter.baseUrl, "https://api.fxtwitter.com")
+    assertEquals(cfg.telegram.apiBase, "https://api.telegram.org")
   }
 
   test("parseHocon rejects unknown fields and annotation contract violations with full paths") {
