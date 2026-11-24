@@ -24,35 +24,42 @@ final class TelegramClient private (
 
   private def clientFor(proxyUrl: String): IO[HttpClient] = IO {
     val normalized = proxyUrl.trim
-    val current = cachedClient.get()
-    if current != null && current._1 == normalized then current._2
+    val fast = cachedClient.get()
+    if fast != null && fast._1 == normalized then fast._2
     else
-      val builder = HttpClient.newBuilder()
-        .connectTimeout(JDuration.ofSeconds(15))
-        .followRedirects(HttpClient.Redirect.NEVER)
-      if normalized.nonEmpty then
-        val uri = URI.create(normalized)
-        val host = Option(uri.getHost).filter(_.nonEmpty).getOrElse(
-          throw TelegramFailure("invalid_telegram", s"Proxy URL has no host: $normalized")
-        )
-        val port =
-          if uri.getPort > 0 then uri.getPort
-          else if "https".equalsIgnoreCase(uri.getScheme) then 443
-          else 80
-        builder.proxy(ProxySelector.of(new InetSocketAddress(host, port)))
-      val built = builder.build()
-      val prev = cachedClient.getAndSet((normalized, built))
-      if prev != null && (prev._2 ne built) then
-        try prev._2.shutdownNow()
-        catch case _: Throwable => ()
-      built
+      cachedClient.synchronized {
+        val current = cachedClient.get()
+        if current != null && current._1 == normalized then current._2
+        else
+          val builder = HttpClient.newBuilder()
+            .connectTimeout(JDuration.ofSeconds(15))
+            .followRedirects(HttpClient.Redirect.NEVER)
+          if normalized.nonEmpty then
+            val uri = URI.create(normalized)
+            val host = Option(uri.getHost).filter(_.nonEmpty).getOrElse(
+              throw TelegramFailure("invalid_telegram", s"Proxy URL has no host: $normalized")
+            )
+            val port =
+              if uri.getPort > 0 then uri.getPort
+              else if "https".equalsIgnoreCase(uri.getScheme) then 443
+              else 80
+            builder.proxy(ProxySelector.of(new InetSocketAddress(host, port)))
+          val built = builder.build()
+          val prev = cachedClient.getAndSet((normalized, built))
+          if prev != null && (prev._2 ne built) then
+            try prev._2.shutdown()
+            catch case _: Throwable => ()
+          built
+      }
   }
 
   private[telegram] def shutdown: IO[Unit] = IO.blocking {
-    val prev = cachedClient.getAndSet(null)
-    if prev != null then
-      try prev._2.shutdownNow()
-      catch case _: Throwable => ()
+    cachedClient.synchronized {
+      val prev = cachedClient.getAndSet(null)
+      if prev != null then
+        try prev._2.shutdownNow()
+        catch case _: Throwable => ()
+    }
   }
 
   def callJson(
