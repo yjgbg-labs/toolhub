@@ -24,9 +24,7 @@ final class TelegramService private (
     for
       cfg <- config
       st <- stateRef.get
-      raw =
-        if cfg.botToken.trim.nonEmpty then cfg.botToken.trim
-        else st.botToken.map(_.trim).getOrElse("")
+      raw = st.botToken.map(_.trim).getOrElse("")
       token <- IO(TelegramClient.sanitizeToken(raw))
       _ <- ensureBotIsolation(token)
     yield (cfg, token)
@@ -50,14 +48,11 @@ final class TelegramService private (
             }.void
         }
 
-  private def effectiveDefaultChat(cfg: TelegramConfig, st: StoredTelegramState): Option[String] =
-    Option(cfg.defaultChatId.trim)
-      .filter(_.nonEmpty)
-      .orElse(st.defaultChatId.map(_.trim).filter(_.nonEmpty))
-      .orElse {
-        val privates = st.chats.filter(_.kind == "private")
-        if privates.size == 1 then Some(privates.head.chatId) else None
-      }
+  private def effectiveDefaultChat(st: StoredTelegramState): Option[String] =
+    st.defaultChatId.map(_.trim).filter(_.nonEmpty).orElse {
+      val privates = st.chats.filter(_.kind == "private")
+      if privates.size == 1 then Some(privates.head.chatId) else None
+    }
 
   def login(token: String, defaultChatId: Option[String]): IO[BotProfile] =
     for
@@ -87,7 +82,7 @@ final class TelegramService private (
       canReadAllGroupMessages = canReadAll,
       supportsInlineQueries = inlineQ,
       apiBase = cfg.apiBase.trim,
-      defaultChatId = effectiveDefaultChat(cfg, updated),
+      defaultChatId = effectiveDefaultChat(updated),
       knownChatsCount = updated.chats.size,
       lastUpdateId = updated.lastUpdateId
     )
@@ -117,7 +112,7 @@ final class TelegramService private (
       canReadAllGroupMessages = canReadAll,
       supportsInlineQueries = inlineQ,
       apiBase = cfg.apiBase.trim,
-      defaultChatId = effectiveDefaultChat(cfg, st),
+      defaultChatId = effectiveDefaultChat(st),
       knownChatsCount = st.chats.size,
       lastUpdateId = st.lastUpdateId
     )
@@ -346,13 +341,13 @@ final class TelegramService private (
       case Some(value) => IO.pure(value)
       case None =>
         stateRef.get.flatMap { st =>
-          effectiveDefaultChat(cfg, st) match
+          effectiveDefaultChat(st) match
             case Some(found) => IO.pure(found)
             case None =>
               for
                 _ <- pollUpdatesInternal(token, 30, 0, None, unreadOnly = false, ack = false, None)
                 after <- stateRef.get
-                resolved <- effectiveDefaultChat(cfg, after)
+                resolved <- effectiveDefaultChat(after)
                   .orElse(after.chats.find(_.kind == "private").map(_.chatId))
                   .orElse(after.chats.headOption.map(_.chatId)) match
                   case Some(chatId) => IO.pure(chatId)

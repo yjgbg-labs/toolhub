@@ -90,7 +90,7 @@ class TelegramSuite extends CatsEffectSuite:
 
     temporary.use { root =>
       serve(mock).use { uri =>
-        val cfg = TelegramConfig(apiBase = uri.renderString, botToken = "")
+        val cfg = TelegramConfig(apiBase = uri.renderString)
         TelegramService.resource(root, IO.pure(cfg)).use { svc =>
           for
             me <- svc.login(syntheticToken, Some("777001"))
@@ -260,11 +260,11 @@ class TelegramSuite extends CatsEffectSuite:
               val downloadPath = root.resolve("downloaded.txt")
               val cfg = TelegramConfig(
                 apiBase = uri.renderString,
-                botToken = syntheticToken,
                 maxRateLimitWaitMs = 5000
               )
               for
                 _ <- IO.blocking(Files.writeString(uploadPath, "payload-1234", UTF_8))
+                _ <- TelegramService.resource(root, IO.pure(cfg)).use(_.login(syntheticToken, None))
                 commands <- Deferred[IO, GraalCommandSdk]
                 _ <- TelegramService.resource(root, IO.pure(cfg)).use { svc =>
                   GraalManager.resource(root.resolve("graal"), commands.get).use { manager =>

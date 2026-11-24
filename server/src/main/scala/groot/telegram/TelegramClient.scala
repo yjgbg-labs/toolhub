@@ -235,7 +235,7 @@ object TelegramClient:
     if stripped.isEmpty then
       throw TelegramFailure(
         "telegram_unauthenticated",
-        "Telegram bot token is not configured; set telegram.botToken in application.conf or run 'groot-cli telegram login --token ...'"
+        "Not logged in to Telegram; run 'groot-cli telegram login --token ...'"
       )
     if !tokenPattern.matches(stripped) then
       throw TelegramFailure("invalid_telegram", "Malformed Telegram bot token (expected '<bot_id>:<secret>')")
