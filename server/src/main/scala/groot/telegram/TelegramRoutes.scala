@@ -37,7 +37,7 @@ object TelegramRoutes:
     command[BotProfile]("login") {
       exposeOn(cli)
       description("Verify a Telegram Bot token via getMe and persist it locally ($GROOT_HOME/telegram/state.json)")
-      val token = param[String]("token", "Telegram Bot HTTP API token (<bot_id>:<secret>, or '-' for stdin)") { minLength(10) }
+      val token = param[String]("token", "Telegram Bot HTTP API token (<bot_id>:<secret>, or '-' for stdin)")
       val defaultChatId = param[Option[String]]("defaultChatId", "Optional default numeric chat ID or @channelusername")
       handle { service.login(token.value, defaultChatId.value) }
     }

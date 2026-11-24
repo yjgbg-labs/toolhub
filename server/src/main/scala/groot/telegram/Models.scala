@@ -7,10 +7,6 @@ import io.circe.{Codec, Json}
 final case class TelegramConfig(
     @httpUrl apiBase: String =
       sys.env.get("TELEGRAM_API_BASE").map(_.trim).filter(_.nonEmpty).getOrElse("https://api.telegram.org"),
-    @contract[String](s => s != null && !s.contains('\u0000'), "must not contain NUL")
-    botToken: String = sys.env.getOrElse("TELEGRAM_BOT_TOKEN", "").trim,
-    @contract[String](s => s != null && !s.contains('\u0000'), "must not contain NUL")
-    defaultChatId: String = sys.env.getOrElse("TELEGRAM_CHAT_ID", "").trim,
     @contract[String](
       s => s != null && (s.trim.isEmpty || Contracts.isHttpUrl(s)),
       "must be empty or an absolute http(s) proxy URL"
