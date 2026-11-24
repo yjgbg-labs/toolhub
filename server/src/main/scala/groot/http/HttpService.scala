@@ -13,10 +13,12 @@ import org.typelevel.ci.CIString
 import scala.concurrent.duration.*
 
 /** Buffered HTTP requests. All transport IO belongs to the task session and is cancelled with it. */
-final class HttpService(client: Client[IO], timeout: FiniteDuration = 30.seconds):
+final class HttpService(client: Client[IO], timeout: FiniteDuration = 30.seconds, config: IO[HttpConfig] = IO.pure(HttpConfig())):
   import HttpService.*
 
-  def apply(input: HttpRequest): IO[HttpResponse] = IO.defer {
+  def apply(input: HttpRequest): IO[HttpResponse] = config.flatMap: cfg =>
+    val reqTimeout = if timeout != 30.seconds then timeout else framework.validation.Contracts.parseDuration(cfg.timeout)
+    IO.defer {
     val uri = parseUrl(input.url)
     val upper = input.method.toUpperCase(java.util.Locale.ROOT)
     val normalized = if Set("DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT").contains(upper) then upper else input.method
@@ -40,7 +42,7 @@ final class HttpService(client: Client[IO], timeout: FiniteDuration = 30.seconds
     }.groupMap(_._1)(_._2).toVector.map((name, values) => name -> values.mkString(", "))
     val size = input.url.getBytes(UTF_8).length.toLong + input.method.length +
       fields.map((k, v) => k.length.toLong + v.getBytes(UTF_8).length).sum + body.fold(0)(_.length)
-    if size > maxBytes then throw HttpFailure("RangeError", "http() request exceeds 1 MiB")
+    if size > cfg.maxBytes then throw HttpFailure("RangeError", s"http() request exceeds ${framework.validation.Contracts.formatBytes(cfg.maxBytes.toLong)}")
     val typed = if input.body.nonEmpty && input.bodyEncoding == BodyEncoding.utf8 && !fields.exists(_._1 == "content-type") then
       fields :+ ("content-type" -> "text/plain;charset=UTF-8") else fields
     // Framing is computed from the buffered body, including when callers reuse response headers.
@@ -53,17 +55,17 @@ final class HttpService(client: Client[IO], timeout: FiniteDuration = 30.seconds
     val accepted = if header(encoded.headers, "accept").isDefined then encoded else encoded.putHeaders(Header.Raw(CIString("Accept"), "*/*"))
     val compressed = if header(accepted.headers, "accept-encoding").isDefined then accepted
       else accepted.putHeaders(Header.Raw(CIString("Accept-Encoding"), "gzip, deflate"))
-    follow(compressed, 0)
-  }.timeoutTo(timeout, IO.raiseError(HttpFailure("TimeoutError", "http() timed out")))
+    follow(compressed, 0, cfg)
+  }.timeoutTo(reqTimeout, IO.raiseError(HttpFailure("TimeoutError", "http() timed out")))
     .adaptError { case error if !error.isInstanceOf[HttpFailure] =>
       HttpFailure("TypeError", s"http failed: ${Option(error.getMessage).getOrElse(error.getClass.getSimpleName)}")
     }
 
-  private def follow(request: Request[IO], redirects: Int): IO[HttpResponse] =
+  private def follow(request: Request[IO], redirects: Int, cfg: HttpConfig): IO[HttpResponse] =
     client.run(request).use { response =>
       val location = header(response.headers, "location")
       if Set(301, 302, 303, 307, 308).contains(response.status.code) && location.nonEmpty then IO {
-        if redirects >= 20 then throw HttpFailure("TypeError", "http() exceeded 20 redirects")
+        if redirects >= cfg.maxRedirects then throw HttpFailure("TypeError", s"http() exceeded ${cfg.maxRedirects} redirects")
         val target = parseUrl(request.uri.resolve(Uri.unsafeFromString(location.get)).renderString)
         val rewrite = (Set(301, 302).contains(response.status.code) && request.method == Method.POST) ||
           (response.status.code == 303 && request.method != Method.GET && request.method != Method.HEAD)
@@ -75,7 +77,7 @@ final class HttpService(client: Client[IO], timeout: FiniteDuration = 30.seconds
         }
         Left(next.withUri(target).withHeaders(Headers(stripped)))
       }
-      else readBody(request, response).map { bytes =>
+      else readBody(request, response, cfg.maxBytes).map { bytes =>
         val fields = response.headers.headers
         val headers = fields.groupMap(_.name.toString.toLowerCase(java.util.Locale.ROOT))(_.value)
           .toVector.sortBy(_._1).map { (name, values) => name -> values.mkString(", ") }
@@ -85,11 +87,11 @@ final class HttpService(client: Client[IO], timeout: FiniteDuration = 30.seconds
           response.status.isSuccess, redirects > 0, headers.toMap, Base64.getEncoder.encodeToString(bytes), setCookies))
       }
     }.flatMap {
-      case Left(next) => follow(next, redirects + 1)
+      case Left(next) => follow(next, redirects + 1, cfg)
       case Right(result) => IO.pure(result)
     }
 
-  private def readBody(request: Request[IO], response: Response[IO]): IO[Array[Byte]] =
+  private def readBody(request: Request[IO], response: Response[IO], capBytes: Int): IO[Array[Byte]] =
     val empty = request.method == Method.HEAD || Set(204, 205, 304).contains(response.status.code)
     val encodings = response.headers.headers.filter(_.name == CIString("Content-Encoding")).flatMap { field =>
       field.value.split(",").toList.map(_.trim.toLowerCase(java.util.Locale.ROOT)).filter(_.nonEmpty)
@@ -103,16 +105,21 @@ final class HttpService(client: Client[IO], timeout: FiniteDuration = 30.seconds
           case (body, _) => body
         }
       else response.body
-    bytes.take(maxBytes.toLong + 1).compile.to(Array).flatMap { body =>
-      if body.length > maxBytes then IO.raiseError(HttpFailure("RangeError", "http() response exceeds 1 MiB"))
+    bytes.take(capBytes.toLong + 1).compile.to(Array).flatMap { body =>
+      if body.length > capBytes then IO.raiseError(HttpFailure("RangeError", s"http() response exceeds ${framework.validation.Contracts.formatBytes(capBytes.toLong)}"))
       else IO.pure(body)
     }
 
 object HttpService:
   val maxBytes = 1024 * 1024
 
-  def resource: Resource[IO, HttpService] =
-    EmberClientBuilder.default[IO].withTimeout(30.seconds).withMaxResponseHeaderSize(64 * 1024).build.map(new HttpService(_))
+  def resource: Resource[IO, HttpService] = resourceWithConfig(IO.pure(HttpConfig()))
+
+  def resourceWithConfig(config: IO[HttpConfig]): Resource[IO, HttpService] =
+    Resource.eval(config).flatMap { init =>
+      EmberClientBuilder.default[IO].withTimeout(Duration.Inf).withMaxResponseHeaderSize(math.max(init.maxHeaderBytes, 64 * 1024)).build
+        .map(new HttpService(_, 30.seconds, config))
+    }
 
   private def header(headers: Headers, name: String): Option[String] = headers.headers.find(_.name == CIString(name)).map(_.value)
 

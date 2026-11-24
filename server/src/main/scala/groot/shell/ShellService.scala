@@ -10,7 +10,12 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path, StandardCopyOption, StandardOpenOption}
 
 /** Registry changes are atomic. Executions lease their environment, independently of later deletion/recreation. */
-final class ShellService private (home: Path, ssh: String, mutex: Mutex[IO]):
+final class ShellService private (
+    home: Path,
+    ssh: String,
+    mutex: Mutex[IO],
+    config: IO[ShellConfig] = IO.pure(ShellConfig())
+):
   import ShellService.*
   private class Entry(val environment: ShellEnvironment, val run: Run, val release: IO[Unit], val closed: Deferred[IO, Unit]):
     var users = 0
@@ -24,7 +29,8 @@ final class ShellService private (home: Path, ssh: String, mutex: Mutex[IO]):
   private def find(name: String): Entry = entries.getOrElse(name, throw ShellFailure("shell_not_found", s"No shell environment named $name"))
 
   private def create(environment: ShellEnvironment): IO[Entry] = for
-    allocated <- ShellExecutor.resource(home.resolve("ssh"), environment, ssh).allocated
+    curSsh <- if ssh == "/usr/bin/ssh" then config.map(_.sshExecutable) else IO.pure(ssh)
+    allocated <- ShellExecutor.resource(home.resolve("ssh"), environment, curSsh, config).allocated
     (executor, release) = allocated
     closed <- Deferred[IO, Unit]
   yield new Entry(environment, executor.execute, release, closed)
@@ -87,15 +93,17 @@ final class ShellService private (home: Path, ssh: String, mutex: Mutex[IO]):
   }
 
   def execute(request: ShellRequest): IO[ShellResult] =
-    Resource.make(serial(IO {
-      ensureOpen()
-      validateScript(request)
-      val entry = find(request.env)
-      if request.cwd.nonEmpty && entry.environment.target.nonEmpty then throw ShellFailure("invalid_shell", "cwd is supported for local Bash only; use cd or Set-Location in remote scripts")
-      entry.users += 1
-      entry
-    }))(entry => serial(IO { entry.users -= 1 } *> IO.defer(closeIfIdle(entry))))
-      .use(_.run(request))
+    config.flatMap { cfg =>
+      Resource.make(serial(IO {
+        ensureOpen()
+        validateScript(request, cfg.maxScriptBytes)
+        val entry = find(request.env)
+        if request.cwd.nonEmpty && entry.environment.target.nonEmpty then throw ShellFailure("invalid_shell", "cwd is supported for local Bash only; use cd or Set-Location in remote scripts")
+        entry.users += 1
+        entry
+      }))(entry => serial(IO { entry.users -= 1 } *> IO.defer(closeIfIdle(entry))))
+        .use(_.run(request))
+    }
 
   private def close: IO[Unit] = serial {
     IO {
@@ -126,10 +134,10 @@ object ShellService:
       throw ShellFailure("invalid_shell", "Local environments use Bash; Zsh and PowerShell require an SSH target")
     if duration(environment.idle) < 1000 then throw ShellFailure("invalid_shell", "SSH idle timeout must be at least one second")
 
-  private def validateScript(request: ShellRequest): Unit =
+  private def validateScript(request: ShellRequest, maxScript: Int = maxBytes): Unit =
     if request.script.stripPrefix("\uFEFF").trim.isEmpty || request.script.contains('\u0000') then
       throw ShellFailure("invalid_shell", "script must be nonblank and contain no NUL")
-    if request.script.getBytes(UTF_8).length > maxBytes then throw ShellFailure("shell_limit", "Shell script exceeds 64 KiB")
+    if request.script.getBytes(UTF_8).length > maxScript then throw ShellFailure("shell_limit", s"Shell script exceeds ${maxScript / 1024} KiB")
     duration(request.timeout)
     ()
 
@@ -141,8 +149,12 @@ object ShellService:
     ShellEnvironment("r6s", ShellKind.bash, Some(sys.env.getOrElse("BASH_ON_R6S_SSH_TARGET", "router@100.64.0.7")), sys.env.getOrElse("BASH_ON_R6S_SSH_IDLE", "5m"))
   )
 
-  def resource(home: Path = groot.schedule.Store.defaultHome.resolve("shell"), initial: Vector[ShellEnvironment] = defaults,
-      ssh: String = "/usr/bin/ssh"): Resource[IO, ShellService] = for
+  def resource(
+      home: Path = groot.schedule.Store.defaultHome.resolve("shell"),
+      initial: Vector[ShellEnvironment] = defaults,
+      ssh: String = "/usr/bin/ssh",
+      config: IO[ShellConfig] = IO.pure(ShellConfig())
+  ): Resource[IO, ShellService] = for
     directory <- Resource.eval(IO(home.toAbsolutePath.normalize()))
     _ <- Resource.make(IO.blocking {
       Files.createDirectories(directory)
@@ -156,6 +168,6 @@ object ShellService:
           throw error
     })(channel => IO.blocking(channel.close()))
     mutex <- Resource.eval(Mutex[IO])
-    service <- Resource.make(IO(new ShellService(directory, ssh, mutex)))(_.close)
+    service <- Resource.make(IO(new ShellService(directory, ssh, mutex, config)))(_.close)
     _ <- Resource.eval(service.initialize(initial))
   yield service

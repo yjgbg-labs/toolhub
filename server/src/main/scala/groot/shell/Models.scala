@@ -10,3 +10,9 @@ case class ShellRequest(env: String, script: String, timeout: String = "30s", cw
 case class ShellResult(exitCode: Int, stdout: String, stderr: String) derives JsonModel
 private[shell] case class ShellRegistry(version: Int, environments: Vector[ShellEnvironment]) derives JsonModel
 private[shell] case class ShellFailure(code: String, message: String) extends RuntimeException(message)
+
+final case class ShellConfig(
+    @framework.validation.positive maxScriptBytes: Int = 64 * 1024,
+    @framework.validation.positive maxOutputBytes: Int = 64 * 1024,
+    @framework.validation.nonBlank sshExecutable: String = "/usr/bin/ssh"
+) derives JsonModel, framework.validation.Validator

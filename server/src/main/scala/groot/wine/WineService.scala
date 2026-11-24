@@ -14,7 +14,7 @@ import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
 final class WineService private (config: WineConfig, environment: Ref[IO, Option[(WineEnvironment, IO[Unit])]],
-    setup: Semaphore[IO], slots: Semaphore[IO]):
+    setup: Semaphore[IO], slots: Semaphore[IO], settings: IO[WineSettings] = IO.pure(WineSettings())):
   import WineValidation.*
   private def prepare(runtime: String, architecture: String): IO[WineEnvironment] = setup.permit.use { _ => IO.uncancelable { poll => for
     existing <- environment.get
@@ -22,13 +22,14 @@ final class WineService private (config: WineConfig, environment: Ref[IO, Option
     _ <- if runtime == "framework" then poll(WineRuntime.framework(config, env, architecture)) else IO.unit
   yield env } }
 
-  private def validate[A: JsonModel](request: A, timeout: Int, architecture: String, cwd: Option[String], env: Map[String, String]): IO[Unit] = IO {
+  private def validate[A: JsonModel](request: A, timeout: Int, architecture: String, cwd: Option[String], env: Map[String, String]): IO[WineSettings] = settings.flatMap { ws => IO {
     require(timeout >= 1 && timeout <= 86400000, "timeoutMs must be between 1 and 86400000")
     require(Set("x64", "x86").contains(architecture), "architecture must be x64 or x86")
-    require(JsonModel[A].encoder(request).noSpaces.getBytes(UTF_8).length <= maxBytes, "Request exceeds 1 MiB")
+    require(JsonModel[A].encoder(request).noSpaces.getBytes(UTF_8).length <= ws.maxResultBytes, s"Request exceeds ${framework.validation.Contracts.formatBytes(ws.maxResultBytes.toLong)}")
     cwd.foreach(p => require(p.startsWith("/") && !p.contains('\u0000') && Files.isDirectory(Path.of(p)), "cwd must be an existing absolute Linux directory"))
     require(env.size <= 128 && env.forall((k, v) => k.matches("[A-Za-z_][A-Za-z0-9_]*") && !v.contains('\u0000')), "Invalid environment variables")
-  }
+    ws
+  } }
   private def directory: Resource[IO, Path] = Resource.make(IO.blocking {
     val parent = config.home.resolve("calls")
     Files.createDirectories(parent)
@@ -134,11 +135,11 @@ final class WineService private (config: WineConfig, environment: Ref[IO, Option
   private def close: IO[Unit] = setup.permit.use(_ => environment.getAndSet(None).flatMap(_.traverse_(_._2)))
 
 object WineService:
-  def resource(): Resource[IO, WineService] = managed(WineConfig.default)
-  private[wine] def managed(config: WineConfig): Resource[IO, WineService] = for
+  def resource(settings: IO[WineSettings] = IO.pure(WineSettings())): Resource[IO, WineService] = managed(WineConfig.default, settings)
+  private[wine] def managed(config: WineConfig, settings: IO[WineSettings] = IO.pure(WineSettings())): Resource[IO, WineService] = for
     environment <- Resource.eval(Ref.of[IO, Option[(WineEnvironment, IO[Unit])]](None))
     setup <- Resource.eval(Semaphore[IO](1))
     slots <- Resource.eval(Semaphore[IO](8))
-    service = new WineService(config, environment, setup, slots)
+    service = new WineService(config, environment, setup, slots, settings)
     _ <- Resource.make(IO.unit)(_ => service.close)
   yield service

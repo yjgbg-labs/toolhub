@@ -8,6 +8,7 @@
 //> using dep org.http4s::http4s-circe:0.23.38
 //> using dep io.circe::circe-core:0.14.17
 //> using dep io.circe::circe-parser:0.14.17
+//> using dep com.typesafe:config:1.4.3
 //> using dep com.softwaremill.sttp.apispec::openapi-model:0.12.1
 //> using dep com.softwaremill.sttp.apispec::openapi-circe:0.12.1
 //> using dep com.outr::scribe:3.19.0

@@ -2,8 +2,39 @@ package framework.http
 
 import cats.effect.IO
 import framework.Client
+import framework.model.JsonModel
+import framework.validation.*
 import io.circe.Json
 import scala.concurrent.duration.FiniteDuration
+
+final case class CorsConfig(
+    @nonBlank allowOrigins: String = "*",
+    @duration maxAge: String = "1h"
+) derives JsonModel, Validator
+
+final case class ServerConfig(
+    @hostAddress host: String = "0.0.0.0",
+    @min(1) @max(65535) port: Int = 18080,
+    @positive maxBodyBytes: Long = 1024L * 1024L,
+    cors: CorsConfig = CorsConfig()
+) derives JsonModel, Validator:
+  def toSettings: ServerSettings =
+    val origins = cors.allowOrigins.split(",").iterator.map(_.trim).filter(_.nonEmpty).toSet
+    ServerSettings(
+      host = host.trim,
+      port = port,
+      maxBodyBytes = maxBodyBytes,
+      cors = Some(
+        CorsSettings(
+          allowedOrigins = if origins.isEmpty then Set("*") else origins,
+          allowedMethods = Set("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"),
+          allowedHeaders = Set("*"),
+          exposedHeaders = Set("ETag", "Allow"),
+          allowCredentials = false,
+          maxAge = Contracts.parseDuration(cors.maxAge)
+        )
+      )
+    )
 
 final case class ServerSettings(host: String, port: Int, maxBodyBytes: Long, cors: Option[CorsSettings] = None)
 final case class CorsSettings(

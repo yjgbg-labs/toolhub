@@ -16,19 +16,21 @@ import org.graalvm.polyglot.Source
 /** Session trigger manager backed directly by a dedicated `groot.schedule.Scheduler` instance. */
 final class NotifyTriggerManager private (
     store: NotifyTriggerStore,
-    val scheduler: Scheduler
+    val scheduler: Scheduler,
+    config: IO[NotifyConfig]
 ):
   def loop: IO[Unit] = scheduler.loop
 
   def when(sessionId: String, cwd: Option[String], request: NotifyWhenRequest): IO[NotifyTrigger] =
     for
+      cfg <- config
       now <- IO.realTimeInstant
       cleanSession = sessionId.trim
       cleanCwd = cwd.map(_.trim).filter(_.nonEmpty)
-      everyText = request.every.map(_.trim).filter(_.nonEmpty).getOrElse(NotifyTriggerManager.defaultEvery)
+      everyText = request.every.map(_.trim).filter(_.nonEmpty).getOrElse(cfg.defaultEvery)
       delayText = request.delay.map(_.trim).filter(_.nonEmpty).getOrElse(NotifyTriggerManager.defaultDelay)
-      cpuText = request.cpu.map(_.trim).filter(_.nonEmpty).getOrElse(NotifyTriggerManager.defaultCpu)
-      scriptTimeoutText = request.scriptTimeout.map(_.trim).filter(_.nonEmpty).getOrElse(NotifyTriggerManager.defaultScriptTimeout)
+      cpuText = request.cpu.map(_.trim).filter(_.nonEmpty).getOrElse(cfg.defaultCpu)
+      scriptTimeoutText = request.scriptTimeout.map(_.trim).filter(_.nonEmpty).getOrElse(cfg.defaultScriptTimeout)
       timeoutText = request.timeout.map(_.trim).filter(_.nonEmpty)
       once = request.once.getOrElse(true)
       delayMs <- IO {
@@ -61,9 +63,10 @@ final class NotifyTriggerManager private (
       )
       _ <- scheduler.mutate() {
         for
+          latestCfg <- config
           active <- store.active
-          _ <- IO.raiseWhen(active.size >= NotifyTriggerManager.maxActiveTriggers)(
-            NotifyFailure("notify_busy", s"Too many active notify triggers (limit ${NotifyTriggerManager.maxActiveTriggers})")
+          _ <- IO.raiseWhen(active.size >= latestCfg.maxActiveTriggers)(
+            NotifyFailure("notify_busy", s"Too many active notify triggers (limit ${latestCfg.maxActiveTriggers})")
           )
           _ <- store.insert(stored)
         yield ()
@@ -138,13 +141,13 @@ object NotifyTriggerManager:
     val key = s"${t.id}|${t.sessionId}|${t.every}|${t.delay}|${t.once}|${t.cpu}|${t.scriptTimeout}|${t.code}"
     HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(key.getBytes(UTF_8)))
 
-  private def toScheduledItem(t: StoredTrigger): ScheduledItem =
+  private def toScheduledItem(t: StoredTrigger, retry: RetryPolicy = defaultDeliveryRetry): ScheduledItem =
     val ctx = Map("sessionId" -> t.sessionId) ++ t.cwd.map("cwd" -> _)
     ScheduledItem(
       everyMs = ScheduleValidation.durationMs(t.every),
       cpu = t.cpu,
       timeout = t.scriptTimeout,
-      retry = defaultDeliveryRetry,
+      retry = retry,
       enabled = t.status == "active",
       firstRunAt = t.firstRunAt.map(Instant.parse),
       expiresAt = t.expiresAt.map(Instant.parse),
@@ -183,9 +186,15 @@ object NotifyTriggerManager:
       status = t.status
     )
 
-  private final class NotifyBackend(store: NotifyTriggerStore, notifyService: NotifyService) extends ScheduleBackend:
+  private final class NotifyBackend(
+      store: NotifyTriggerStore,
+      notifyService: NotifyService,
+      config: IO[NotifyConfig]
+  ) extends ScheduleBackend:
     def snapshot: IO[(Map[String, Double], Map[String, ScheduledItem])] =
-      store.active.map(list => Map.empty[String, Double] -> list.map(t => t.id -> toScheduledItem(t)).toMap)
+      (store.active, config).tupled.map { (list, cfg) =>
+        Map.empty[String, Double] -> list.map(t => t.id -> toScheduledItem(t, cfg.deliveryRetry)).toMap
+      }
 
     def state(name: String): IO[JobState] = store.state(name)
     def writeState(name: String, state: JobState): IO[Unit] = store.writeState(name, state)
@@ -275,10 +284,11 @@ object NotifyTriggerManager:
       notifyService: NotifyService,
       graaljs: GraalManager,
       home: Path = groot.schedule.Store.defaultHome,
-      startLoop: Boolean = true
+      startLoop: Boolean = true,
+      config: IO[NotifyConfig] = IO.pure(NotifyConfig())
   ): Resource[IO, NotifyTriggerManager] =
     for
       store <- NotifyTriggerStore.resource(home)
-      backend = new NotifyBackend(store, notifyService)
+      backend = new NotifyBackend(store, notifyService, config)
       scheduler <- Scheduler.withBackend(graaljs, backend, startLoop = startLoop)
-    yield new NotifyTriggerManager(store, scheduler)
+    yield new NotifyTriggerManager(store, scheduler, config)

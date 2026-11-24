@@ -1,8 +1,13 @@
 package groot.wine
 
 import framework.model.JsonModel
+import framework.validation.*
 import io.circe.Json
 import java.nio.file.Path
+
+final case class WineSettings(
+    @positive maxResultBytes: Int = WineValidation.maxBytes
+) derives JsonModel, Validator
 
 case class WineError(code: String, message: String, stdout: String = "", stderr: String = "",
     durationMs: Long = 0, step: Option[Int] = None) derives JsonModel

@@ -1,7 +1,16 @@
 package groot.graaljs
 
 import framework.model.JsonModel
+import framework.validation.*
 import java.nio.charset.StandardCharsets.UTF_8
+
+@contract[GraalJsConfig](c => c.taskBytes <= c.engineBytes, "taskBytes must not exceed engineBytes")
+final case class GraalJsConfig(
+    @positive engineBytes: Long = Limits.engineBytes,
+    @positive taskBytes: Long = Limits.taskBytes,
+    @positive maxQueued: Int = Limits.maxQueued,
+    @positive maxLogBytes: Long = Limits.maxLogBytes
+) derives JsonModel, Validator
 
 case class TaskError(code: String, message: String) derives JsonModel
 

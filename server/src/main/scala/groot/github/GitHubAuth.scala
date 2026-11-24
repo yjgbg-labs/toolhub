@@ -15,7 +15,8 @@ import scala.concurrent.duration.*
 
 final class GitHubAuth private (
     authFile: Path, state: Ref[IO, Option[StoredGitHubAuth]], mutex: Mutex[IO],
-    client: GitHubClient, defaultClientId: String
+    client: GitHubClient, defaultClientId: String,
+    config: IO[GitHubConfig] = IO.pure(GitHubConfig())
 ):
   def requireToken: IO[String] = state.get.flatMap {
     case Some(s) if s.token.nonEmpty => IO.pure(s.token)
@@ -32,9 +33,12 @@ final class GitHubAuth private (
     token.map(_.trim).filter(_.nonEmpty) match
       case Some(raw) => verifyAndPersist(raw).map(s => Stream.emit(renderSuccess(s)))
       case None =>
-        val cid = clientId.map(_.trim).filter(_.nonEmpty).getOrElse(defaultClientId)
-        val cleanScope = scopes.split("[,\\s]+").iterator.map(_.trim).filter(_.nonEmpty).mkString(" ")
-        startDeviceFlow(cid, cleanScope)
+        config.flatMap { cfg =>
+          val cid = clientId.map(_.trim).filter(_.nonEmpty).getOrElse(cfg.oauthClientId)
+          val effectiveScopes = if scopes == GitHubAuth.defaultScopes then cfg.defaultScopes else scopes
+          val cleanScope = effectiveScopes.split("[,\\s]+").iterator.map(_.trim).filter(_.nonEmpty).mkString(" ")
+          startDeviceFlow(cid, cleanScope)
+        }
 
   private def startDeviceFlow(clientId: String, scope: String): IO[Stream[IO, PlainText]] =
     client.postOAuthForm("/login/device/code", Vector("client_id" -> clientId, "scope" -> scope)).flatMap { json =>
@@ -115,12 +119,13 @@ object GitHubAuth:
     headers.get("x-oauth-scopes").toVector.flatMap(_.split(",")).map(_.trim).filter(_.nonEmpty).distinct
 
   def resource(home: Path, client: GitHubClient,
-      defaultClientId: String = sys.env.get("GITHUB_CLIENT_ID").filter(_.nonEmpty).getOrElse(defaultOAuthClientId)): Resource[IO, GitHubAuth] =
+      defaultClientId: String = sys.env.get("GITHUB_CLIENT_ID").filter(_.nonEmpty).getOrElse(defaultOAuthClientId),
+      config: IO[GitHubConfig] = IO.pure(GitHubConfig())): Resource[IO, GitHubAuth] =
     Resource.eval {
       val authFile = home.resolve("github").resolve("auth.json")
       for
         init <- IO.blocking(if Files.isRegularFile(authFile) then decode[StoredGitHubAuth](Files.readString(authFile, UTF_8)).toOption.filter(_.token.trim.nonEmpty) else None)
         ref <- Ref.of[IO, Option[StoredGitHubAuth]](init)
         mutex <- Mutex[IO]
-      yield new GitHubAuth(authFile, ref, mutex, client, defaultClientId)
+      yield new GitHubAuth(authFile, ref, mutex, client, defaultClientId, config)
     }

@@ -3,6 +3,7 @@ package groot.sqlite
 import cats.effect.{IO, Resource}
 import cats.syntax.all.*
 import framework.model.JsonModel
+import framework.validation.Contracts
 import io.circe.Json
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Path
@@ -18,30 +19,30 @@ private[sqlite] object SqliteExecutor:
   val maxRows = 10000
 
   /** URI encoding preserves literal ?, # and Unicode in filenames; missing databases are never created. */
-  def open(path: Path, readOnly: Boolean = false): SQLiteConnection =
+  def open(path: Path, readOnly: Boolean = false, busyTimeoutMs: Int = 5000): SQLiteConnection =
     Class.forName("org.sqlite.JDBC")
     val config = new SQLiteConfig
     config.setReadOnly(readOnly)
     config.resetOpenMode(SQLiteOpenMode.CREATE)
-    config.setBusyTimeout(5000)
+    config.setBusyTimeout(busyTimeoutMs)
     config.enforceForeignKeys(true)
     DriverManager.getConnection(s"jdbc:sqlite:${path.toUri.toASCIIString}", config.toProperties).asInstanceOf[SQLiteConnection]
 
-  def execute(path: Path, sql: String): IO[ExecuteResult] = IO.defer {
-    if sql.getBytes(UTF_8).length > maxSqlBytes then throw InvalidSqlite("SQL exceeds 1 MiB")
+  def execute(path: Path, sql: String, cfg: SqliteConfig = SqliteConfig()): IO[ExecuteResult] = IO.defer {
+    if sql.getBytes(UTF_8).length > cfg.maxSqlBytes then throw InvalidSqlite(s"SQL exceeds ${Contracts.formatBytes(cfg.maxSqlBytes.toLong)}")
     val statements = SqlStatements.split(sql)
-    Resource.fromAutoCloseable(IO.blocking(open(path))).use { connection =>
+    Resource.fromAutoCloseable(IO.blocking(open(path, busyTimeoutMs = cfg.busyTimeoutMs))).use { connection =>
       // A cancelled observer interrupts the native worker and waits for it before closing the connection.
       IO.uncancelable { poll =>
         val cancelled = new AtomicBoolean(false)
         for
           _ <- IO.blocking {
-            connection.setLimit(SQLiteLimits.SQLITE_LIMIT_LENGTH, maxSqlBytes)
+            connection.setLimit(SQLiteLimits.SQLITE_LIMIT_LENGTH, cfg.maxSqlBytes)
             ProgressHandler.setHandler(connection, 1000, new ProgressHandler {
               protected def progress(): Int = if cancelled.get() then 1 else 0
             })
           }
-          worker <- IO.blocking(run(connection, statements, cancelled))
+          worker <- IO.blocking(run(connection, statements, cancelled, cfg))
             .guarantee(IO.blocking(ProgressHandler.clearHandler(connection))).attempt.start
           result <- poll(worker.joinWithNever).onCancel(
             IO { cancelled.set(true); connection.getDatabase.interrupt() } *> worker.join.void)
@@ -51,12 +52,12 @@ private[sqlite] object SqliteExecutor:
     }
   }
 
-  private def run(connection: SQLiteConnection, statements: Vector[String], cancelled: AtomicBoolean): ExecuteResult =
+  private def run(connection: SQLiteConnection, statements: Vector[String], cancelled: AtomicBoolean, cfg: SqliteConfig): ExecuteResult =
     var bytes = 32L
     var count = 0
     def charge(size: Int): Unit =
       bytes += size
-      if bytes > maxResultBytes then throw SqliteResultLimit("SQLite result exceeds 512 KiB; select fewer columns or rows")
+      if bytes > cfg.maxResultBytes then throw SqliteResultLimit(s"SQLite result exceeds ${cfg.maxResultBytes / 1024} KiB; select fewer columns or rows")
     def checkCancelled(): Unit =
       if cancelled.get() then throw new InterruptedException("SQLite execution cancelled")
     val results = statements.map { sql =>
@@ -72,7 +73,7 @@ private[sqlite] object SqliteExecutor:
             while result.next() do
               checkCancelled()
               count += 1
-              if count > maxRows then throw SqliteResultLimit("SQLite result exceeds 10000 rows; use LIMIT")
+              if count > cfg.maxRows then throw SqliteResultLimit(s"SQLite result exceeds ${cfg.maxRows} rows; use LIMIT")
               val row = columns.indices.map(index => cell(result, index + 1)).toVector
               charge(Json.fromValues(row).noSpaces.getBytes(UTF_8).length + 1)
               rows += row
@@ -85,8 +86,8 @@ private[sqlite] object SqliteExecutor:
       }
     }
     val result = ExecuteResult(results)
-    if JsonModel[ExecuteResult].encoder(result).noSpaces.getBytes(UTF_8).length > maxResultBytes then
-      throw SqliteResultLimit("SQLite result exceeds 512 KiB")
+    if JsonModel[ExecuteResult].encoder(result).noSpaces.getBytes(UTF_8).length > cfg.maxResultBytes then
+      throw SqliteResultLimit(s"SQLite result exceeds ${cfg.maxResultBytes / 1024} KiB")
     result
 
   private def cell(rows: ResultSet, index: Int): Json = rows.getObject(index) match

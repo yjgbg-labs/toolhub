@@ -2,11 +2,17 @@ package groot.schedule
 
 import io.circe.{Decoder, DecodingFailure}
 import framework.model.JsonModel
+import framework.validation.*
 import groot.graaljs.{TaskError, InvalidGraalTask, Validation as GraalValidation}
 import java.time.Instant
 import java.nio.file.{Path, InvalidPathException}
 
-case class RetryPolicy(maxRetries: Int = 3, delay: String = "1s", backoff: Double = 2, maxDelay: String = "30s") derives JsonModel
+case class RetryPolicy(
+    @min(0) @max(100) maxRetries: Int = 3,
+    @duration delay: String = "1s",
+    @minDouble(1.0) backoff: Double = 2,
+    @duration maxDelay: String = "30s"
+) derives JsonModel, Validator
 
 case class ScheduleJob(
     every: String,

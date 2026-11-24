@@ -15,11 +15,15 @@ import scala.concurrent.duration.*
 
 final class GitHubClient(
     http: Client[IO],
-    val apiBase: Uri = Uri.unsafeFromString("https://api.github.com"),
-    val oauthBase: Uri = Uri.unsafeFromString("https://github.com"),
-    requestTimeout: FiniteDuration = 30.seconds
+    val apiBase: Uri = GitHubClient.defaultApiBase,
+    val oauthBase: Uri = GitHubClient.defaultOAuthBase,
+    requestTimeout: FiniteDuration = 30.seconds,
+    config: IO[GitHubConfig] = IO.pure(GitHubConfig())
 ):
   import GitHubClient.*
+
+  private def resolveBase(configured: String, fallback: Uri, defaultConst: Uri): Uri =
+    if fallback != defaultConst then fallback else Uri.fromString(configured.trim).getOrElse(fallback)
 
   def getJson(token: String, path: String, query: Map[String, String] = Map.empty): IO[(Map[String, String], Json)] =
     sendJson(token, "GET", path, query).map((_, h, j) => h -> j)
@@ -31,8 +35,8 @@ final class GitHubClient(
       case Left(_) => IO.raiseError(GitHubFailure("invalid_github", s"Unsupported HTTP method: $methodText"))
       case Right(m) if (m == Method.GET || m == Method.HEAD) && body.nonEmpty =>
         IO.raiseError(GitHubFailure("invalid_github", s"$upper request cannot carry a JSON body"))
-      case Right(m) =>
-        execute(Some(token), m, resolveApiUri(path, query), headers, body.map(_.noSpaces.getBytes(UTF_8)), maxJsonBytes, failOnTruncate = true).flatMap {
+      case Right(m) => config.flatMap: cfg =>
+        execute(Some(token), m, resolveApiUri(resolveBase(cfg.apiBase, apiBase, defaultApiBase), path, query), headers, body.map(_.noSpaces.getBytes(UTF_8)), cfg.maxJsonBytes, failOnTruncate = true).flatMap {
           case (st, hdrs, bytes) if st < 200 || st >= 300 => IO.raiseError(decodeError(st, hdrs, bytes))
           case (st, hdrs, bytes) =>
             val j = if bytes.isEmpty || st == 204 || st == 205 then Json.Null else
@@ -40,10 +44,10 @@ final class GitHubClient(
             IO.pure((st, hdrs, j))
         }
 
-  def paginateArray(token: String, path: String, query: Map[String, String] = Map.empty, maxPages: Int = 10): IO[(Map[String, String], Vector[Json])] =
+  def paginateArray(token: String, path: String, query: Map[String, String] = Map.empty, maxPages: Int = 10): IO[(Map[String, String], Vector[Json])] = config.flatMap: cfg =>
     val cap = math.max(1, math.min(maxPages, 50))
     def loop(uri: Uri, page: Int, acc: Vector[Json], h0: Option[Map[String, String]]): IO[(Map[String, String], Vector[Json])] =
-      execute(Some(token), Method.GET, uri, Map.empty, None, maxJsonBytes, failOnTruncate = true).flatMap {
+      execute(Some(token), Method.GET, uri, Map.empty, None, cfg.maxJsonBytes, failOnTruncate = true).flatMap {
         case (st, hdrs, bytes) if st < 200 || st >= 300 => IO.raiseError(decodeError(st, hdrs, bytes))
         case (_, hdrs, bytes) =>
           val items = (if bytes.isEmpty then Json.arr() else parseJson(bytes)).asArray.getOrElse(
@@ -55,11 +59,11 @@ final class GitHubClient(
               loop(Uri.fromString(next).fold(e => throw GitHubFailure("github_upstream", e.message), identity), page + 1, merged, firstH)
             case _ => IO.pure(firstH.getOrElse(hdrs) -> merged)
       }
-    loop(resolveApiUri(path, query), 1, Vector.empty, None)
+    loop(resolveApiUri(resolveBase(cfg.apiBase, apiBase, defaultApiBase), path, query), 1, Vector.empty, None)
 
-  def getText(token: String, path: String, accept: String = "application/vnd.github+json", maxBytes: Int = maxTextBytes): IO[(String, Boolean)] =
-    val cap = math.max(1024, math.min(maxBytes, maxRawBytes))
-    execute(Some(token), Method.GET, resolveApiUri(path, Map.empty), Map("Accept" -> accept), None, cap, failOnTruncate = false).flatMap {
+  def getText(token: String, path: String, accept: String = "application/vnd.github+json", maxBytes: Int = maxTextBytes): IO[(String, Boolean)] = config.flatMap: cfg =>
+    val cap = math.max(1024, math.min(maxBytes, cfg.maxRawBytes))
+    execute(Some(token), Method.GET, resolveApiUri(resolveBase(cfg.apiBase, apiBase, defaultApiBase), path, Map.empty), Map("Accept" -> accept), None, cap, failOnTruncate = false).flatMap {
       case (st, hdrs, bytes) if st < 200 || st >= 300 => IO.raiseError(decodeError(st, hdrs, bytes))
       case (_, _, bytes) => IO.pure((new String(bytes.take(cap), UTF_8), bytes.length > cap))
     }
@@ -79,8 +83,9 @@ final class GitHubClient(
           IO.raiseError(GitHubFailure(code, if msg.nonEmpty then msg else payload.noSpaces.take(400)))
       }
 
-  def postOAuthForm(path: String, form: Vector[(String, String)]): IO[Json] =
-    val uri = Uri.unsafeFromString(oauthBase.renderString.stripSuffix("/") + (if path.startsWith("/") then path else s"/$path"))
+  def postOAuthForm(path: String, form: Vector[(String, String)]): IO[Json] = config.flatMap: cfg =>
+    val activeOauth = resolveBase(cfg.oauthBase, oauthBase, defaultOAuthBase)
+    val uri = Uri.unsafeFromString(activeOauth.renderString.stripSuffix("/") + (if path.startsWith("/") then path else s"/$path"))
     val encoded = form.map((k, v) => s"${URLEncoder.encode(k, UTF_8)}=${URLEncoder.encode(v, UTF_8)}").mkString("&").getBytes(UTF_8)
     execute(None, Method.POST, uri, Map("Accept" -> "application/json", "Content-Type" -> "application/x-www-form-urlencoded"), Some(encoded), 262144, failOnTruncate = true).flatMap {
       case (st, hdrs, bytes) if st < 200 || st >= 300 => IO.raiseError(decodeError(st, hdrs, bytes))
@@ -88,7 +93,8 @@ final class GitHubClient(
     }
 
   private def execute(token: Option[String], method: Method, uri: Uri, extras: Map[String, String],
-      body: Option[Array[Byte]], cap: Int, failOnTruncate: Boolean): IO[(Int, Map[String, String], Array[Byte])] =
+      body: Option[Array[Byte]], cap: Int, failOnTruncate: Boolean): IO[(Int, Map[String, String], Array[Byte])] = config.flatMap: cfg =>
+    val activeTimeout = if requestTimeout != 30.seconds then requestTimeout else framework.validation.Contracts.parseDuration(cfg.timeout)
     val accept = extras.collectFirst { case (k, v) if k.equalsIgnoreCase("accept") => v }.getOrElse("application/vnd.github+json")
     val ctype = extras.collectFirst { case (k, v) if k.equalsIgnoreCase("content-type") => v }.getOrElse("application/json; charset=utf-8")
     val base = Vector(token.map(t => "Authorization" -> s"Bearer $t"), Some("Accept" -> accept), Some("X-GitHub-Api-Version" -> apiVersion),
@@ -98,7 +104,7 @@ final class GitHubClient(
     val req0 = Request[IO](method, uri, headers = Headers((base ++ custom).map((k, v) => Header.Raw(CIString(k), v))))
     val req = body.fold(req0)(b => req0.withBodyStream(Stream.chunk(Chunk.array(b))))
     follow(req, 0, if failOnTruncate then cap else cap + 1, failOnTruncate)
-      .timeoutTo(requestTimeout, IO.raiseError(GitHubFailure("github_timeout", s"GitHub request timed out after $requestTimeout")))
+      .timeoutTo(activeTimeout, IO.raiseError(GitHubFailure("github_timeout", s"GitHub request timed out after $activeTimeout")))
       .adaptError { case e if !e.isInstanceOf[GitHubFailure] => GitHubFailure("github_upstream", s"GitHub request failed: ${Option(e.getMessage).getOrElse(e.getClass.getSimpleName)}") }
 
   private def follow(req: Request[IO], redirects: Int, readCap: Int, failOnTruncate: Boolean): IO[(Int, Map[String, String], Array[Byte])] =
@@ -124,17 +130,19 @@ final class GitHubClient(
       case Right(res) => IO.pure(res)
     }
 
-  private def resolveApiUri(rawPath: String, extraQuery: Map[String, String]): Uri =
+  private def resolveApiUri(activeApiBase: Uri, rawPath: String, extraQuery: Map[String, String]): Uri =
     val p = rawPath.trim
     if p.isEmpty then throw GitHubFailure("invalid_github", "API path must not be blank")
     val uri = if p.startsWith("https://") || p.startsWith("http://") then
       val u = Uri.fromString(p).fold(e => throw GitHubFailure("invalid_github", e.message), identity)
-      if originOf(u) != originOf(apiBase) then throw GitHubFailure("invalid_github", s"Refusing to send GitHub token to external origin: ${u.host.map(_.value).getOrElse(p)}")
+      if originOf(u) != originOf(activeApiBase) then throw GitHubFailure("invalid_github", s"Refusing to send GitHub token to external origin: ${u.host.map(_.value).getOrElse(p)}")
       u
-    else Uri.fromString(apiBase.renderString.stripSuffix("/") + (if p.startsWith("/") then p else s"/$p")).fold(e => throw GitHubFailure("invalid_github", e.message), identity)
+    else Uri.fromString(activeApiBase.renderString.stripSuffix("/") + (if p.startsWith("/") then p else s"/$p")).fold(e => throw GitHubFailure("invalid_github", e.message), identity)
     if extraQuery.isEmpty then uri else uri.copy(query = Query.fromVector(uri.query.pairs ++ extraQuery.toVector.map((k, v) => k -> Some(v))))
 
 object GitHubClient:
+  val defaultApiBase: Uri = Uri.unsafeFromString("https://api.github.com")
+  val defaultOAuthBase: Uri = Uri.unsafeFromString("https://github.com")
   val apiVersion = "2022-11-28"
   val userAgent = "groot-http/1.0"
   val maxJsonBytes: Int = 4 * 1024 * 1024

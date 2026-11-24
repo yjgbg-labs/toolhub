@@ -44,15 +44,17 @@ final class Application private[framework] (
     }
   }
 
-  val httpApp: HttpApp[IO] =
-    val handler = httpHandler(dispatch)
-    serverSettings.cors.fold(handler)(Cors(_, handler))
+  val httpApp: HttpApp[IO] = httpAppWith(serverSettings)
+
+  def httpAppWith(settings: ServerSettings): HttpApp[IO] =
+    val handler = httpHandler((req, segs) => dispatch(req, segs, settings.maxBodyBytes))
+    settings.cors.fold(handler)(Cors(_, handler))
 
   val endpoints: Vector[Endpoint] = ordered.map { endpoint =>
     val spec = endpoint.spec
     new Endpoint(spec.operationId, spec.method, spec.path.value, spec.inputs.map { input =>
       Endpoint.Input(input.name, input.location, input.schema.node(), input.bodyMediaType)
-    }, spec.exposedOn, httpHandler((request, segments) => route(request, segments, Vector(endpoint))))
+    }, spec.exposedOn, httpHandler((request, segments) => route(request, segments, Vector(endpoint), serverSettings.maxBodyBytes)))
   }
 
   def resource: Resource[IO, org.http4s.server.Server] =
@@ -66,7 +68,7 @@ final class Application private[framework] (
 
   def serve: IO[Nothing] = resource.useForever
 
-  private def dispatch(request: Request[IO], segments: Vector[String]): IO[Response[IO]] =
+  private def dispatch(request: Request[IO], segments: Vector[String], maxBodyBytes: Long): IO[Response[IO]] =
     if docs.matches(segments).nonEmpty then
       if Set("GET", "HEAD").contains(request.method.name) then
         val matches = headerValues(request, "If-None-Match").flatMap(_.split(",")).exists { value =>
@@ -77,9 +79,9 @@ final class Application private[framework] (
         IO.pure(result.putHeaders(Header.Raw(CIString("ETag"), etag)))
       else IO.pure(errorResponse(405, "method_not_allowed", "Method not allowed")
         .putHeaders(Header.Raw(CIString("Allow"), "GET, HEAD")))
-    else route(request, segments, publicEndpoints)
+    else route(request, segments, publicEndpoints, maxBodyBytes)
 
-  private def route(request: Request[IO], segments: Vector[String], visible: Vector[BoundEndpoint]): IO[Response[IO]] =
+  private def route(request: Request[IO], segments: Vector[String], visible: Vector[BoundEndpoint], maxBodyBytes: Long): IO[Response[IO]] =
     val matches = visible.flatMap(endpoint => endpoint.spec.path.matches(segments).map(params => endpoint -> params))
     matches.headOption match
       case None => IO.pure(errorResponse(404, "not_found", "Route not found"))
@@ -88,12 +90,12 @@ final class Application private[framework] (
         samePath.find(_._1.spec.method == request.method.name) match
           case None => IO.pure(errorResponse(405, "method_not_allowed", "Method not allowed")
             .putHeaders(Header.Raw(CIString("Allow"), samePath.map(_._1.spec.method).distinct.sorted.mkString(", "))))
-          case Some((endpoint, params)) => execute(endpoint, params, request)
+          case Some((endpoint, params)) => execute(endpoint, params, request, maxBodyBytes)
 
-  private def execute(endpoint: BoundEndpoint, params: Map[String, String], request: Request[IO]): IO[Response[IO]] =
+  private def execute(endpoint: BoundEndpoint, params: Map[String, String], request: Request[IO], maxBodyBytes: Long): IO[Response[IO]] =
     val spec = endpoint.spec
     val body = spec.inputs.find(_.location == InputLocation.Body) match
-      case Some(input) => readBody(request, input.bodyMediaType.get)
+      case Some(input) => readBody(request, input.bodyMediaType.get, maxBodyBytes)
       case None => IO.pure(Right(None): Either[Response[IO], Option[Json]])
     body.flatMap {
       case Left(response) => IO.pure(response)
@@ -123,11 +125,11 @@ final class Application private[framework] (
           }
     }
 
-  private def readBody(request: Request[IO], mediaType: String): IO[Either[Response[IO], Option[Json]]] =
-    request.body.take(serverSettings.maxBodyBytes + 1).compile.to(Array).map { bytes =>
+  private def readBody(request: Request[IO], mediaType: String, maxBodyBytes: Long): IO[Either[Response[IO], Option[Json]]] =
+    request.body.take(maxBodyBytes + 1).compile.to(Array).map { bytes =>
       val isText = mediaType == "text/plain"
       val matchesType = request.headers.get[`Content-Type`].exists(_.mediaType == org.http4s.MediaType.parse(mediaType).toOption.get)
-      if bytes.length > serverSettings.maxBodyBytes then Left(errorResponse(413, "body_too_large", "Request body too large"))
+      if bytes.length > maxBodyBytes then Left(errorResponse(413, "body_too_large", "Request body too large"))
       else if bytes.isEmpty && isText && matchesType then Right(Some(Json.fromString("")))
       else if bytes.isEmpty then Right(None)
       else if !matchesType then Left(errorResponse(415, "unsupported_media_type", s"Expected $mediaType"))

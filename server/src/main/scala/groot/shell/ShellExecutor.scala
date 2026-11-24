@@ -16,13 +16,19 @@ import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
 
 /** One execution pipeline; only the remote command, payload and cleanup scripts depend on the shell. */
-private[shell] final class ShellExecutor private (environment: ShellEnvironment, connection: Option[ShellExecutor.Connection]):
+private[shell] final class ShellExecutor private (
+    environment: ShellEnvironment,
+    connection: Option[ShellExecutor.Connection],
+    config: IO[ShellConfig]
+):
   import ShellExecutor.*
   import ShellScripts.quote
 
-  def execute(request: ShellRequest): IO[ShellResult] = connection match
-    case None => Process.run(request.script, request.timeout, request.cwd)
-    case Some(ssh) => remote(ssh, request)
+  def execute(request: ShellRequest): IO[ShellResult] = config.flatMap { cfg =>
+    connection match
+      case None => Process.run(request.script, request.timeout, request.cwd, cfg.maxScriptBytes, cfg.maxOutputBytes)
+      case Some(ssh) => remote(ssh, request, cfg.maxOutputBytes)
+  }
 
   private def connect(ssh: Connection): IO[Unit] = ssh.mutex.lock.surround {
     val check = ssh.command("-O", "check", ssh.target)
@@ -32,7 +38,7 @@ private[shell] final class ShellExecutor private (environment: ShellEnvironment,
       .flatMap(result => if result.exitCode == 0 then IO.unit else IO.raiseError(ShellFailure("shell_ssh", result.stderr.trim)))
   }
 
-  private def remote(ssh: Connection, request: ShellRequest): IO[ShellResult] = IO {
+  private def remote(ssh: Connection, request: ShellRequest, maxOut: Int): IO[ShellResult] = IO {
     (ShellScripts.payload(environment.shell, request.script), duration(request.timeout))
   }.flatMap { (payload, deadline) =>
     val run = Resource.make(IO.blocking {
@@ -51,7 +57,7 @@ private[shell] final class ShellExecutor private (environment: ShellEnvironment,
       val command = ssh.command("-o", "ControlMaster=auto", "-o", s"ControlPersist=${ssh.idleSeconds}", ssh.target, bootstrap)
       connect(ssh) *> Resource.makeCase(IO.unit) { (_, exit) =>
         if exit == ExitCase.Succeeded then IO.unit else cancelRemote(ssh, token)
-      }.use(_ => Process.run(s"$command < ${quote(file.toString)}", request.timeout))
+      }.use(_ => Process.run(s"$command < ${quote(file.toString)}", request.timeout, maxScript = Int.MaxValue, maxOutput = maxOut))
     }
     run.timeoutTo(deadline, IO.raiseError(ShellFailure("shell_timeout", s"${environment.shell} exceeded ${request.timeout}")))
   }
@@ -89,7 +95,8 @@ private[shell] object ShellExecutor:
       "-o", "ConnectionAttempts=1", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2")
     def command(args: String*): String = (base ++ args).map(ShellScripts.quote).mkString(" ")
 
-  def resource(home: Path, environment: ShellEnvironment, ssh: String): Resource[IO, ShellExecutor] = for
+  def resource(home: Path, environment: ShellEnvironment, ssh: String,
+      config: IO[ShellConfig] = IO.pure(ShellConfig())): Resource[IO, ShellExecutor] = for
     connection <- environment.target.traverse { target => for
       idleSeconds <- Resource.eval(IO {
         val millis = duration(environment.idle).toMillis
@@ -106,14 +113,14 @@ private[shell] object ShellExecutor:
       })(directory => IO.blocking { Files.deleteIfExists(directory); () }.handleErrorWith(_ => IO.unit))
       mutex <- Resource.eval(Mutex[IO])
     yield Connection(directory, target, idleSeconds, ssh, mutex) }
-    executor <- Resource.make(IO.pure(new ShellExecutor(environment, connection)))(_.close)
+    executor <- Resource.make(IO.pure(new ShellExecutor(environment, connection, config)))(_.close)
   yield executor
 
   /** Both local scripts and SSH channels use the same bounded, cancellable host process runner. */
   private object Process:
-    def run(script: String, timeout: String, cwd: Option[String] = None): IO[ShellResult] = IO.blocking {
+    def run(script: String, timeout: String, cwd: Option[String] = None, maxScript: Int = maxBytes, maxOutput: Int = maxBytes): IO[ShellResult] = IO.blocking {
       if script.trim.isEmpty || script.contains('\u0000') then throw ShellFailure("invalid_shell", "script must be nonblank and contain no NUL")
-      if script.getBytes(UTF_8).length > maxBytes then throw ShellFailure("shell_limit", "Shell script exceeds 64 KiB")
+      if script.getBytes(UTF_8).length > maxScript then throw ShellFailure("shell_limit", s"Shell script exceeds ${maxScript / 1024} KiB")
       val directory = cwd.map { value =>
         val path = try Path.of(value) catch case _: InvalidPathException => throw ShellFailure("invalid_shell", "Invalid cwd")
         if !path.isAbsolute || !Files.isDirectory(path) then throw ShellFailure("invalid_shell", "cwd must be an existing absolute directory")
@@ -135,8 +142,8 @@ private[shell] object ShellExecutor:
       }.use { child =>
         val execute = for
           _ <- IO.blocking(child.getOutputStream.close())
-          stdout <- capture(child.getInputStream)
-          stderr <- capture(child.getErrorStream)
+          stdout <- capture(child.getInputStream, maxOutput)
+          stderr <- capture(child.getErrorStream, maxOutput)
           result <- (await(child.onExit()).map(_.exitValue()), await(stdout), await(stderr)).parMapN(ShellResult.apply)
         yield result
         execute.timeoutTo(deadline, IO.raiseError(ShellFailure("shell_timeout", s"Shell exceeded $timeout")))
@@ -144,7 +151,7 @@ private[shell] object ShellExecutor:
     }
 
     // Pipe reads cannot reliably be interrupted; cancellation kills the process group to unblock them.
-    private def capture(input: InputStream): IO[CompletableFuture[String]] = IO {
+    private def capture(input: InputStream, maxOutput: Int): IO[CompletableFuture[String]] = IO {
       val result = new CompletableFuture[String]()
       Thread.ofPlatform().daemon().name("shell-output").start(() => {
         try
@@ -152,7 +159,7 @@ private[shell] object ShellExecutor:
           val buffer = new Array[Byte](8192)
           var count = input.read(buffer)
           while count >= 0 do
-            if output.size() + count > maxBytes then throw ShellFailure("shell_limit", "Shell output exceeds 64 KiB per stream")
+            if output.size() + count > maxOutput then throw ShellFailure("shell_limit", s"Shell output exceeds ${maxOutput / 1024} KiB per stream")
             output.write(buffer, 0, count)
             count = input.read(buffer)
           result.complete(output.toString(UTF_8))

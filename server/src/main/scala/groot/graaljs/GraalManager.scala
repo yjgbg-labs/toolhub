@@ -4,6 +4,7 @@ import cats.effect.{Deferred, IO, Resource}
 import cats.effect.std.{Mutex, Supervisor}
 import cats.syntax.all.*
 import framework.rpc.{PlainText, SSE}
+import fs2.concurrent.Signal
 import java.nio.file.Path
 import java.time.Instant
 import java.util.UUID
@@ -16,9 +17,10 @@ final class GraalManager private (
     runner: GraalRunner,
     mutex: Mutex[IO],
     supervisor: Supervisor[IO],
-    budgetBytes: Long
+    budgetBytesOverride: Option[Long],
+    config: Signal[IO, GraalJsConfig]
 ):
-  private case class Running(execution: GraalExecution, done: Deferred[IO, Unit])
+  private case class Running(execution: GraalExecution, done: Deferred[IO, Unit], memoryBytes: Long)
   private var running = Map.empty[String, Running]
   private var submitted = Map.empty[String, FiniteDuration]
   private var sources = Map.empty[String, Source]
@@ -47,13 +49,15 @@ final class GraalManager private (
       _ <- IO.raiseWhen(text.trim.isEmpty || text.getBytes(UTF_8).length > JavaScript.maxExecutableBytes)(InvalidGraalTask("Invalid JavaScript Source size"))
       task <- serial {
         for
+          latestCfg <- config.get
           _ <- IO.raiseUnless(accepting)(GraalStopping())
           pending <- store.active
-          _ <- IO.raiseWhen(pending.count(_.state == "queued") >= Limits.maxQueued)(GraalQueueFull())
+          _ <- IO.raiseWhen(pending.count(_.state == "queued") >= latestCfg.maxQueued)(GraalQueueFull())
           now <- IO.realTimeInstant
           clock <- IO.monotonic
+          taskBytes = budgetBytesOverride.fold(latestCfg.taskBytes)(b => math.min(latestCfg.taskBytes, b))
           task = GraalTask(id, "queued", limits._1, limits._2,
-            Limits.taskBytes, now.toString, None, None, None, 0d, None, store.logPath(id).toAbsolutePath.toString, None)
+            taskBytes, now.toString, None, None, None, 0d, None, store.logPath(id).toAbsolutePath.toString, None)
           _ <- store.createLog(id)
           _ <- store.insert(task, text)
           completed <- Deferred[IO, Either[Throwable, GraalTask]]
@@ -75,29 +79,33 @@ final class GraalManager private (
   def follow(id: String): IO[SSE[PlainText]] = store.get(id).as(SSE(store.follow(id).map(PlainText(_))))
 
   /** Called only while holding the mutex. Reservations precede worker creation. */
-  private def dispatch: IO[Unit] = IO.defer {
-    if !accepting || (running.size.toLong + 1) * Limits.taskBytes > budgetBytes then IO.unit
+  private def dispatch: IO[Unit] = config.get.flatMap { cfg =>
+    val effectiveBudget = budgetBytesOverride.getOrElse(cfg.engineBytes)
+    if !accepting then IO.unit
     else store.active.flatMap(_.find(_.state == "queued").traverse_ { queued =>
-      for
-        now <- IO.realTimeInstant
-        task = queued.copy(state = "running", startedAt = Some(now.toString))
-        _ <- store.save(task)
-        source <- IO.fromOption(sources.get(task.id))(new IllegalStateException(s"Missing admission snapshot for ${task.id}"))
-        taskContext = contexts.getOrElse(task.id, Map.empty)
-        startClock <- IO.monotonic
-        started <- runner.start(task, source, store.logPath(task.id), taskContext).attempt
-        _ <- started match
-          case Left(error) =>
-            complete(task, RunResult("failed", None, 0d, Some(TaskError("startup_error", error.toString.take(8192))))) *>
-              IO { submitted -= task.id }
-          case Right(execution) =>
-            for
-              done <- Deferred[IO, Unit]
-              _ <- IO { running += task.id -> Running(execution, done) }
-              _ <- supervisor.supervise(watch(task, execution, startClock + task.timeoutMs.millis).guarantee(done.complete(()).void))
-            yield ()
-        _ <- dispatch
-      yield ()
+      val inUse = running.values.map(_.memoryBytes).sum
+      if inUse + queued.memoryLimitBytes > effectiveBudget then IO.unit
+      else
+        for
+          now <- IO.realTimeInstant
+          task = queued.copy(state = "running", startedAt = Some(now.toString))
+          _ <- store.save(task)
+          source <- IO.fromOption(sources.get(task.id))(new IllegalStateException(s"Missing admission snapshot for ${task.id}"))
+          taskContext = contexts.getOrElse(task.id, Map.empty)
+          startClock <- IO.monotonic
+          started <- runner.start(task, source, store.logPath(task.id), taskContext).attempt
+          _ <- started match
+            case Left(error) =>
+              complete(task, RunResult("failed", None, 0d, Some(TaskError("startup_error", error.toString.take(8192))))) *>
+                IO { submitted -= task.id }
+            case Right(execution) =>
+              for
+                done <- Deferred[IO, Unit]
+                _ <- IO { running += task.id -> Running(execution, done, task.memoryLimitBytes) }
+                _ <- supervisor.supervise(watch(task, execution, startClock + task.timeoutMs.millis).guarantee(done.complete(()).void))
+              yield ()
+          _ <- dispatch
+        yield ()
     })
   }
 
@@ -166,8 +174,12 @@ final class GraalManager private (
 
 object GraalManager:
   private def taskId(): String = "gjs_" + UUID.randomUUID().toString.replace("-", "")
-  def resource(home: Path = GraalStore.defaultHome, commands: IO[GraalCommandSdk] = IO.pure(GraalCommandSdk.empty)): Resource[IO, GraalManager] =
-    managed(home, GraalRunner.resource(commands))
+  def resource(
+      home: Path = GraalStore.defaultHome,
+      commands: IO[GraalCommandSdk] = IO.pure(GraalCommandSdk.empty),
+      config: Signal[IO, GraalJsConfig] = Signal.constant(GraalJsConfig())
+  ): Resource[IO, GraalManager] =
+    managedWithConfig(home, GraalRunner.resource(commands, config.get), None, config)
 
   private[graaljs] def managed(
       home: Path,
@@ -175,11 +187,20 @@ object GraalManager:
       budgetBytes: Long = Limits.engineBytes
   ): Resource[IO, GraalManager] =
     require(budgetBytes >= Limits.taskBytes)
+    managedWithConfig(home, runnerResource, Some(budgetBytes), Signal.constant(GraalJsConfig()))
+
+  private def managedWithConfig(
+      home: Path,
+      runnerResource: Resource[IO, GraalRunner],
+      budgetBytesOverride: Option[Long],
+      config: Signal[IO, GraalJsConfig]
+  ): Resource[IO, GraalManager] =
     for
       store <- GraalStore.resource(home)
       runner <- runnerResource
       mutex <- Resource.eval(Mutex[IO])
       supervisor <- Supervisor[IO](await = true)
-      manager = new GraalManager(store, runner, mutex, supervisor, budgetBytes)
+      manager = new GraalManager(store, runner, mutex, supervisor, budgetBytesOverride, config)
       _ <- Resource.make(manager.recover)(_ => manager.shutdown)
+      _ <- config.discrete.changes(using cats.kernel.Eq.fromUniversalEquals).evalMap(_ => manager.serial(manager.dispatch)).compile.drain.background
     yield manager

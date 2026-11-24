@@ -364,12 +364,16 @@ final class GitHubService(val auth: GitHubAuth, val client: GitHubClient):
     }
 
 object GitHubService:
-  def resource(home: Path = Store.defaultHome, apiBase: Uri = Uri.unsafeFromString("https://api.github.com"),
-      oauthBase: Uri = Uri.unsafeFromString("https://github.com")): Resource[IO, GitHubService] =
+  def resource(
+      home: Path = Store.defaultHome,
+      apiBase: Uri = GitHubClient.defaultApiBase,
+      oauthBase: Uri = GitHubClient.defaultOAuthBase,
+      config: IO[GitHubConfig] = IO.pure(GitHubConfig())
+  ): Resource[IO, GitHubService] =
     for
-      http <- EmberClientBuilder.default[IO].withTimeout(30.seconds).withMaxResponseHeaderSize(64 * 1024).build
-      ghClient = new GitHubClient(http, apiBase, oauthBase)
-      auth <- GitHubAuth.resource(home, ghClient)
+      http <- EmberClientBuilder.default[IO].withTimeout(Duration.Inf).withMaxResponseHeaderSize(64 * 1024).build
+      ghClient = new GitHubClient(http, apiBase, oauthBase, 30.seconds, config)
+      auth <- GitHubAuth.resource(home, ghClient, config = config)
     yield new GitHubService(auth, ghClient)
 
   private val prListQuery =

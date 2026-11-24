@@ -14,8 +14,9 @@ import scala.concurrent.duration.*
 
 final class FxTwitterService(
     http: Client[IO],
-    val baseUri: Uri = Uri.unsafeFromString("https://api.fxtwitter.com"),
-    requestTimeout: FiniteDuration = 25.seconds
+    val baseUri: Uri = FxTwitterService.defaultBaseUri,
+    requestTimeout: FiniteDuration = 25.seconds,
+    config: IO[FxTwitterConfig] = IO.pure(FxTwitterConfig())
 ):
   import FxTwitterService.*
 
@@ -128,39 +129,43 @@ final class FxTwitterService(
       IO.raiseError(FxTwitterFailure("invalid_fx_twitter", "path must be a relative FxTwitter path such as /2/status/20"))
     else getJson(if p.startsWith("/") then p else s"/$p", req.query)
 
-  private def getJson(path: String, query: Map[String, String]): IO[Json] = IO.defer {
-    val cleanPath = if path.startsWith("/") then path else s"/$path"
-    val base = Uri.fromString(baseUri.renderString.stripSuffix("/") + cleanPath)
-      .fold(e => throw FxTwitterFailure("invalid_fx_twitter", e.message), identity)
-    val uri = if query.isEmpty then base else base.copy(query = Query.fromVector(query.toVector.map((k, v) => k -> Some(v))))
-    val req = Request[IO](
-      method = Method.GET,
-      uri = uri,
-      headers = Headers(
-        Header.Raw(CIString("Accept"), "application/json"),
-        Header.Raw(CIString("User-Agent"), userAgent),
-        Header.Raw(CIString("Accept-Encoding"), "gzip, deflate")
+  private def getJson(path: String, query: Map[String, String]): IO[Json] = config.flatMap: cfg =>
+    val activeBase = if baseUri != defaultBaseUri then baseUri else Uri.fromString(cfg.baseUrl.trim).getOrElse(baseUri)
+    val activeTimeout = if requestTimeout != 25.seconds then requestTimeout else framework.validation.Contracts.parseDuration(cfg.timeout)
+    IO.defer {
+      val cleanPath = if path.startsWith("/") then path else s"/$path"
+      val base = Uri.fromString(activeBase.renderString.stripSuffix("/") + cleanPath)
+        .fold(e => throw FxTwitterFailure("invalid_fx_twitter", e.message), identity)
+      val uri = if query.isEmpty then base else base.copy(query = Query.fromVector(query.toVector.map((k, v) => k -> Some(v))))
+      val req = Request[IO](
+        method = Method.GET,
+        uri = uri,
+        headers = Headers(
+          Header.Raw(CIString("Accept"), "application/json"),
+          Header.Raw(CIString("User-Agent"), userAgent),
+          Header.Raw(CIString("Accept-Encoding"), "gzip, deflate")
+        )
       )
-    )
-    http.run(req).use { resp =>
-      readDecoded(resp, maxResponseBytes).flatMap { bytes =>
-        val text = new String(bytes, UTF_8)
-        val parsed = parse(text).toOption
-        val bodyCode = parsed.flatMap(_.hcursor.get[Int]("code").toOption).getOrElse(resp.status.code)
-        val effectiveStatus = if resp.status.code >= 400 then resp.status.code else bodyCode
-        if effectiveStatus >= 200 && effectiveStatus < 300 && parsed.isDefined then IO.pure(parsed.get)
-        else
-          val msg = parsed.flatMap(j => opt(j.hcursor, "message").orElse(opt(j.hcursor, "reason")))
-            .getOrElse(if text.trim.nonEmpty then text.trim.take(300) else s"HTTP ${resp.status.code}")
-          IO.raiseError(classifyError(effectiveStatus, msg))
+      http.run(req).use { resp =>
+        readDecoded(resp, cfg.maxResponseBytes).flatMap { bytes =>
+          val text = new String(bytes, UTF_8)
+          val parsed = parse(text).toOption
+          val bodyCode = parsed.flatMap(_.hcursor.get[Int]("code").toOption).getOrElse(resp.status.code)
+          val effectiveStatus = if resp.status.code >= 400 then resp.status.code else bodyCode
+          if effectiveStatus >= 200 && effectiveStatus < 300 && parsed.isDefined then IO.pure(parsed.get)
+          else
+            val msg = parsed.flatMap(j => opt(j.hcursor, "message").orElse(opt(j.hcursor, "reason")))
+              .getOrElse(if text.trim.nonEmpty then text.trim.take(300) else s"HTTP ${resp.status.code}")
+            IO.raiseError(classifyError(effectiveStatus, msg))
+        }
       }
-    }
-  }.timeoutTo(requestTimeout, IO.raiseError(FxTwitterFailure("fx_twitter_timeout", s"FxTwitter timed out after $requestTimeout")))
-    .adaptError { case e if !e.isInstanceOf[FxTwitterFailure] =>
-      FxTwitterFailure("fx_twitter_upstream", s"FxTwitter request failed: ${Option(e.getMessage).getOrElse(e.getClass.getSimpleName)}")
-    }
+    }.timeoutTo(activeTimeout, IO.raiseError(FxTwitterFailure("fx_twitter_timeout", s"FxTwitter timed out after $activeTimeout")))
+      .adaptError { case e if !e.isInstanceOf[FxTwitterFailure] =>
+        FxTwitterFailure("fx_twitter_upstream", s"FxTwitter request failed: ${Option(e.getMessage).getOrElse(e.getClass.getSimpleName)}")
+      }
 
 object FxTwitterService:
+  val defaultBaseUri: Uri = Uri.unsafeFromString("https://api.fxtwitter.com")
   val userAgent = "groot-http/1.0 (+https://github.com/yjgbg-labs/toolhub)"
   val maxResponseBytes: Int = 4 * 1024 * 1024
 
@@ -169,8 +174,8 @@ object FxTwitterService:
   private val handleRe = "^@?([A-Za-z0-9_]{1,15})$".r
   private val profileUrlRe = "^https?://(?:www\\.)?(?:x|twitter|fxtwitter|vxtwitter|fixupx)\\.com/@?([A-Za-z0-9_]{1,15})(?:[/?#].*)?$".r
 
-  def resource(baseUri: Uri = Uri.unsafeFromString("https://api.fxtwitter.com")): Resource[IO, FxTwitterService] =
-    EmberClientBuilder.default[IO].withTimeout(25.seconds).withMaxResponseHeaderSize(64 * 1024).build.map(new FxTwitterService(_, baseUri))
+  def resource(baseUri: Uri = defaultBaseUri, config: IO[FxTwitterConfig] = IO.pure(FxTwitterConfig())): Resource[IO, FxTwitterService] =
+    EmberClientBuilder.default[IO].withTimeout(Duration.Inf).withMaxResponseHeaderSize(64 * 1024).build.map(new FxTwitterService(_, baseUri, 25.seconds, config))
 
   def parseTweetId(raw: String): String =
     val t = raw.trim

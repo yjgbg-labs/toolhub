@@ -1,7 +1,13 @@
 package groot.chrome
 
 import framework.model.JsonModel
+import framework.validation.*
 import io.circe.Json
+
+final case class ChromeConfig(
+    @contract[String](!_.contains('\u0000'), "must not contain NUL") binary: String = sys.env.getOrElse("CHROME_BINARY", ""),
+    @range(1, 120000) defaultTimeoutMs: Int = 30000
+) derives JsonModel, Validator
 
 final case class ChromeFailure(code: String, message: String) extends RuntimeException(message)
 

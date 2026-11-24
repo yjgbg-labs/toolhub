@@ -1,7 +1,18 @@
 package groot.github
 
 import framework.model.JsonModel
+import framework.validation.*
 import io.circe.{Codec, Json}
+
+final case class GitHubConfig(
+    @httpUrl apiBase: String = "https://api.github.com",
+    @httpUrl oauthBase: String = "https://github.com",
+    @nonBlank oauthClientId: String = sys.env.get("GITHUB_CLIENT_ID").filter(_.nonEmpty).getOrElse(GitHubAuth.defaultOAuthClientId),
+    @nonBlank defaultScopes: String = GitHubAuth.defaultScopes,
+    @duration timeout: String = "30s",
+    @positive maxJsonBytes: Int = GitHubClient.maxJsonBytes,
+    @positive maxRawBytes: Int = GitHubClient.maxRawBytes
+) derives JsonModel, Validator
 
 final case class GitHubFailure(code: String, message: String) extends RuntimeException(message)
 

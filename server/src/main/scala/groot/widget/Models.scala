@@ -1,6 +1,12 @@
 package groot.widget
 
 import framework.model.JsonModel
+import framework.validation.*
+
+final case class WidgetConfig(
+    @positive maxItems: Int = WidgetService.maxItems,
+    @duration heartbeat: String = "15s"
+) derives JsonModel, Validator
 
 enum WidgetColor derives JsonModel:
   case red, yellow, green

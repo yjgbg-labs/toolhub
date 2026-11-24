@@ -23,11 +23,16 @@ final class MihomoService(
   val settings: MihomoSettings,
   writeMutex: Mutex[IO],
   apiCache: Ref[IO, Option[ApiEndpoint]],
-  customFollow: Option[Int => IO[Stream[IO, PlainText]]] = None
+  customFollow: Option[Int => IO[Stream[IO, PlainText]]] = None,
+  settingsIO: IO[MihomoSettings] = IO.pure(MihomoSettings()),
+  dynamic: Boolean = false
 ):
   import MihomoService.*
 
-  def status: IO[MihomoStatus] =
+  @volatile private var cachedSettingsKey: Option[MihomoSettings] = None
+  private def currentSettings: IO[MihomoSettings] = if dynamic then settingsIO else IO.pure(settings)
+
+  def status: IO[MihomoStatus] = currentSettings.flatMap: settings =>
     val script =
       s"""set -euo pipefail
          |export LC_ALL=C
@@ -51,7 +56,7 @@ final class MihomoService(
   def restart: IO[MihomoStatus] = lifecycleAction("restart", clearCache = true)
 
   private def lifecycleAction(action: String, clearCache: Boolean): IO[MihomoStatus] =
-    writeMutex.lock.surround {
+    writeMutex.lock.surround(currentSettings.flatMap { settings =>
       val script =
         s"""set -euo pipefail
            |export LC_ALL=C
@@ -60,12 +65,12 @@ final class MihomoService(
       execChecked(script, "25s") *>
         (if clearCache then apiCache.set(None) else IO.unit) *>
         status
-    }
+    })
 
   def logs(lines: Int): IO[PlainText] =
     if lines < 1 || lines > 5000 then
       IO.raiseError(MihomoFailure("invalid_mihomo", "lines must be between 1 and 5000"))
-    else
+    else currentSettings.flatMap: settings =>
       val script =
         s"""set -euo pipefail
            |export LC_ALL=C
@@ -80,7 +85,7 @@ final class MihomoService(
       customFollow match
         case Some(factory) => factory(lines).map(SSE(_))
         case None =>
-          resolveShellEnv.map { env =>
+          (resolveShellEnv, currentSettings).tupled.map { (env, settings) =>
             val command: Vector[String] = env.target match
               case Some(sshTarget) =>
                 Vector(
@@ -108,6 +113,7 @@ final class MihomoService(
 
   def validateConfig(content: String): IO[ConfigValidateResult] =
     for
+      settings <- currentSettings
       bytes <- validateConfigPayload(content)
       marker = s"__GROOT_MIHOMO_${UUID.randomUUID().toString.replace("-", "")}__"
       payload = if content.endsWith("\n") then content else content + "\n"
@@ -141,7 +147,7 @@ final class MihomoService(
     }
 
   def rollbackConfig: IO[ConfigRollbackResult] =
-    writeMutex.lock.surround {
+    writeMutex.lock.surround(currentSettings.flatMap { settings =>
       val fileName = fileNameOf(settings.configPath)
       val script =
         s"""set -euo pipefail
@@ -188,7 +194,7 @@ final class MihomoService(
           case _ =>
             IO.raiseError(MihomoFailure("mihomo_ssh", s"Unexpected rollback output: ${res.stdout.trim.take(200)}"))
       yield outcome
-    }
+    })
 
   def listDns: IO[Vector[DnsHost]] =
     readRemoteConfig.map(HostsEditor.list)
@@ -258,6 +264,7 @@ final class MihomoService(
 
   private def applyConfigWithKnownPrevious(previousContent: String, nextContent: String): IO[ConfigWriteResult] =
     for
+      settings <- currentSettings
       bytes <- validateConfigPayload(nextContent)
       routerHost <- resolveRouterHost
       fileName = fileNameOf(settings.configPath)
@@ -318,7 +325,7 @@ final class MihomoService(
     activeState: String,
     previousApi: Option[ApiEndpoint],
     nextApi: Option[ApiEndpoint]
-  ): IO[(Boolean, Boolean)] =
+  ): IO[(Boolean, Boolean)] = currentSettings.flatMap: settings =>
     if activeState == "active" then
       (previousApi, nextApi) match
         case (Some(prev), Some(next)) if prev.baseUrl == next.baseUrl =>
@@ -338,8 +345,9 @@ final class MihomoService(
       }
     }
 
-  private def resolveApiEndpoint(forceRefresh: Boolean): IO[ApiEndpoint] =
-    (if forceRefresh then IO.pure(None) else apiCache.get).flatMap {
+  private def resolveApiEndpoint(forceRefresh: Boolean): IO[ApiEndpoint] = currentSettings.flatMap: settings =>
+    val validCache = !forceRefresh && cachedSettingsKey.forall(_ == settings)
+    (if validCache then apiCache.get else IO.pure(None)).flatMap {
       case Some(cached) => IO.pure(cached)
       case None =>
         for
@@ -348,14 +356,14 @@ final class MihomoService(
           endpoint <- IO.fromOption(HostsEditor.parseApiEndpoint(configText, routerHost, settings.apiUrlOverride))(
             MihomoFailure("invalid_mihomo", s"external-controller is not enabled in ${settings.configPath}")
           )
-          _ <- apiCache.set(Some(endpoint))
+          _ <- IO { cachedSettingsKey = Some(settings) } *> apiCache.set(Some(endpoint))
         yield endpoint
     }
 
   private def resolveRouterHost: IO[String] =
     resolveShellEnv.map(env => HostsEditor.extractSshHost(env.target))
 
-  private def readRemoteConfig: IO[String] =
+  private def readRemoteConfig: IO[String] = currentSettings.flatMap: settings =>
     val script =
       s"""set -euo pipefail
          |export LC_ALL=C
@@ -390,6 +398,32 @@ object MihomoService:
       httpClient <- EmberClientBuilder.default[IO].withTimeout(30.seconds).build
       service <- Resource.eval(fromClient(shell, httpClient, settings))
     yield service
+
+  def resourceWithConfig(
+    shell: ShellService,
+    mihomoCfg: IO[MihomoConfig],
+    shellCfg: IO[groot.shell.ShellConfig]
+  ): Resource[IO, MihomoService] =
+    val mapped: IO[MihomoSettings] = (mihomoCfg, shellCfg).mapN { (m, s) =>
+      MihomoSettings(m.shellEnv, m.configDir, m.configPath, m.binaryPath, m.serviceUnit,
+        Option(m.apiUrl.trim).filter(_.nonEmpty), s.sshExecutable, m.maxBackups)
+    }
+    for
+      httpClient <- EmberClientBuilder.default[IO].withTimeout(30.seconds).build
+      initSettings <- Resource.eval(mapped)
+      mutex <- Resource.eval(Mutex[IO])
+      cache <- Resource.eval(Ref.of[IO, Option[ApiEndpoint]](None))
+    yield new MihomoService(
+      runShell = (script, timeout) => mapped.flatMap(s => shell.execute(ShellRequest(s.shellEnv, script, timeout))),
+      resolveShellEnv = mapped.flatMap(s => shell.list.flatMap(envs =>
+        IO.fromOption(envs.find(_.name == s.shellEnv))(MihomoFailure("mihomo_not_found", s"Shell environment '${s.shellEnv}' is not registered")))),
+      api = new MihomoApi(httpClient),
+      settings = initSettings,
+      writeMutex = mutex,
+      apiCache = cache,
+      settingsIO = mapped,
+      dynamic = true
+    )
 
   def fromClient(
     shell: ShellService,
