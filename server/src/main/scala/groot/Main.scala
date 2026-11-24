@@ -20,6 +20,7 @@ import groot.notify.{NotifyRoutes, NotifyService, NotifyTriggerManager}
 import groot.mihomo.{MihomoRoutes, MihomoService}
 import groot.github.{GitHubRoutes, GitHubService}
 import groot.fxtwitter.{FxTwitterRoutes, FxTwitterService}
+import groot.telegram.{TelegramRoutes, TelegramService}
 import scala.concurrent.duration.*
 
 object Main extends IOApp.Simple:
@@ -44,14 +45,15 @@ object Main extends IOApp.Simple:
     mihomo <- MihomoService.resourceWithConfig(shell, readCfg.map(_.mihomo), readCfg.map(_.shell))
     github <- GitHubService.resource(home, config = readCfg.map(_.github))
     fxTwitter <- FxTwitterService.resource(config = readCfg.map(_.fxTwitter))
+    telegram <- TelegramService.resource(home, config = readCfg.map(_.telegram))
     chrome <- ChromeService.resource(config = readCfg.map(_.chrome))
     wine <- WineService.resource(readCfg.map(_.wine))
     notify <- NotifyService.resource(config = readCfg.map(_.notifications))
     graaljs <- GraalManager.resource(home.resolve("graaljs"), commands = commands.get, config = cfgSignal.map(_.graaljs))
     notifyTriggers <- NotifyTriggerManager.resource(notify, graaljs, home = home, startLoop = false, config = readCfg.map(_.notifications))
     scheduler <- Scheduler.resource(graaljs, home = home, startLoop = false)
-  yield (initCfg, cfgSignal, readCfg, scheduler, sqlite, http, widget, state, shell, mihomo, github, fxTwitter, chrome, wine, notify, notifyTriggers, graaljs, commands)).use {
-    (initCfg, cfgSignal, readCfg, scheduler, sqlite, http, widget, state, shell, mihomo, github, fxTwitter, chrome, wine, notify, notifyTriggers, graaljs, commands) =>
+  yield (initCfg, cfgSignal, readCfg, scheduler, sqlite, http, widget, state, shell, mihomo, github, fxTwitter, telegram, chrome, wine, notify, notifyTriggers, graaljs, commands)).use {
+    (initCfg, cfgSignal, readCfg, scheduler, sqlite, http, widget, state, shell, mihomo, github, fxTwitter, telegram, chrome, wine, notify, notifyTriggers, graaljs, commands) =>
       val app = httpApp {
         server {
           host(initCfg.server.host.trim)
@@ -85,6 +87,7 @@ object Main extends IOApp.Simple:
         MihomoRoutes.register(mihomo)
         GitHubRoutes.register(github)
         FxTwitterRoutes.register(fxTwitter)
+        TelegramRoutes.register(telegram)
         WidgetRoutes.register(widget)
         StateRoutes.register(state)
         ChromeRoutes.register(chrome)

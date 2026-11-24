@@ -14,6 +14,7 @@ import groot.mihomo.MihomoConfig
 import groot.notify.NotifyConfig
 import groot.shell.ShellConfig
 import groot.sqlite.SqliteConfig
+import groot.telegram.TelegramConfig
 import groot.widget.WidgetConfig
 import groot.wine.WineSettings
 import java.nio.file.{Files, Path}
@@ -32,6 +33,7 @@ final case class ApplicationConfig(
     mihomo: MihomoConfig = MihomoConfig(),
     github: GitHubConfig = GitHubConfig(),
     fxTwitter: FxTwitterConfig = FxTwitterConfig(),
+    telegram: TelegramConfig = TelegramConfig(),
     chrome: ChromeConfig = ChromeConfig(),
     wine: WineSettings = WineSettings(),
     widget: WidgetConfig = WidgetConfig()
