@@ -279,6 +279,10 @@ class TelegramSuite extends CatsEffectSuite:
                       sub <- manager.submit(
                         JavaScript.source(s"""
                           const tg = tools.telegram;
+                          // 0. Concurrent cold-start calls must share a single HttpClient without closing each other
+                          const [coldMe, coldWh] = await Promise.all([tg.me(), tg.webhook.info()]);
+                          if (coldMe.body.id !== 100001 || coldWh.body.url !== "") throw new Error("Cold-start concurrent failure");
+
                           // 1. send without chatId -> auto-discovers 998877 via getUpdates AND retries 429 automatically!
                           const sent = (await tg.send({
                             text: "Hello from Groot!",
