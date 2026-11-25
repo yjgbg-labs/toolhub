@@ -6,12 +6,13 @@ import framework.rpcDsl.*
 
 object NotifyRoutes:
   def register(service: NotifyService, triggers: Option[NotifyTriggerManager] = None)(using CommandsScope): Unit = commands("notify") {
-    description("Session notification triggers (notify.when / notify.at) and live SSE broadcast for client plugins")
-    val invalid = response.json[ErrorBody](400) { description("Invalid session ID, trigger definition, or notification") }
-    val notFound = response.json[ErrorBody](404) { description("Notify trigger not found") }
-    val offline = response.json[ErrorBody](409) { description("No notification subscriber is online") }
+    description("Session notification triggers (notify.when / notify.at) and direct server-side delivery to OpenCode and Antigravity sessions")
+    val invalid = response.json[ErrorBody](400) { description("Invalid or unsupported session ID, trigger definition, or notification") }
+    val notFound = response.json[ErrorBody](404) { description("Notify trigger or target session not found") }
+    val offline = response.json[ErrorBody](409) { description("Target session runtime (OpenCode or Antigravity) is offline") }
     val large = response.json[ErrorBody](413) { description("Notification or script exceeds its UTF-8 size limit") }
-    val busy = response.json[ErrorBody](429) { description("Subscriber queue or trigger capacity is full") }
+    val busy = response.json[ErrorBody](429) { description("Active trigger capacity is full") }
+    val badGateway = response.json[ErrorBody](502) { description("Upstream client runtime failed to accept notification") }
     val closed = response.json[ErrorBody](503) { description("Notification service is shutting down") }
     recover {
       case error: NotifyFailure =>
@@ -20,20 +21,16 @@ object NotifyRoutes:
           case "notify_offline" => offline
           case "notify_limit" => large
           case "notify_busy" => busy
+          case "delivery_error" => badGateway
           case "notify_closed" => closed
           case _ => invalid
         output(ErrorBody(error.code, error.getMessage))
     }
     command[NotifyReceipt]("send") {
       exposeOn(cli)
-      description("Broadcast message and targetSessionId to all online subscribers (CLI/internal bridge use only; not exposed to Code Mode or GraalJS)")
-      val input = body[NotifyRequest]("Target session and full message")
+      description("Deliver a message directly to an OpenCode session (ses...) or Antigravity conversation (UUID) via PartialFunction routing")
+      val input = body[NotifyRequest]("Target session ID and full message")
       handle { service.send(input.value) }
-    }
-    command[SSE[NotifyEvent]]("subscribe") {
-      exposeOn(cli)
-      description("Subscribe to notifications for all sessions: ready, message and 15-second heartbeat events; live only, no replay")
-      handle { service.subscribe.map(SSE(_)) }
     }
     triggers.foreach { manager =>
       command[NotifyTrigger]("when") {

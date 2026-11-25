@@ -1,7 +1,6 @@
 import * as Plugin from "@opencode/plugin/promise/plugin";
 import { ApiClient, defaultBaseUrl } from "./api";
 import { operationTools } from "./tools";
-import { startNotifications } from "./notifications";
 
 export default Plugin.define({
   id: "groot",
@@ -35,15 +34,8 @@ export default Plugin.define({
       for (const [name, description] of namespaces) editor.namespace({ name, description });
       for (const tool of tools) editor.add(tool);
     });
-    try {
-      const stopNotifications = await startNotifications(ctx, client);
-      return async () => {
-        try { await stopNotifications(); }
-        finally { await registration.dispose(); }
-      };
-    } catch (error) {
+    return async () => {
       await registration.dispose();
-      throw error;
-    }
+    };
   },
 });

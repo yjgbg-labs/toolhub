@@ -1,7 +1,0 @@
-{
-  "display_name": "Groot Notify Bridge",
-  "description": "Subscribes to Groot Server /notify/subscribe SSE and wakes target Antigravity conversations via agentapi send-message.",
-  "command": "../../bin/groot-agy",
-  "args": ["notify-bridge"],
-  "restart_policy": "always"
-}

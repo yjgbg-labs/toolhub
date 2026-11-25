@@ -6,21 +6,19 @@ import groot.graaljs.TaskError
 import groot.schedule.{JobState, RetryPolicy}
 
 final case class NotifyConfig(
-    @duration heartbeat: String = "15s",
-    @positive subscriberCapacity: Int = 64,
     @positive maxActiveTriggers: Int = 256,
     @duration defaultEvery: String = "15s",
     @duration defaultCpu: String = "2s",
     @duration defaultScriptTimeout: String = "30s",
-    deliveryRetry: RetryPolicy = NotifyTriggerManager.defaultDeliveryRetry
+    @duration deliveryTimeout: String = "15s",
+    deliveryRetry: RetryPolicy = NotifyTriggerManager.defaultDeliveryRetry,
+    openCodeServiceFile: String = "",
+    antigravityDaemonDir: String = ""
 ) derives JsonModel, Validator
 
 case class NotifyRequest(targetSessionId: String, message: String) derives JsonModel
 case class Notification(id: String, targetSessionId: String, message: String, createdAt: String) derives JsonModel
-case class NotifyReceipt(id: String, subscribers: Int) derives JsonModel
-enum NotifyEventKind derives JsonModel:
-  case ready, message, heartbeat
-case class NotifyEvent(kind: NotifyEventKind, notification: Option[Notification] = None) derives JsonModel
+case class NotifyReceipt(id: String, target: String) derives JsonModel
 
 case class NotifyWhenRequest(
     code: String,
