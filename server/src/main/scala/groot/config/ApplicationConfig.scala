@@ -10,6 +10,7 @@ import groot.fxtwitter.FxTwitterConfig
 import groot.github.GitHubConfig
 import groot.graaljs.GraalJsConfig
 import groot.http.HttpConfig
+import groot.kv.KvConfig
 import groot.mihomo.MihomoConfig
 import groot.notify.NotifyConfig
 import groot.shell.ShellConfig
@@ -36,7 +37,8 @@ final case class ApplicationConfig(
     telegram: TelegramConfig = TelegramConfig(),
     chrome: ChromeConfig = ChromeConfig(),
     wine: WineSettings = WineSettings(),
-    widget: WidgetConfig = WidgetConfig()
+    widget: WidgetConfig = WidgetConfig(),
+    kv: KvConfig = KvConfig()
 ) derives JsonModel, Validator
 
 object ApplicationConfig:
