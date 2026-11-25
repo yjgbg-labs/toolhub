@@ -29,15 +29,11 @@ object Main:
         val input = readAllStdin()
         println(Hooks.preToolUse(input).noSpaces)
 
-      case List("notify-bridge") =>
-        val transport = new SttpHttpTransport(baseUrl, headers, timeoutMs = 60000L)
-        new NotifyBridge(transport).runLoop()
-
       case List("--version") | List("version") =>
         println("groot-agy 1.0.0")
 
       case _ =>
-        System.err.println("Usage: groot-agy <mcp | hook session-start | hook pre-tool-use | notify-bridge | --version>")
+        System.err.println("Usage: groot-agy <mcp | hook session-start | hook pre-tool-use | --version>")
         sys.exit(2)
 
   private def resolveBaseUrl(): String =

@@ -78,8 +78,8 @@ class ConfigSuite extends CatsEffectSuite:
         |}
         |
         |notifications {
-        |  heartbeat = 10s
-        |  subscriberCapacity = 128
+        |  deliveryTimeout = 10s
+        |  maxActiveTriggers = 128
         |}
         |""".stripMargin
 
@@ -93,8 +93,8 @@ class ConfigSuite extends CatsEffectSuite:
     assertEquals(cfg.graaljs.taskBytes, 8L * 1024 * 1024)
     assertEquals(cfg.http.timeout, "45s")
     assertEquals(cfg.http.maxBytes, 2 * 1024 * 1024)
-    assertEquals(cfg.notifications.heartbeat, "10s")
-    assertEquals(cfg.notifications.subscriberCapacity, 128)
+    assertEquals(cfg.notifications.deliveryTimeout, "10s")
+    assertEquals(cfg.notifications.maxActiveTriggers, 128)
     assertEquals(cfg.sqlite.maxRows, 10000)
     assertEquals(cfg.fxTwitter.baseUrl, "https://api.fxtwitter.com")
     assertEquals(cfg.telegram.apiBase, "https://api.telegram.org")

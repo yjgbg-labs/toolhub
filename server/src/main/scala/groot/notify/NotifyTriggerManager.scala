@@ -16,6 +16,7 @@ import org.graalvm.polyglot.Source
 /** Session trigger manager backed directly by a dedicated `groot.schedule.Scheduler` instance. */
 final class NotifyTriggerManager private (
     store: NotifyTriggerStore,
+    notifyService: NotifyService,
     val scheduler: Scheduler,
     config: IO[NotifyConfig]
 ):
@@ -34,7 +35,7 @@ final class NotifyTriggerManager private (
       timeoutText = request.timeout.map(_.trim).filter(_.nonEmpty)
       once = request.once.getOrElse(true)
       delayMs <- IO {
-        NotifyService.validateSession(cleanSession)
+        notifyService.validateTargetSession(cleanSession)
         if request.code.trim.isEmpty then throw NotifyFailure("invalid_notify", "code must not be blank")
         if request.code.getBytes(UTF_8).length > NotifyTriggerManager.maxCodeBytes then
           throw NotifyFailure("notify_limit", "code exceeds 1 MiB")
@@ -291,4 +292,4 @@ object NotifyTriggerManager:
       store <- NotifyTriggerStore.resource(home)
       backend = new NotifyBackend(store, notifyService, config)
       scheduler <- Scheduler.withBackend(graaljs, backend, startLoop = startLoop)
-    yield new NotifyTriggerManager(store, scheduler, config)
+    yield new NotifyTriggerManager(store, notifyService, scheduler, config)

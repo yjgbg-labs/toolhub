@@ -107,12 +107,12 @@ class AgySuite extends munit.FunSuite:
       |        "responses": { "200": { "content": { "application/json": { "schema": { "type": "object" } } } } }
       |      }
       |    },
-      |    "/notify/subscribe": {
-      |      "get": {
-      |        "operationId": "notify.subscribe",
-      |        "summary": "CLI only SSE stream",
+      |    "/notify/send": {
+      |      "post": {
+      |        "operationId": "notify.send",
+      |        "summary": "CLI only direct delivery",
       |        "x-expose-on": ["cli"],
-      |        "responses": { "200": { "content": { "text/event-stream": { "schema": { "type": "string" } } } } }
+      |        "responses": { "200": { "content": { "application/json": { "schema": { "type": "object" } } } } }
       |      }
       |    }
       |  }
@@ -122,7 +122,7 @@ class AgySuite extends munit.FunSuite:
     val catalog = new Catalog(Catalog.parse(sampleOpenApi))
     val ids = catalog.operations.map(_.id)
     assertEquals(ids, Vector("fs.read", "health", "schedule.new", "shell.execute"))
-    assert(!ids.contains("notify.subscribe"))
+    assert(!ids.contains("notify.send"))
     assert(catalog.byId("shell.execute").bodyOnly)
     assert(!catalog.byId("schedule.new").bodyOnly)
   }
@@ -270,20 +270,3 @@ class AgySuite extends munit.FunSuite:
     assertEquals(execText, "42")
   }
 
-  test("NotifyBridge forwards UUID sessions and ignores OpenCode ses_ sessions") {
-    var delivered = Vector.empty[(String, String)]
-    val noopTransport = new HttpTransport:
-      def send(request: HttpRequest, onEvent: String => Unit): HttpResponse =
-        HttpResponse(200, Vector.empty, "")
-
-    val bridge = new NotifyBridge(
-      transport = noopTransport,
-      deliverFn = (id, msg) => { delivered :+= (id -> msg); Right(()) },
-      sleepFn = _ => ()
-    )
-    bridge.handleEvent("""{"kind":"ready"}""")
-    bridge.handleEvent("""{"kind":"heartbeat"}""")
-    bridge.handleEvent("""{"kind":"message","notification":{"id":"1","targetSessionId":"ses_opencode_1","message":"ignore me","createdAt":"2026-11-22T00:00:00Z"}}""")
-    bridge.handleEvent("""{"kind":"message","notification":{"id":"2","targetSessionId":"0508816e-1fae-4311-93cc-9f49f8eb4dde","message":"wake up!","createdAt":"2026-11-22T00:00:00Z"}}""")
-    assertEquals(delivered, Vector("0508816e-1fae-4311-93cc-9f49f8eb4dde" -> "wake up!"))
-  }

@@ -1,5 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
 import { ApiClient, defaultBaseUrl, transport } from "../src/api";
+import { sse } from "../src/api/sse";
 import { document } from "./fixture";
 
 function serve(name: string) {
@@ -39,4 +40,17 @@ test("base URLs reject unsupported protocols, credentials and URL modifiers", ()
   for (const value of ["file:///tmp/api", "ftp://localhost", "/relative", "http://user:password@localhost", "http://localhost?x", "http://localhost#x"]) {
     expect(() => transport(value)).toThrow();
   }
+});
+
+test("SSE parser handles comments, split CRLF/UTF-8 and multiline data; rejects unbounded frames", async () => {
+  async function parse(text: string) {
+    const bytes = new TextEncoder().encode(text);
+    const body = new ReadableStream<Uint8Array>({ start(controller) { for (const byte of bytes) controller.enqueue(Uint8Array.of(byte)); controller.close(); } });
+    const values = [];
+    for await (const value of sse(body)) values.push(value);
+    return values;
+  }
+  expect(await parse(": keepalive\r\ndata: 中文\r\ndata: second\r\n\r\ndata: incomplete")).toEqual(["中文\nsecond"]);
+  const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode("data: " + "x".repeat(1024 * 1024))); } });
+  await expect(sse(body).next()).rejects.toThrow("exceeds");
 });
