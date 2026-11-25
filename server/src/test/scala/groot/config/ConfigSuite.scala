@@ -8,6 +8,7 @@ import framework.rpcDsl.*
 import framework.runtime.DynamicServer
 import framework.validation.*
 import groot.fs.{FsLimit, FsService, WriteResult}
+import groot.kv.KvService
 import java.net.{InetAddress, ServerSocket}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path, StandardCopyOption}
@@ -81,6 +82,10 @@ class ConfigSuite extends CatsEffectSuite:
         |  deliveryTimeout = 10s
         |  maxActiveTriggers = 128
         |}
+        |
+        |kv {
+        |  file = "data/custom-kv.jsonl"
+        |}
         |""".stripMargin
 
     val parsed = ConfigLoader.parseHocon[ApplicationConfig](hocon, ApplicationConfig())
@@ -95,6 +100,7 @@ class ConfigSuite extends CatsEffectSuite:
     assertEquals(cfg.http.maxBytes, 2 * 1024 * 1024)
     assertEquals(cfg.notifications.deliveryTimeout, "10s")
     assertEquals(cfg.notifications.maxActiveTriggers, 128)
+    assertEquals(cfg.kv.file, "data/custom-kv.jsonl")
     assertEquals(cfg.sqlite.maxRows, 10000)
     assertEquals(cfg.fxTwitter.baseUrl, "https://api.fxtwitter.com")
     assertEquals(cfg.telegram.apiBase, "https://api.telegram.org")
@@ -122,6 +128,13 @@ class ConfigSuite extends CatsEffectSuite:
     )
     assert(badBudget.isLeft)
     assert(badBudget.swap.toOption.get.contains("taskBytes must not exceed engineBytes"))
+
+    val badKv = ConfigLoader.parseHocon[ApplicationConfig](
+      """kv.file = "   " """,
+      ApplicationConfig()
+    )
+    assert(badKv.isLeft)
+    assert(badKv.swap.toOption.get.contains("kv.file"))
   }
 
   test("500ms metadata polling hot-reloads via IO[FsConfig] and keeps Last-Known-Good on invalid edits") {
@@ -267,5 +280,34 @@ class ConfigSuite extends CatsEffectSuite:
             _ = assert(oldPortAttempt.isLeft, "Expected old port listener to be closed after rebind")
           yield ()
         }
+    }
+  }
+
+  test("kv.file defaults to kv.jsonl next to application.conf and hot-reloads on config change") {
+    tempDir.use { dir =>
+      val confPath = dir.resolve("application.conf")
+      val customPath = dir.resolve("custom/store.jsonl")
+      ConfigLoader.resource[ApplicationConfig](
+        resolvePath = IO.pure(confPath),
+        default = ApplicationConfig(),
+        pollInterval = 100.millis
+      ).use { sig =>
+        KvService.resource(dir, sig.get.map(_.kv)).use { kv =>
+          for
+            _ <- kv.set("k", "from-default")
+            _ = assert(Files.isRegularFile(dir.resolve("kv.jsonl")))
+            _ <- IO.blocking(Files.writeString(confPath, s"""kv.file = "${customPath.toString}"\n""", UTF_8))
+            _ <- waitUntil(sig.get.map(_.kv.file == customPath.toString))
+            missingInCustom <- kv.get("k")
+            _ = assertEquals(missingInCustom, None)
+            _ <- kv.set("k", "from-custom")
+            _ = assert(Files.isRegularFile(customPath))
+            _ <- IO.blocking(Files.deleteIfExists(confPath))
+            _ <- waitUntil(sig.get.map(_.kv.file.isEmpty))
+            backToDefault <- kv.get("k")
+            _ = assertEquals(backToDefault, Some("from-default"))
+          yield ()
+        }
+      }
     }
   }

@@ -13,7 +13,7 @@ import groot.http.{HttpRoutes, HttpService}
 import groot.fs.{FsRoutes, FsService}
 import groot.shell.{ShellRoutes, ShellService}
 import groot.widget.{WidgetRoutes, WidgetService}
-import groot.state.{StateRoutes, StateService}
+import groot.kv.{KvRoutes, KvService}
 import groot.chrome.{ChromeRoutes, ChromeService}
 import groot.wine.{WineRoutes, WineService}
 import groot.notify.{NotifyRoutes, NotifyService, NotifyTriggerManager}
@@ -26,6 +26,7 @@ import scala.concurrent.duration.*
 object Main extends IOApp.Simple:
   def run: IO[Unit] = (for
     home <- Resource.eval(IO(Store.defaultHome))
+    configDir = Option(ApplicationConfig.resolveConfigFile(home).toAbsolutePath.normalize().getParent).getOrElse(home)
     cfgSignal <- ConfigLoader.resource[ApplicationConfig](
       resolvePath = IO(ApplicationConfig.resolveConfigFile(home)),
       default = ApplicationConfig(),
@@ -40,7 +41,7 @@ object Main extends IOApp.Simple:
     sqlite <- SqliteService.resource(home.resolve("sqlite"), config = readCfg.map(_.sqlite))
     http <- HttpService.resourceWithConfig(readCfg.map(_.http))
     widget <- WidgetService.resource(home.resolve("widget"), config = readCfg.map(_.widget))
-    state <- StateService.resource(home.resolve("state"))
+    kv <- KvService.resource(configDir, config = readCfg.map(_.kv))
     shell <- ShellService.resource(home.resolve("shell"), config = readCfg.map(_.shell))
     mihomo <- MihomoService.resourceWithConfig(shell, readCfg.map(_.mihomo), readCfg.map(_.shell))
     github <- GitHubService.resource(home, config = readCfg.map(_.github))
@@ -52,8 +53,8 @@ object Main extends IOApp.Simple:
     graaljs <- GraalManager.resource(home.resolve("graaljs"), commands = commands.get, config = cfgSignal.map(_.graaljs))
     notifyTriggers <- NotifyTriggerManager.resource(notify, graaljs, home = home, startLoop = false, config = readCfg.map(_.notifications))
     scheduler <- Scheduler.resource(graaljs, home = home, startLoop = false)
-  yield (initCfg, cfgSignal, readCfg, scheduler, sqlite, http, widget, state, shell, mihomo, github, fxTwitter, telegram, chrome, wine, notify, notifyTriggers, graaljs, commands)).use {
-    (initCfg, cfgSignal, readCfg, scheduler, sqlite, http, widget, state, shell, mihomo, github, fxTwitter, telegram, chrome, wine, notify, notifyTriggers, graaljs, commands) =>
+  yield (initCfg, cfgSignal, readCfg, scheduler, sqlite, http, widget, kv, shell, mihomo, github, fxTwitter, telegram, chrome, wine, notify, notifyTriggers, graaljs, commands)).use {
+    (initCfg, cfgSignal, readCfg, scheduler, sqlite, http, widget, kv, shell, mihomo, github, fxTwitter, telegram, chrome, wine, notify, notifyTriggers, graaljs, commands) =>
       val app = httpApp {
         server {
           host(initCfg.server.host.trim)
@@ -89,7 +90,7 @@ object Main extends IOApp.Simple:
         FxTwitterRoutes.register(fxTwitter)
         TelegramRoutes.register(telegram)
         WidgetRoutes.register(widget)
-        StateRoutes.register(state)
+        KvRoutes.register(kv)
         ChromeRoutes.register(chrome)
         WineRoutes.register(wine)
         NotifyRoutes.register(notify, Some(notifyTriggers))

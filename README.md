@@ -386,22 +386,22 @@ if (result.exitCode !== 0) throw Error(result.stderr || `Bash exit ${result.exit
   `netfilter-mode=off` 配合 nftables 的 `tailscale0` 入站规则；systemd drop-in 在防火墙启动和 reload 后补回该规则。
   Mihomo hosts 中 `headscale.yjgbg.com` 指向 `49.235.170.57`，避免控制域名走 fake-IP。
 
-### GraalJS 跨周期状态
+### GraalJS 跨周期键值存储（KV）
 
-`state.set/get/clear` 是普通命令声明，仅 `exposeOn(graaljs)`，通过现有 SDK 调用。
+`kv.set/get/clear` 是普通命令声明，仅 `exposeOn(graaljs)`，通过现有 SDK 调用。
 键和值均为字符串；所有任务共享同一个键空间，建议用任务名前缀区分用途。
 
 ```js
 const key = "my-task:last-value";
-const previous = (await tools.state.get({key})).body; // 不存在时为 null
-await tools.state.set({key, value: "下一周期读取的值"});
-const removed = (await tools.state.clear({key})).body; // 存在并删除返回 true，否则 false
+const previous = (await tools.kv.get({key})).body; // 不存在时为 null
+await tools.kv.set({key, value: "下一周期读取的值"});
+const removed = (await tools.kv.clear({key})).body; // 存在并删除返回 true，否则 false
 ```
 
 - `set` 创建或覆盖值，成功响应无正文；空字符串按原样保存，与不存在的 `null` 区分。
 - 键为 1–128 个字符，不含 NUL；值最大 64 KiB（UTF-8），支持多行和 Unicode，不做 trim 或 JSON 转换。
-- 默认存储在 `$GROOT_HOME/state/state.sqlite3`（默认 `~/.config/groot/state/state.sqlite3`）。
-  单次操作原子提交，跨任务、周期、重试和服务重启保留；任务失败或被取消不会撤销已经提交的状态。
+- 默认存储在与 `application.conf` 同目录的 `kv.jsonl`（默认 `~/.config/groot/kv.jsonl`），可在 `application.conf` 中通过 `kv.file` 自定义路径（支持绝对路径或相对于 `application.conf` 所在目录的相对路径，支持热重载）。
+  每行一条 JSON 记录，单次操作原子提交，跨任务、周期、重试和服务重启保留；任务失败或被取消不会撤销已经提交的数据。
 - 并发覆盖同一键时，最后提交的值生效；多个 `get/set` 调用组合不构成事务。
 
 ### 客户端暴露范围
