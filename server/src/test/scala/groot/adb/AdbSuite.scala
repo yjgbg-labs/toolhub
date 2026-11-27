@@ -56,7 +56,6 @@ class AdbSuite extends CatsEffectSuite:
       serverSocketsRef: Ref[IO, Vector[Socket[IO]]]
   ): Resource[IO, Int] =
     val host = Host.fromString("127.0.0.1").get
-    val bindPort = Port.fromInt(0)
 
     def handleClient(socket: Socket[IO]): IO[Unit] =
       val rawMessage = "groot-adb-auth-challenge-message".getBytes(UTF_8)
@@ -403,9 +402,8 @@ class AdbSuite extends CatsEffectSuite:
   test("AdbConfig parses HOCON aliases and rejects invalid endpoints") {
     val valid = ConfigLoader.parseHocon[ApplicationConfig](
       """adb {
-        |  defaultTarget = "tv"
         |  targets {
-        |    tv = "10.0.0.209:5555"
+        |    xiaomitv = "10.0.0.209:5555"
         |    box = "10.0.0.210"
         |  }
         |  connectTimeout = 3s
@@ -416,18 +414,17 @@ class AdbSuite extends CatsEffectSuite:
     )
     assert(valid.isRight, s"Expected Right, got $valid")
     val cfg = valid.toOption.get.adb
-    assertEquals(cfg.defaultTarget, "tv")
-    assertEquals(cfg.targets("tv"), "10.0.0.209:5555")
+    assertEquals(cfg.targets("xiaomitv"), "10.0.0.209:5555")
     assertEquals(cfg.maxOutputBytes, 8 * 1024 * 1024)
 
     val invalidPort = ConfigLoader.parseHocon[ApplicationConfig](
-      """adb.targets.tv = "10.0.0.209:99999" """,
+      """adb.targets.xiaomitv = "10.0.0.209:99999" """,
       ApplicationConfig()
     )
     assert(invalidPort.isLeft)
   }
 
-  test("End-to-end native ADB wire protocol: auth, shell, screen, keyevent safety, sync push/pull/ls/stat (>4KiB fragmentation), screencap, install & reconnect") {
+  test("End-to-end native ADB wire protocol: explicit target enforcement, auth, shell, screen, keyevent safety, sync push/pull/ls/stat (>4KiB fragmentation), screencap, install & reconnect") {
     tempDir.use { dir =>
       val keyFile = dir.resolve("adb/adbkey")
       for
@@ -446,8 +443,7 @@ class AdbSuite extends CatsEffectSuite:
           serverSocketsRef = socketsRef
         ).use { port =>
           val adbCfg = AdbConfig(
-            defaultTarget = "tv",
-            targets = Map("tv" -> s"127.0.0.1:$port"),
+            targets = Map("xiaomitv" -> s"127.0.0.1:$port"),
             keyFile = keyFile.toString,
             connectTimeout = "3s",
             commandTimeout = "5s"
@@ -464,8 +460,14 @@ class AdbSuite extends CatsEffectSuite:
                 Files.write(localPayload, bigBytes)
                 Files.write(sampleApk, "fake-apk-bytes".getBytes(UTF_8))
               }
-              connRes <- svc.connect(ConnectRequest())
-              _ = assertEquals(connRes.alias, Some("tv"))
+              // Even with a single configured target alias, blank target must be rejected
+              missingTargetErr <- svc.connect(ConnectRequest(target = "   ")).attempt
+              _ = assert(missingTargetErr.left.exists(_.asInstanceOf[AdbFailure].code == "invalid_adb"))
+              missingDiscTargetErr <- svc.disconnect(target = None, all = false).attempt
+              _ = assert(missingDiscTargetErr.left.exists(_.asInstanceOf[AdbFailure].code == "invalid_adb"))
+
+              connRes <- svc.connect(ConnectRequest(target = "xiaomitv"))
+              _ = assertEquals(connRes.alias, Some("xiaomitv"))
               _ = assertEquals(connRes.maxPayload, 4096)
               _ = assertEquals(connRes.model, Some("MiTV-ANTL0"))
               _ = assertEquals(connRes.sdkInt, Some(22))
@@ -474,66 +476,66 @@ class AdbSuite extends CatsEffectSuite:
               _ = assertEquals(devs.devices.size, 1)
               _ = assertEquals(devs.devices.head.connected, true)
 
-              info0 <- svc.info(None)
+              info0 <- svc.info("xiaomitv")
               _ = assertEquals(info0.screenState, "OFF")
               _ = assertEquals(info0.device, Some("starwars"))
 
               // Screen toggle OFF -> ON (keyevent 224)
-              scrOn <- svc.screen(ScreenRequest(mode = ScreenAction.on))
+              scrOn <- svc.screen(ScreenRequest(target = "xiaomitv", mode = ScreenAction.on))
               _ = assertEquals(scrOn.previousState, "OFF")
               _ = assertEquals(scrOn.currentState, "ON")
               _ = assertEquals(scrOn.changed, true)
 
               // Safety guard blocks KEYCODE_POWER (26) by default
-              blockedPower <- svc.keyevent(KeyEventRequest(keys = Vector("POWER"))).attempt
+              blockedPower <- svc.keyevent(KeyEventRequest(target = "xiaomitv", keys = Vector("POWER"))).attempt
               _ = assert(blockedPower.left.exists(_.asInstanceOf[AdbFailure].code == "invalid_adb"))
 
               // Named keyevents work cleanly
-              keyOk <- svc.keyevent(KeyEventRequest(keys = Vector("HOME", "DPAD_DOWN")))
+              keyOk <- svc.keyevent(KeyEventRequest(target = "xiaomitv", keys = Vector("HOME", "DPAD_DOWN")))
               _ = assertEquals(keyOk.resolvedKeyCodes, Vector(3, 20))
 
               // Input text escaping
-              _ <- svc.input(InputRequest(kind = InputKind.text, text = Some("hello world's")))
+              _ <- svc.input(InputRequest(target = "xiaomitv", kind = InputKind.text, text = Some("hello world's")))
               loggedAfterInput <- commandsRef.get
               _ = assert(loggedAfterInput.last.contains("hello%sworld'\\''s"), s"Unexpected escaped cmd: ${loggedAfterInput.last}")
 
               // Binary sync PUSH (>4 KiB) + STAT + LS + PULL (to file & inline Base64)
-              pushed <- svc.push(PushRequest(localPath = localPayload.toString, remotePath = "/data/local/tmp/big.bin"))
+              pushed <- svc.push(PushRequest(target = "xiaomitv", localPath = localPayload.toString, remotePath = "/data/local/tmp/big.bin"))
               _ = assertEquals(pushed.sizeBytes, 19999L)
 
-              st <- svc.stat("/data/local/tmp/big.bin", None)
+              st <- svc.stat("xiaomitv", "/data/local/tmp/big.bin")
               _ = assertEquals(st.exists, true)
               _ = assertEquals(st.sizeBytes, 19999L)
               _ = assertEquals(st.isRegularFile, true)
 
-              listing <- svc.ls("/data/local/tmp", None)
+              listing <- svc.ls("xiaomitv", "/data/local/tmp")
               _ = assertEquals(listing.entries.map(_.name), Vector("big.bin", "hello.txt"))
 
-              pulledDisk <- svc.pull(PullRequest(remotePath = "/data/local/tmp/big.bin", localPath = Some(pulledFile.toString)))
+              pulledDisk <- svc.pull(PullRequest(target = "xiaomitv", remotePath = "/data/local/tmp/big.bin", localPath = Some(pulledFile.toString)))
               _ = assertEquals(pulledDisk.sizeBytes, 19999L)
               pulledBytes <- IO.blocking(Files.readAllBytes(pulledFile))
               _ = assert(java.util.Arrays.equals(bigBytes, pulledBytes), "Pulled binary file must match pushed bytes")
 
-              pulledInline <- svc.pull(PullRequest(remotePath = "/data/local/tmp/hello.txt"))
+              pulledInline <- svc.pull(PullRequest(target = "xiaomitv", remotePath = "/data/local/tmp/hello.txt"))
               _ = assertEquals(new String(Base64.getDecoder.decode(pulledInline.contentBase64.get), UTF_8), "Hello ADB")
 
               // Screencap binary PNG + dimension extraction
-              cap <- svc.screencap(ScreencapRequest(outputPath = Some(capFile.toString), includeBase64 = true))
+              cap <- svc.screencap(ScreencapRequest(target = "xiaomitv", outputPath = Some(capFile.toString), includeBase64 = true))
               _ = assertEquals(cap.width, Some(1920))
               _ = assertEquals(cap.height, Some(1080))
               _ = assert(Files.isRegularFile(capFile))
 
               // APK install & uninstall
-              inst <- svc.install(InstallRequest(apkPath = sampleApk.toString))
+              inst <- svc.install(InstallRequest(target = "xiaomitv", apkPath = sampleApk.toString))
               _ = assert(inst.output.contains("Success"))
-              uninst <- svc.uninstall(UninstallRequest(packageName = "lab.yjgbg.sample"))
+              uninst <- svc.uninstall(UninstallRequest(target = "xiaomitv", packageName = "lab.yjgbg.sample"))
               _ = assertEquals(uninst.output, "Success")
 
               // Simulate remote socket drop and verify transparent reconnect on next call!
               socks <- socketsRef.get
               _ <- socks.traverse_(_.endOfOutput.attempt.void)
               _ <- IO.sleep(100.millis)
-              afterDrop <- svc.exec(ExecRequest(command = "echo alive"))
+              afterDrop <- svc.exec(ExecRequest(target = "xiaomitv", command = "echo alive"))
               _ = assertEquals(afterDrop.output, "ran:echo alive")
 
               // HTTP Routes + OpenAPI contract check
@@ -551,6 +553,10 @@ class AdbSuite extends CatsEffectSuite:
                 Request[IO](Method.GET, Uri.unsafeFromString("/adb/devices"))
               )
               _ = assertEquals(httpResp.status.code, 200)
+              scrHttpResp <- app.httpApp.run(
+                Request[IO](Method.GET, Uri.unsafeFromString("/adb/screen?target=xiaomitv&mode=status"))
+              )
+              _ = assertEquals(scrHttpResp.status.code, 200)
               openApiResp <- app.httpApp.run(
                 Request[IO](Method.GET, Uri.unsafeFromString("/openapi.json"))
               )
@@ -558,6 +564,8 @@ class AdbSuite extends CatsEffectSuite:
               openApiBody <- openApiResp.as[String]
               _ = assert(openApiBody.contains("\"adb.connect\""))
               _ = assert(openApiBody.contains("\"adb.screencap\""))
+              _ = assert(!openApiBody.contains("defaultTarget"))
+              _ = assert(!openApiBody.contains("setDefault"))
             yield ()
           }
         }
@@ -570,30 +578,29 @@ class AdbSuite extends CatsEffectSuite:
       case None => IO.unit
       case Some(liveTarget) =>
         tempDir.use { dir =>
-          val cfg = AdbConfig(defaultTarget = liveTarget, connectTimeout = "5s", commandTimeout = "15s")
-          // Pass defaultHome so ~/.android/adbkey is discovered naturally just like production
+          val cfg = AdbConfig(targets = Map("xiaomitv" -> liveTarget), connectTimeout = "5s", commandTimeout = "15s")
           AdbService.resource(dir, IO.pure(cfg)).use { svc =>
             val localTmp = dir.resolve("live-probe.txt")
             val remoteTmp = "/data/local/tmp/.groot_adb_live_test.txt"
             val payload = s"groot-native-adb-${System.currentTimeMillis()}"
             for
-              conn <- svc.connect(ConnectRequest())
+              conn <- svc.connect(ConnectRequest(target = "xiaomitv"))
               _ = assert(conn.maxPayload >= 4096, s"Unexpected maxPayload: ${conn.maxPayload}")
-              devInfo <- svc.info(None)
+              devInfo <- svc.info("xiaomitv")
               _ = assert(devInfo.model.exists(_.nonEmpty), s"Expected non-empty model in $devInfo")
               _ <- IO.blocking(Files.writeString(localTmp, payload, UTF_8))
               _ <- (for
-                pushed <- svc.push(PushRequest(localPath = localTmp.toString, remotePath = remoteTmp))
+                pushed <- svc.push(PushRequest(target = "xiaomitv", localPath = localTmp.toString, remotePath = remoteTmp))
                 _ = assertEquals(pushed.sizeBytes, payload.getBytes(UTF_8).length.toLong)
-                st <- svc.stat(remoteTmp, None)
+                st <- svc.stat("xiaomitv", remoteTmp)
                 _ = assertEquals(st.exists, true)
-                pulled <- svc.pull(PullRequest(remotePath = remoteTmp))
+                pulled <- svc.pull(PullRequest(target = "xiaomitv", remotePath = remoteTmp))
                 decoded = new String(Base64.getDecoder.decode(pulled.contentBase64.get), UTF_8)
                 _ = assertEquals(decoded, payload)
               yield ()).guarantee(
-                svc.exec(ExecRequest(command = s"rm -f $remoteTmp")).attempt.void
+                svc.exec(ExecRequest(target = "xiaomitv", command = s"rm -f $remoteTmp")).attempt.void
               )
-              cap <- svc.screencap(ScreencapRequest(includeBase64 = true))
+              cap <- svc.screencap(ScreencapRequest(target = "xiaomitv", includeBase64 = true))
               _ = assert(cap.width.exists(_ > 0) && cap.height.exists(_ > 0), s"Invalid screencap dimensions: $cap")
               _ = println(s"[Live ADB Verified] ${conn.address} model=${devInfo.model.getOrElse("?")} sdk=${devInfo.sdkInt.getOrElse(0)} maxPayload=${conn.maxPayload} screen=${devInfo.screenState} screencap=${cap.width.getOrElse(0)}x${cap.height.getOrElse(0)} (${cap.sizeBytes} bytes)")
             yield ()
@@ -624,7 +631,7 @@ class AdbSuite extends CatsEffectSuite:
           val cfg = AdbConfig(keyFile = keyFile.toString, connectTimeout = "2s", authTimeout = "2s")
           AdbService.resource(dir, IO.pure(cfg)).use { svc =>
             for
-              err <- svc.connect(ConnectRequest(target = Some(s"127.0.0.1:$port"), waitForAuth = false)).attempt
+              err <- svc.connect(ConnectRequest(target = s"127.0.0.1:$port", waitForAuth = false)).attempt
               _ = assert(err.left.exists(_.asInstanceOf[AdbFailure].code == "adb_unauthorized"))
               sentKey <- seenPubKeyRef.get
               _ = assert(sentKey.exists(_.endsWith("groot@localhost")), s"Expected public key upload, got $sentKey")
@@ -644,7 +651,7 @@ class AdbSuite extends CatsEffectSuite:
           val cfg = AdbConfig(keyFile = keyFile.toString, connectTimeout = "2s", authTimeout = "3s")
           AdbService.resource(dir, IO.pure(cfg)).use { svc =>
             for
-              ok <- svc.connect(ConnectRequest(target = Some(s"127.0.0.1:$port"), waitForAuth = true))
+              ok <- svc.connect(ConnectRequest(target = s"127.0.0.1:$port", waitForAuth = true))
               _ = assertEquals(ok.model, Some("MiTV-ANTL0"))
             yield ()
           }

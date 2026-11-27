@@ -4,17 +4,14 @@ import framework.model.JsonModel
 import framework.validation.*
 
 object AdbValidation:
-  def isValidEndpointOrEmpty(raw: String): Boolean =
-    raw != null && (raw.trim.isEmpty || parseHostPort(raw).isRight)
-
   def isValidEndpoint(raw: String): Boolean =
     raw != null && parseHostPort(raw).isRight
 
-  def isValidAliasOrEndpointOrEmpty(raw: String): Boolean =
+  def isValidAliasOrEndpoint(raw: String): Boolean =
     if raw == null then false
     else
       val t = raw.trim
-      t.isEmpty || t.matches("[A-Za-z0-9._-]+") || parseHostPort(t).isRight
+      t.nonEmpty && (t.matches("[A-Za-z0-9._-]+") || parseHostPort(t).isRight)
 
   def parseHostPort(raw: String, defaultPort: Int = 5555): Either[String, (String, Int)] =
     val s = Option(raw).map(_.trim).getOrElse("")
@@ -63,11 +60,6 @@ final case class AdbTargetEndpoint(
   "adb.targets entries must map alphanumeric alias names to valid host or host:port endpoints"
 )
 final case class AdbConfig(
-    @contract[String](
-      AdbValidation.isValidAliasOrEndpointOrEmpty,
-      "must be empty, a configured alias name, or host[:port]"
-    )
-    defaultTarget: String = sys.env.getOrElse("ADB_DEFAULT_TARGET", "").trim,
     targets: Map[String, String] = Map.empty,
     @contract[String](s => s != null && !s.contains('\u0000'), "must not contain NUL bytes")
     keyFile: String = sys.env.getOrElse("ADB_KEY_FILE", "").trim,
@@ -94,7 +86,6 @@ final case class AdbDeviceSession(
     address: String,
     alias: Option[String] = None,
     connected: Boolean,
-    isDefault: Boolean = false,
     banner: Option[String] = None,
     maxPayload: Option[Int] = None,
     connectedAt: Option[String] = None,
@@ -102,17 +93,14 @@ final case class AdbDeviceSession(
 ) derives JsonModel
 
 final case class AdbDevicesResult(
-    defaultTarget: Option[String] = None,
-    resolvedDefaultAddress: Option[String] = None,
     keyPath: String,
     publicKeyFingerprint: String,
     devices: Vector[AdbDeviceSession]
 ) derives JsonModel
 
 final case class ConnectRequest(
-    target: Option[String] = None,
-    waitForAuth: Boolean = false,
-    setDefault: Boolean = false
+    target: String,
+    waitForAuth: Boolean = false
 ) derives JsonModel
 
 final case class ConnectResult(
@@ -121,7 +109,6 @@ final case class ConnectResult(
     banner: String,
     protocolVersion: Int,
     maxPayload: Int,
-    isDefault: Boolean,
     model: Option[String] = None,
     androidVersion: Option[String] = None,
     sdkInt: Option[Int] = None
@@ -151,8 +138,8 @@ final case class DeviceInfo(
 ) derives JsonModel
 
 final case class ExecRequest(
+    target: String,
     command: String,
-    target: Option[String] = None,
     timeout: Option[String] = None
 ) derives JsonModel
 
@@ -166,8 +153,8 @@ final case class ExecResult(
 ) derives JsonModel
 
 final case class KeyEventRequest(
+    target: String,
     keys: Vector[String],
-    target: Option[String] = None,
     longPress: Boolean = false,
     allowPowerOff: Boolean = false
 ) derives JsonModel
@@ -180,8 +167,8 @@ final case class KeyEventResult(
 ) derives JsonModel
 
 final case class InputRequest(
+    target: String,
     kind: InputKind,
-    target: Option[String] = None,
     x: Option[Int] = None,
     y: Option[Int] = None,
     x2: Option[Int] = None,
@@ -197,8 +184,8 @@ final case class InputResult(
 ) derives JsonModel
 
 final case class ScreenRequest(
-    mode: ScreenAction = ScreenAction.status,
-    target: Option[String] = None
+    target: String,
+    mode: ScreenAction = ScreenAction.status
 ) derives JsonModel
 
 final case class ScreenResult(
@@ -210,7 +197,7 @@ final case class ScreenResult(
 ) derives JsonModel
 
 final case class ScreencapRequest(
-    target: Option[String] = None,
+    target: String,
     outputPath: Option[String] = None,
     includeBase64: Boolean = false
 ) derives JsonModel
@@ -253,9 +240,9 @@ final case class SyncListResult(
 ) derives JsonModel
 
 final case class PushRequest(
+    target: String,
     localPath: String,
     remotePath: String,
-    target: Option[String] = None,
     mode: Option[Int] = None
 ) derives JsonModel
 
@@ -268,9 +255,9 @@ final case class PushResult(
 ) derives JsonModel
 
 final case class PullRequest(
+    target: String,
     remotePath: String,
-    localPath: Option[String] = None,
-    target: Option[String] = None
+    localPath: Option[String] = None
 ) derives JsonModel
 
 final case class PullResult(
@@ -283,8 +270,8 @@ final case class PullResult(
 ) derives JsonModel
 
 final case class InstallRequest(
+    target: String,
     apkPath: String,
-    target: Option[String] = None,
     replace: Boolean = true,
     allowDowngrade: Boolean = false,
     grantPermissions: Boolean = false
@@ -299,8 +286,8 @@ final case class InstallResult(
 ) derives JsonModel
 
 final case class UninstallRequest(
+    target: String,
     packageName: String,
-    target: Option[String] = None,
     keepData: Boolean = false
 ) derives JsonModel
 
@@ -313,8 +300,8 @@ final case class UninstallResult(
 ) derives JsonModel
 
 final case class RebootRequest(
+    target: String,
     mode: RebootMode = RebootMode.system,
-    target: Option[String] = None,
     confirm: Boolean = false
 ) derives JsonModel
 

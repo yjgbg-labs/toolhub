@@ -11,69 +11,47 @@ import java.nio.file.{Files, Path, StandardCopyOption, StandardOpenOption}
 import java.util.Base64
 import java.util.Locale
 import scala.concurrent.duration.*
-import scala.util.control.NonFatal
 import scodec.bits.ByteVector
 
 final class AdbService private (
     grootHome: Path,
     config: IO[AdbConfig],
     poolLock: Semaphore[IO],
-    poolRef: Ref[IO, Map[String, AdbConnection]],
-    runtimeDefaultRef: Ref[IO, Option[String]]
+    poolRef: Ref[IO, Map[String, AdbConnection]]
 ):
   private val inlinePullMaxBytes = 256 * 1024
 
-  private def resolveEndpoint(rawTarget: Option[String], cfg: AdbConfig, pooledKeys: Set[String]): IO[(String, Option[String])] =
-    val runtimeOrExplicit = rawTarget.map(_.trim).filter(_.nonEmpty)
-
-    def resolveToken(token: String): Either[AdbFailure, (String, Option[String])] =
-      cfg.targets.get(token) match
-        case Some(mapped) =>
-          AdbValidation.parseHostPort(mapped) match
-            case Right((h, p)) => Right((s"$h:$p", Some(token)))
-            case Left(err)     => Left(AdbFailure("invalid_adb", s"Invalid endpoint for alias '$token': $err"))
-        case None =>
-          AdbValidation.parseHostPort(token) match
-            case Right((h, p)) =>
-              val addr = s"$h:$p"
-              val matchingAlias = cfg.targets.collectFirst {
-                case (alias, v) if AdbValidation.parseHostPort(v).contains((h, p)) => alias
-              }
-              Right((addr, matchingAlias))
-            case Left(err) =>
-              Left(AdbFailure("invalid_adb", s"Unknown ADB alias or invalid endpoint '$token': $err"))
-
-    runtimeDefaultRef.get.flatMap { runtimeDefault =>
-      val chosen: Option[String] =
-        runtimeOrExplicit
-          .orElse(runtimeDefault.filter(_.nonEmpty))
-          .orElse(Option(cfg.defaultTarget).map(_.trim).filter(_.nonEmpty))
-          .orElse {
-            if cfg.targets.size == 1 then cfg.targets.keys.headOption
-            else if pooledKeys.size == 1 then pooledKeys.headOption
-            else None
-          }
-
-      chosen match
-        case Some(tok) => IO.fromEither(resolveToken(tok))
-        case None =>
-          IO.raiseError(
-            AdbFailure(
-              "invalid_adb",
-              "No target device specified and no defaultTarget/single device configured; pass target='host[:port]' or configure adb.defaultTarget"
-            )
-          )
-    }
+  private def resolveEndpoint(rawTarget: String, cfg: AdbConfig): IO[(String, Option[String])] =
+    val token = Option(rawTarget).map(_.trim).getOrElse("")
+    if token.isEmpty then
+      IO.raiseError(AdbFailure("invalid_adb", "target must be specified (configured alias or host[:port])"))
+    else
+      val resolved: Either[AdbFailure, (String, Option[String])] =
+        cfg.targets.get(token) match
+          case Some(mapped) =>
+            AdbValidation.parseHostPort(mapped) match
+              case Right((h, p)) => Right((s"$h:$p", Some(token)))
+              case Left(err)     => Left(AdbFailure("invalid_adb", s"Invalid endpoint for alias '$token': $err"))
+          case None =>
+            AdbValidation.parseHostPort(token) match
+              case Right((h, p)) =>
+                val addr = s"$h:$p"
+                val matchingAlias = cfg.targets.collectFirst {
+                  case (alias, v) if AdbValidation.parseHostPort(v).contains((h, p)) => alias
+                }
+                Right((addr, matchingAlias))
+              case Left(err) =>
+                Left(AdbFailure("invalid_adb", s"Unknown ADB alias or invalid endpoint '$token': $err"))
+      IO.fromEither(resolved)
 
   private def acquireConnection(
-      rawTarget: Option[String],
+      rawTarget: String,
       waitForAuth: Boolean = false,
       forceReconnect: Boolean = false
   ): IO[(AdbConnection, Option[String], AdbConfig)] =
     for
       cfg <- config
-      pooledSnap <- poolRef.get
-      (address, alias) <- resolveEndpoint(rawTarget, cfg, pooledSnap.keySet)
+      (address, alias) <- resolveEndpoint(rawTarget, cfg)
       (host, port) <- IO.fromEither(AdbValidation.parseHostPort(address).left.map(err => AdbFailure("invalid_adb", err)))
       key <- AdbCrypto.loadOrCreate(grootHome, cfg.keyFile)
       connTimeout = Contracts.parseDuration(cfg.connectTimeout)
@@ -98,7 +76,7 @@ final class AdbService private (
       }
     yield (conn, alias, cfg)
 
-  private def withConnection[A](rawTarget: Option[String])(op: (AdbConnection, Option[String], AdbConfig) => IO[A]): IO[A] =
+  private def withConnection[A](rawTarget: String)(op: (AdbConnection, Option[String], AdbConfig) => IO[A]): IO[A] =
     acquireConnection(rawTarget).flatMap { (conn, alias, cfg) =>
       op(conn, alias, cfg).recoverWith {
         case e: AdbFailure if e.code == "adb_disconnected" =>
@@ -144,28 +122,18 @@ final class AdbService private (
         yield (addr, conn, alive, last)
       }
       liveMap = alivePairs.collect { case (addr, conn, true, last) => addr -> (conn, last) }.toMap
-      runtimeDef <- runtimeDefaultRef.get
-      effectiveDefaultName = runtimeDef.filter(_.nonEmpty).orElse(Option(cfg.defaultTarget).map(_.trim).filter(_.nonEmpty))
-      resolvedDefaultAddr = effectiveDefaultName.flatMap { tok =>
-        cfg.targets
-          .get(tok)
-          .flatMap(v => AdbValidation.parseHostPort(v).toOption.map((h, p) => s"$h:$p"))
-          .orElse(AdbValidation.parseHostPort(tok).toOption.map((h, p) => s"$h:$p"))
-      }
       configuredByAddr = cfg.targets.toVector.flatMap { (alias, raw) =>
         AdbValidation.parseHostPort(raw).toOption.map { (h, p) => s"$h:$p" -> alias }
       }.toMap
       allAddresses = (configuredByAddr.keySet ++ liveMap.keySet).toVector.sorted
       items = allAddresses.map { addr =>
         val alias = configuredByAddr.get(addr)
-        val isDef = resolvedDefaultAddr.contains(addr)
         liveMap.get(addr) match
           case Some((conn, last)) =>
             AdbDeviceSession(
               address = addr,
               alias = alias,
               connected = true,
-              isDefault = isDef,
               banner = Some(conn.banner),
               maxPayload = Some(conn.maxPayload),
               connectedAt = Some(conn.connectedAt.toString),
@@ -175,13 +143,10 @@ final class AdbService private (
             AdbDeviceSession(
               address = addr,
               alias = alias,
-              connected = false,
-              isDefault = isDef
+              connected = false
             )
       }
     yield AdbDevicesResult(
-      defaultTarget = effectiveDefaultName,
-      resolvedDefaultAddress = resolvedDefaultAddr,
       keyPath = key.keyPath.toString,
       publicKeyFingerprint = key.fingerprintSha256,
       devices = items
@@ -190,7 +155,6 @@ final class AdbService private (
   def connect(req: ConnectRequest): IO[ConnectResult] =
     for
       (conn, alias, cfg) <- acquireConnection(req.target, waitForAuth = req.waitForAuth, forceReconnect = true)
-      _ <- if req.setDefault then runtimeDefaultRef.set(Some(alias.getOrElse(conn.address))) else IO.unit
       connTimeout = Contracts.parseDuration(cfg.connectTimeout)
       propsRaw <- runRawShell(
         conn,
@@ -200,16 +164,12 @@ final class AdbService private (
         4096
       ).map(r => new String(r._1.toArray, UTF_8)).attempt
       lines = propsRaw.toOption.map(_.linesIterator.map(_.trim).toVector).getOrElse(Vector.empty)
-      runtimeDef <- runtimeDefaultRef.get
-      effectiveDef = runtimeDef.orElse(Option(cfg.defaultTarget).map(_.trim).filter(_.nonEmpty))
-      isDef = effectiveDef.exists(d => d == conn.address || alias.contains(d))
     yield ConnectResult(
       address = conn.address,
       alias = alias,
       banner = conn.banner,
       protocolVersion = conn.protocolVersion,
       maxPayload = conn.maxPayload,
-      isDefault = isDef,
       model = lines.lift(0).filter(_.nonEmpty),
       androidVersion = lines.lift(1).filter(_.nonEmpty),
       sdkInt = lines.lift(2).flatMap(_.toIntOption)
@@ -223,20 +183,23 @@ final class AdbService private (
           _ <- prev.values.toVector.traverse_(_.close.attempt.void)
         yield DisconnectResult(disconnected = prev.keys.toVector.sorted, remainingConnected = 0)
       else
-        for
-          cfg <- config
-          cur <- poolRef.get
-          (addr, _) <- resolveEndpoint(target, cfg, cur.keySet)
-          removedOpt <- poolRef.modify(m => (m - addr, m.get(addr)))
-          _ <- removedOpt.traverse_(_.close.attempt.void)
-          rem <- poolRef.get
-        yield DisconnectResult(
-          disconnected = removedOpt.map(_ => Vector(addr)).getOrElse(Vector.empty),
-          remainingConnected = rem.size
-        )
+        target.map(_.trim).filter(_.nonEmpty) match
+          case None =>
+            IO.raiseError(AdbFailure("invalid_adb", "target must be specified unless all=true"))
+          case Some(tok) =>
+            for
+              cfg <- config
+              (addr, _) <- resolveEndpoint(tok, cfg)
+              removedOpt <- poolRef.modify(m => (m - addr, m.get(addr)))
+              _ <- removedOpt.traverse_(_.close.attempt.void)
+              rem <- poolRef.get
+            yield DisconnectResult(
+              disconnected = removedOpt.map(_ => Vector(addr)).getOrElse(Vector.empty),
+              remainingConnected = rem.size
+            )
     }
 
-  def info(target: Option[String]): IO[DeviceInfo] =
+  def info(target: String): IO[DeviceInfo] =
     withConnection(target) { (conn, alias, cfg) =>
       val openTimeout = Contracts.parseDuration(cfg.connectTimeout)
       val cmdTimeout = Contracts.parseDuration(cfg.commandTimeout)
@@ -448,13 +411,13 @@ final class AdbService private (
         )
       }
 
-  def stat(remotePath: String, target: Option[String]): IO[SyncStatResult] =
+  def stat(target: String, remotePath: String): IO[SyncStatResult] =
     validateRemotePath(remotePath) *>
       withConnection(target) { (conn, _, cfg) =>
         AdbSync.stat(conn, remotePath.trim, Contracts.parseDuration(cfg.connectTimeout))
       }
 
-  def ls(remotePath: String, target: Option[String]): IO[SyncListResult] =
+  def ls(target: String, remotePath: String): IO[SyncListResult] =
     validateRemotePath(remotePath) *>
       withConnection(target) { (conn, _, cfg) =>
         AdbSync.list(conn, remotePath.trim, Contracts.parseDuration(cfg.connectTimeout))
@@ -751,9 +714,8 @@ object AdbService:
     for
       lock <- Resource.eval(Semaphore[IO](1))
       poolRef <- Resource.eval(Ref.of[IO, Map[String, AdbConnection]](Map.empty))
-      runtimeDefaultRef <- Resource.eval(Ref.of[IO, Option[String]](None))
       svc <- Resource.make(
-        IO.pure(new AdbService(grootHome.toAbsolutePath.normalize(), config, lock, poolRef, runtimeDefaultRef))
+        IO.pure(new AdbService(grootHome.toAbsolutePath.normalize(), config, lock, poolRef))
       )(_.shutdownAll)
       _ <- Stream.awakeEvery[IO](reaperInterval).evalMap(_ => svc.evictIdleConnections.attempt.void).compile.drain.background
     yield svc

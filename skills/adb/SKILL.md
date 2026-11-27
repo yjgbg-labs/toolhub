@@ -11,19 +11,17 @@ description: 通过原生ADB协议连接、控制、传输文件或管理Android
 
 - 统一通过 Groot 服务端的 `adb` 命名空间完成全部操作，调用前先按需检索最新工具签名。
 - 服务端使用纯异步 TCP 直接与目标设备的 `adbd` 守护进程（默认端口 `5555`）交互，自行完成 24 字节二进制帧编解码、RSA-2048 挑战签名与多路复用流管理，不依赖本机外部可执行程序或 `5037` 守护进程，也不在本机拉起任何 shell 子进程。
+- 所有面向单台设备的操作必须显式指定 `target`（传入配置的设备别名如 `xiaomitv`，或显式 `host[:port]` 地址，无隐式默认设备推导）；仅 `disconnect` 在 `all` 为 `true` 时可省略 `target`。
 - 禁止在局域网段执行批量端口扫描探测设备；未知设备地址时请向用户确认或从路由器 DHCP 租约记录查询。
 - 回复与日志摘要中严禁输出任何私钥内容。
 
-## 配置、密钥与目标推导
+## 配置、密钥与目标别名
 
 - **热加载配置（`$GROOT_HOME/application.conf` 的 `adb` 段）**：
-  - `defaultTarget`：默认目标设备别名或地址（环境变量回退 `ADB_DEFAULT_TARGET`，默认空字符串）。
   - `targets`：设备别名映射字典（键名仅限字母、数字、点、下划线与连字符，值为合法主机名或带 `1`–`65535` 端口的地址，省略端口默认 `5555`）。
   - `keyFile`：自定义 PKCS#8 RSA-2048 私钥路径（环境变量回退 `ADB_KEY_FILE`）。留空时依次查找 `$GROOT_HOME/adb/adbkey`、`~/.android/adbkey`；均不存在时自动在 `$GROOT_HOME/adb/adbkey` 生成并落盘（权限 `0600`）及配套 `.pub` 公钥文件。
   - `connectTimeout` / `authTimeout` / `commandTimeout` / `idleTimeout`：建连超时默认 `5s`，首次屏幕弹窗授权等待默认 `20s`，单次流执行超时默认 `30s`，空闲连接池回收超时默认 `5m`。
   - `maxOutputBytes` / `maxTransferBytes`：单次流输出或截图上限默认 `4 MiB`（范围 `4 KiB`–`64 MiB`），`sync` 文件传输上限默认 `256 MiB`（范围 `4 KiB`–`512 MiB`）。
-- **目标设备解析顺序**：
-  - 各接口的 `target` 参数均可省略；省略时依次按“运行期 `setDefault` 固定目标 → 配置项 `defaultTarget` → `targets` 中唯一配置的设备 → 当前连接池中唯一活动连接”自动推导。
 
 ## 电源、输入与文件操作约束
 
@@ -38,7 +36,7 @@ description: 通过原生ADB协议连接、控制、传输文件或管理Android
 
 ## 错误码与排障建议
 
-- `400`（`invalid_adb` / `invalid_adb_key`）：目标地址、键名、路径格式非法，缺少默认设备，或触发电源安全拦截。
+- `400`（`invalid_adb` / `invalid_adb_key`）：未指定 `target`、未知设备别名、目标地址/键名/路径格式非法，或触发电源安全拦截。
 - `401`（`adb_unauthorized`）：设备尚未信任当前 RSA 公钥；首次连接可将 `connect` 的 `waitForAuth` 设为 `true` 并提示用户在设备屏幕上点击允许调试。
 - `403`（`adb_forbidden`）：远端目录无读写权限或文件系统只读（普通应用可写暂存目录优先使用 `/data/local/tmp`）。
 - `404`（`adb_not_found`）：本地待上传文件或远端目标路径不存在。
