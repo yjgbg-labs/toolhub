@@ -21,6 +21,7 @@ import groot.mihomo.{MihomoRoutes, MihomoService}
 import groot.github.{GitHubRoutes, GitHubService}
 import groot.fxtwitter.{FxTwitterRoutes, FxTwitterService}
 import groot.telegram.{TelegramRoutes, TelegramService}
+import groot.adb.{AdbRoutes, AdbService}
 import scala.concurrent.duration.*
 
 object Main extends IOApp.Simple:
@@ -47,14 +48,15 @@ object Main extends IOApp.Simple:
     github <- GitHubService.resource(home, config = readCfg.map(_.github))
     fxTwitter <- FxTwitterService.resource(config = readCfg.map(_.fxTwitter))
     telegram <- TelegramService.resource(home, config = readCfg.map(_.telegram))
+    adb <- AdbService.resource(home, config = readCfg.map(_.adb))
     chrome <- ChromeService.resource(config = readCfg.map(_.chrome))
     wine <- WineService.resource(readCfg.map(_.wine))
     notify <- NotifyService.resource(config = readCfg.map(_.notifications))
     graaljs <- GraalManager.resource(home.resolve("graaljs"), commands = commands.get, config = cfgSignal.map(_.graaljs))
     notifyTriggers <- NotifyTriggerManager.resource(notify, graaljs, home = home, startLoop = false, config = readCfg.map(_.notifications))
     scheduler <- Scheduler.resource(graaljs, home = home, startLoop = false)
-  yield (initCfg, cfgSignal, readCfg, scheduler, sqlite, http, widget, kv, shell, mihomo, github, fxTwitter, telegram, chrome, wine, notify, notifyTriggers, graaljs, commands)).use {
-    (initCfg, cfgSignal, readCfg, scheduler, sqlite, http, widget, kv, shell, mihomo, github, fxTwitter, telegram, chrome, wine, notify, notifyTriggers, graaljs, commands) =>
+  yield (initCfg, cfgSignal, readCfg, scheduler, sqlite, http, widget, kv, shell, mihomo, github, fxTwitter, telegram, adb, chrome, wine, notify, notifyTriggers, graaljs, commands)).use {
+    (initCfg, cfgSignal, readCfg, scheduler, sqlite, http, widget, kv, shell, mihomo, github, fxTwitter, telegram, adb, chrome, wine, notify, notifyTriggers, graaljs, commands) =>
       val app = httpApp {
         server {
           host(initCfg.server.host.trim)
@@ -89,6 +91,7 @@ object Main extends IOApp.Simple:
         GitHubRoutes.register(github)
         FxTwitterRoutes.register(fxTwitter)
         TelegramRoutes.register(telegram)
+        AdbRoutes.register(adb)
         WidgetRoutes.register(widget)
         KvRoutes.register(kv)
         ChromeRoutes.register(chrome)
