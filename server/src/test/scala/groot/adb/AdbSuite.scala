@@ -461,24 +461,20 @@ class AdbSuite extends CatsEffectSuite:
                 Files.write(sampleApk, "fake-apk-bytes".getBytes(UTF_8))
               }
               // Even with a single configured target alias, blank target must be rejected
-              missingTargetErr <- svc.connect(ConnectRequest(target = "   ")).attempt
+              missingTargetErr <- svc.info("   ").attempt
               _ = assert(missingTargetErr.left.exists(_.asInstanceOf[AdbFailure].code == "invalid_adb"))
-              missingDiscTargetErr <- svc.disconnect(target = None, all = false).attempt
-              _ = assert(missingDiscTargetErr.left.exists(_.asInstanceOf[AdbFailure].code == "invalid_adb"))
 
-              connRes <- svc.connect(ConnectRequest(target = "xiaomitv"))
-              _ = assertEquals(connRes.alias, Some("xiaomitv"))
-              _ = assertEquals(connRes.maxPayload, 4096)
-              _ = assertEquals(connRes.model, Some("MiTV-ANTL0"))
-              _ = assertEquals(connRes.sdkInt, Some(22))
+              info0 <- svc.info("xiaomitv")
+              _ = assertEquals(info0.alias, Some("xiaomitv"))
+              _ = assertEquals(info0.maxPayload, 4096)
+              _ = assertEquals(info0.model, Some("MiTV-ANTL0"))
+              _ = assertEquals(info0.sdkInt, Some(22))
+              _ = assertEquals(info0.screenState, "OFF")
+              _ = assertEquals(info0.device, Some("starwars"))
 
               devs <- svc.devices
               _ = assertEquals(devs.devices.size, 1)
               _ = assertEquals(devs.devices.head.connected, true)
-
-              info0 <- svc.info("xiaomitv")
-              _ = assertEquals(info0.screenState, "OFF")
-              _ = assertEquals(info0.device, Some("starwars"))
 
               // Screen toggle OFF -> ON (keyevent 224)
               scrOn <- svc.screen(ScreenRequest(target = "xiaomitv", mode = ScreenAction.on))
@@ -562,8 +558,10 @@ class AdbSuite extends CatsEffectSuite:
               )
               _ = assertEquals(openApiResp.status.code, 200)
               openApiBody <- openApiResp.as[String]
-              _ = assert(openApiBody.contains("\"adb.connect\""))
+              _ = assert(openApiBody.contains("\"adb.info\""))
               _ = assert(openApiBody.contains("\"adb.screencap\""))
+              _ = assert(!openApiBody.contains("\"adb.connect\""))
+              _ = assert(!openApiBody.contains("\"adb.disconnect\""))
               _ = assert(!openApiBody.contains("defaultTarget"))
               _ = assert(!openApiBody.contains("setDefault"))
             yield ()
@@ -584,9 +582,8 @@ class AdbSuite extends CatsEffectSuite:
             val remoteTmp = "/data/local/tmp/.groot_adb_live_test.txt"
             val payload = s"groot-native-adb-${System.currentTimeMillis()}"
             for
-              conn <- svc.connect(ConnectRequest(target = "xiaomitv"))
-              _ = assert(conn.maxPayload >= 4096, s"Unexpected maxPayload: ${conn.maxPayload}")
               devInfo <- svc.info("xiaomitv")
+              _ = assert(devInfo.maxPayload >= 4096, s"Unexpected maxPayload: ${devInfo.maxPayload}")
               _ = assert(devInfo.model.exists(_.nonEmpty), s"Expected non-empty model in $devInfo")
               _ <- IO.blocking(Files.writeString(localTmp, payload, UTF_8))
               _ <- (for
@@ -602,13 +599,13 @@ class AdbSuite extends CatsEffectSuite:
               )
               cap <- svc.screencap(ScreencapRequest(target = "xiaomitv", includeBase64 = true))
               _ = assert(cap.width.exists(_ > 0) && cap.height.exists(_ > 0), s"Invalid screencap dimensions: $cap")
-              _ = println(s"[Live ADB Verified] ${conn.address} model=${devInfo.model.getOrElse("?")} sdk=${devInfo.sdkInt.getOrElse(0)} maxPayload=${conn.maxPayload} screen=${devInfo.screenState} screencap=${cap.width.getOrElse(0)}x${cap.height.getOrElse(0)} (${cap.sizeBytes} bytes)")
+              _ = println(s"[Live ADB Verified] ${devInfo.address} model=${devInfo.model.getOrElse("?")} sdk=${devInfo.sdkInt.getOrElse(0)} maxPayload=${devInfo.maxPayload} screen=${devInfo.screenState} screencap=${cap.width.getOrElse(0)}x${cap.height.getOrElse(0)} (${cap.sizeBytes} bytes)")
             yield ()
           }
         }
   }
 
-  test("Untrusted key sends AUTH_RSAPUBLICKEY and supports both immediate 401 and waitForAuth=true approval") {
+  test("Untrusted key sends AUTH_RSAPUBLICKEY and supports both rejection (401) and on-screen approval") {
     tempDir.use { dir =>
       val keyFile = dir.resolve("adb/adbkey")
       for
@@ -618,7 +615,7 @@ class AdbSuite extends CatsEffectSuite:
         screenOnRef <- Ref.of[IO, Boolean](true)
         seenPubKeyRef <- Ref.of[IO, Option[String]](None)
         socketsRef <- Ref.of[IO, Vector[Socket[IO]]](Vector.empty)
-        // Server 1: does not auto-approve -> client gets 401 adb_unauthorized after sending public key
+        // Server 1: does not approve -> client gets 401 adb_unauthorized after sending public key
         _ <- mockAdbdServer(
           trustedPubKey = None,
           autoApproveUntrusted = false,
@@ -628,17 +625,17 @@ class AdbSuite extends CatsEffectSuite:
           seenPubKeyRef = seenPubKeyRef,
           serverSocketsRef = socketsRef
         ).use { port =>
-          val cfg = AdbConfig(keyFile = keyFile.toString, connectTimeout = "2s", authTimeout = "2s")
+          val cfg = AdbConfig(keyFile = keyFile.toString, connectTimeout = "2s", authTimeout = "1s")
           AdbService.resource(dir, IO.pure(cfg)).use { svc =>
             for
-              err <- svc.connect(ConnectRequest(target = s"127.0.0.1:$port", waitForAuth = false)).attempt
+              err <- svc.info(s"127.0.0.1:$port").attempt
               _ = assert(err.left.exists(_.asInstanceOf[AdbFailure].code == "adb_unauthorized"))
               sentKey <- seenPubKeyRef.get
               _ = assert(sentKey.exists(_.endsWith("groot@localhost")), s"Expected public key upload, got $sentKey")
             yield ()
           }
         }
-        // Server 2: approves after receiving AUTH_RSAPUBLICKEY when waitForAuth=true
+        // Server 2: approves on screen after receiving AUTH_RSAPUBLICKEY
         _ <- mockAdbdServer(
           trustedPubKey = None,
           autoApproveUntrusted = true,
@@ -651,7 +648,7 @@ class AdbSuite extends CatsEffectSuite:
           val cfg = AdbConfig(keyFile = keyFile.toString, connectTimeout = "2s", authTimeout = "3s")
           AdbService.resource(dir, IO.pure(cfg)).use { svc =>
             for
-              ok <- svc.connect(ConnectRequest(target = s"127.0.0.1:$port", waitForAuth = true))
+              ok <- svc.info(s"127.0.0.1:$port")
               _ = assertEquals(ok.model, Some("MiTV-ANTL0"))
             yield ()
           }

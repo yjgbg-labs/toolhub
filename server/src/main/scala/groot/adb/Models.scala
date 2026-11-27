@@ -66,7 +66,7 @@ final case class AdbConfig(
     @duration connectTimeout: String = "5s",
     @duration authTimeout: String = "20s",
     @duration commandTimeout: String = "30s",
-    @duration idleTimeout: String = "5m",
+    @duration idleTimeout: String = "30s",
     @range(4096L, 67108864L) maxOutputBytes: Int = 4 * 1024 * 1024,
     @range(4096L, 536870912L) maxTransferBytes: Long = 256L * 1024 * 1024
 ) derives JsonModel, Validator
@@ -98,31 +98,11 @@ final case class AdbDevicesResult(
     devices: Vector[AdbDeviceSession]
 ) derives JsonModel
 
-final case class ConnectRequest(
-    target: String,
-    waitForAuth: Boolean = false
-) derives JsonModel
-
-final case class ConnectResult(
-    address: String,
-    alias: Option[String] = None,
-    banner: String,
-    protocolVersion: Int,
-    maxPayload: Int,
-    model: Option[String] = None,
-    androidVersion: Option[String] = None,
-    sdkInt: Option[Int] = None
-) derives JsonModel
-
-final case class DisconnectResult(
-    disconnected: Vector[String],
-    remainingConnected: Int
-) derives JsonModel
-
 final case class DeviceInfo(
     address: String,
     alias: Option[String] = None,
     banner: String,
+    protocolVersion: Int,
     maxPayload: Int,
     manufacturer: Option[String] = None,
     brand: Option[String] = None,

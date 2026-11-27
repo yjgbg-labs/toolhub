@@ -46,7 +46,6 @@ final class AdbService private (
 
   private def acquireConnection(
       rawTarget: String,
-      waitForAuth: Boolean = false,
       forceReconnect: Boolean = false
   ): IO[(AdbConnection, Option[String], AdbConfig)] =
     for
@@ -69,7 +68,7 @@ final class AdbService private (
           active <- aliveExisting match
             case Some(c) => c.touch.as(c)
             case None =>
-              AdbProtocol.connect(host, port, key, connTimeout, authTimeout, waitForAuth).flatTap { fresh =>
+              AdbProtocol.connect(host, port, key, connTimeout, authTimeout).flatTap { fresh =>
                 poolRef.update(_.updated(address, fresh))
               }
         yield active
@@ -152,51 +151,9 @@ final class AdbService private (
       devices = items
     )
 
-  def connect(req: ConnectRequest): IO[ConnectResult] =
-    for
-      (conn, alias, cfg) <- acquireConnection(req.target, waitForAuth = req.waitForAuth, forceReconnect = true)
-      connTimeout = Contracts.parseDuration(cfg.connectTimeout)
-      propsRaw <- runRawShell(
-        conn,
-        "getprop ro.product.model; getprop ro.build.version.release; getprop ro.build.version.sdk",
-        connTimeout,
-        connTimeout,
-        4096
-      ).map(r => new String(r._1.toArray, UTF_8)).attempt
-      lines = propsRaw.toOption.map(_.linesIterator.map(_.trim).toVector).getOrElse(Vector.empty)
-    yield ConnectResult(
-      address = conn.address,
-      alias = alias,
-      banner = conn.banner,
-      protocolVersion = conn.protocolVersion,
-      maxPayload = conn.maxPayload,
-      model = lines.lift(0).filter(_.nonEmpty),
-      androidVersion = lines.lift(1).filter(_.nonEmpty),
-      sdkInt = lines.lift(2).flatMap(_.toIntOption)
-    )
-
-  def disconnect(target: Option[String], all: Boolean): IO[DisconnectResult] =
+  private def closePooled(addr: String): IO[Unit] =
     poolLock.permit.use { _ =>
-      if all then
-        for
-          prev <- poolRef.getAndSet(Map.empty)
-          _ <- prev.values.toVector.traverse_(_.close.attempt.void)
-        yield DisconnectResult(disconnected = prev.keys.toVector.sorted, remainingConnected = 0)
-      else
-        target.map(_.trim).filter(_.nonEmpty) match
-          case None =>
-            IO.raiseError(AdbFailure("invalid_adb", "target must be specified unless all=true"))
-          case Some(tok) =>
-            for
-              cfg <- config
-              (addr, _) <- resolveEndpoint(tok, cfg)
-              removedOpt <- poolRef.modify(m => (m - addr, m.get(addr)))
-              _ <- removedOpt.traverse_(_.close.attempt.void)
-              rem <- poolRef.get
-            yield DisconnectResult(
-              disconnected = removedOpt.map(_ => Vector(addr)).getOrElse(Vector.empty),
-              remainingConnected = rem.size
-            )
+      poolRef.modify(m => (m - addr, m.get(addr))).flatMap(_.traverse_(_.close.attempt.void))
     }
 
   def info(target: String): IO[DeviceInfo] =
@@ -223,6 +180,7 @@ final class AdbService private (
           address = conn.address,
           alias = alias,
           banner = conn.banner,
+          protocolVersion = conn.protocolVersion,
           maxPayload = conn.maxPayload,
           manufacturer = kvMap.get("ro.product.manufacturer").filter(_.nonEmpty),
           brand = kvMap.get("ro.product.brand").filter(_.nonEmpty),
@@ -563,7 +521,7 @@ final class AdbService private (
           case RebootMode.recovery   => "reboot:recovery"
           case RebootMode.bootloader => "reboot:bootloader"
         conn.openStream(dest, openTimeout).use(_ => IO.unit).attempt *>
-          disconnect(Some(conn.address), all = false).attempt *>
+          closePooled(conn.address).attempt *>
           IO.pure(RebootResult(address = conn.address, mode = req.mode, accepted = true))
       }
 
@@ -709,7 +667,7 @@ object AdbService:
   def resource(
       grootHome: Path = groot.schedule.Store.defaultHome,
       config: IO[AdbConfig] = IO.pure(AdbConfig()),
-      reaperInterval: FiniteDuration = 15.seconds
+      reaperInterval: FiniteDuration = 5.seconds
   ): Resource[IO, AdbService] =
     for
       lock <- Resource.eval(Semaphore[IO](1))

@@ -42,20 +42,6 @@ object AdbRoutes:
       handle { service.devices }
     }
 
-    command[ConnectResult]("connect") {
-      description("Connect or reconnect to an ADB TCP daemon (configured alias or host[:port], default port 5555) and perform CNXN/AUTH handshake")
-      val target = param[String]("target", "Target alias or host[:port]") { minLength(1) }
-      val waitForAuth = param[Boolean]("waitForAuth", "Wait up to authTimeout for on-screen USB/network debugging approval") { default(false) }
-      handle { service.connect(ConnectRequest(target.value, waitForAuth.value)) }
-    }
-
-    command[DisconnectResult]("disconnect") {
-      description("Close a pooled ADB TCP connection by target/alias or close all pooled connections")
-      val target = param[Option[String]]("target", "Target alias or host[:port]; required unless all=true")
-      val all = param[Boolean]("all", "Close every pooled ADB TCP connection") { default(false) }
-      handle { service.disconnect(target.value, all.value) }
-    }
-
     command[DeviceInfo]("info") {
       description("Inspect live Android device metadata, OS/SDK version, screen ON/OFF state, wakefulness and uptime")
       val target = param[String]("target", "Target alias or host[:port]") { minLength(1) }

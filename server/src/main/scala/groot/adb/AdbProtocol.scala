@@ -109,8 +109,7 @@ object AdbProtocol:
       port: Int,
       key: AdbKeyMaterial,
       connectTimeout: FiniteDuration,
-      authTimeout: FiniteDuration,
-      waitForAuth: Boolean
+      authTimeout: FiniteDuration
   ): IO[AdbConnection] =
     for
       addr <- resolveSocketAddress(host, port)
@@ -123,7 +122,7 @@ object AdbProtocol:
           AdbFailure("adb_unreachable", s"Cannot connect to ADB daemon at $host:$port: ${Option(e.getMessage).getOrElse(e.getClass.getSimpleName)}")
       }
       (socket, closeSocket) = allocated
-      conn <- handshakeAndStart(s"$host:$port", socket, closeSocket, key, connectTimeout, authTimeout, waitForAuth).onError { _ =>
+      conn <- handshakeAndStart(s"$host:$port", socket, closeSocket, key, connectTimeout, authTimeout).onError { _ =>
         closeSocket.attempt.void
       }
     yield conn
@@ -134,8 +133,7 @@ object AdbProtocol:
       closeSocket: IO[Unit],
       key: AdbKeyMaterial,
       connectTimeout: FiniteDuration,
-      authTimeout: FiniteDuration,
-      waitForAuth: Boolean
+      authTimeout: FiniteDuration
   ): IO[AdbConnection] =
     val hostBanner = ByteVector.view("host::groot\u0000".getBytes(US_ASCII))
     val cnxnOut = Packet(A_CNXN, A_VERSION, HOST_MAX_PAYLOAD, hostBanner)
@@ -166,16 +164,15 @@ object AdbProtocol:
                   IO.pure(parseCnxn(second))
                 case A_AUTH if second.arg0 == AUTH_TOKEN =>
                   val pubKeyBytes = ByteVector.view(key.publicKeyPayload)
-                  val sendPub = writePacket(socket, Packet(A_AUTH, AUTH_RSAPUBLICKEY, 0, pubKeyBytes))
-                  if !waitForAuth then
-                    sendPub *> socket.endOfOutput.attempt *> IO.sleep(50.millis) *> IO.raiseError(
-                      AdbFailure(
-                        "adb_unauthorized",
-                        s"Device $address has not authorized this ADB key yet; sent public key prompt (accept on screen and retry or pass waitForAuth=true)"
-                      )
-                    )
-                  else
-                    sendPub *> readPacket(socket)
+                  writePacket(socket, Packet(A_AUTH, AUTH_RSAPUBLICKEY, 0, pubKeyBytes)) *>
+                    readPacket(socket)
+                      .adaptError {
+                        case e: AdbFailure if e.code == "adb_disconnected" =>
+                          AdbFailure(
+                            "adb_unauthorized",
+                            s"Device $address has not authorized this ADB key yet; accept the debugging prompt on screen and retry"
+                          )
+                      }
                       .timeoutTo(
                         authTimeout,
                         IO.raiseError(
