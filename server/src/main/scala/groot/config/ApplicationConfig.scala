@@ -4,6 +4,7 @@ import framework.http.ServerConfig
 import framework.model.JsonModel
 import framework.runtime.LogConfig
 import framework.validation.Validator
+import groot.adb.AdbConfig
 import groot.chrome.ChromeConfig
 import groot.fs.FsConfig
 import groot.fxtwitter.FxTwitterConfig
@@ -38,7 +39,8 @@ final case class ApplicationConfig(
     chrome: ChromeConfig = ChromeConfig(),
     wine: WineSettings = WineSettings(),
     widget: WidgetConfig = WidgetConfig(),
-    kv: KvConfig = KvConfig()
+    kv: KvConfig = KvConfig(),
+    adb: AdbConfig = AdbConfig()
 ) derives JsonModel, Validator
 
 object ApplicationConfig:
